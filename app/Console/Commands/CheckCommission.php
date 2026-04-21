@@ -7,6 +7,7 @@ use Illuminate\Console\Command;
 use App\Models\Order;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class CheckCommission extends Command
 {
@@ -63,22 +64,38 @@ class CheckCommission extends Command
         $orders = Order::where('commission_status', 1)
             ->where('invite_user_id', '!=', NULL)
             ->get();
+
         foreach ($orders as $order) {
-            try{
-                DB::beginTransaction();
-                if (!$this->payHandle($order->invite_user_id, $order)) {
-                    DB::rollBack();
-                    continue;
-                }
-                $order->commission_status = 2;
-                if (!$order->save()) {
-                    DB::rollBack();
-                    continue;
-                }
-                DB::commit();
-            } catch (\Exception $e){
-                DB::rollBack();
-                throw $e;
+            // 抢占式幂等：只有一次 UPDATE 能把 1 改成 2，多个 cron 并发也只有一个会进入 payHandle。
+            $claimed = Order::where('id', $order->id)
+                ->where('commission_status', 1)
+                ->update(['commission_status' => 2]);
+
+            if ($claimed === 0) {
+                continue;
+            }
+
+            try {
+                DB::transaction(function () use ($order) {
+                    if (!$this->payHandle($order->invite_user_id, $order)) {
+                        throw new \RuntimeException('payHandle returned false');
+                    }
+                    // commission_status 已在抢占阶段落库;这里只是刷 actual_commission_balance 等
+                    $order->commission_status = 2;
+                    if (!$order->save()) {
+                        throw new \RuntimeException('order save failed');
+                    }
+                });
+            } catch (\Throwable $e) {
+                // 打款失败 → 回滚 commission_status 等下一轮再尝试
+                Order::where('id', $order->id)
+                    ->where('commission_status', 2)
+                    ->update(['commission_status' => 1]);
+                Log::error('commission pay failed', [
+                    'order_id' => $order->id,
+                    'trade_no' => $order->trade_no,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
     }
@@ -109,7 +126,7 @@ class CheckCommission extends Command
                 $inviter->increment('commission_balance', $commissionBalance);
             }
             if (!$inviter->save()) {
-                DB::rollBack();
+                // 外层 DB::transaction 会在我们返回 false 后触发异常并整体回滚
                 return false;
             }
             CommissionLog::create([

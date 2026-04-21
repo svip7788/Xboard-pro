@@ -30,27 +30,55 @@ class TrafficResetService
 
   /**
    * Perform the traffic reset for a user.
+   *
+   * 并发保护：在同一事务内 lockForUpdate 取用户行，对"自动/定时/访问触发"再次
+   * 调 shouldResetTraffic() 二次校验，防止两个路径同时进入导致 reset_count 被重复 +1
+   * 以及 next_reset_at 被计算出一个往后滑两格的值。
+   * 订单/手动触发是强制 reset，不做二次校验。
    */
   public function performReset(User $user, string $triggerSource = TrafficResetLog::SOURCE_MANUAL): bool
   {
+    $autoTriggers = [
+      TrafficResetLog::SOURCE_AUTO,
+      TrafficResetLog::SOURCE_CRON,
+      TrafficResetLog::SOURCE_USER_ACCESS,
+    ];
+    $needRecheck = in_array($triggerSource, $autoTriggers, true);
+
     try {
-      return DB::transaction(function () use ($user, $triggerSource) {
-        $oldUpload = $user->u ?? 0;
-        $oldDownload = $user->d ?? 0;
+      return DB::transaction(function () use ($user, $triggerSource, $needRecheck) {
+        $fresh = User::lockForUpdate()->find($user->id);
+        if (!$fresh) {
+          return false;
+        }
+
+        if ($needRecheck && !$fresh->shouldResetTraffic()) {
+          return false;
+        }
+
+        $oldUpload = $fresh->u ?? 0;
+        $oldDownload = $fresh->d ?? 0;
         $oldTotal = $oldUpload + $oldDownload;
 
-        $nextResetTime = $this->calculateNextResetTime($user);
+        $nextResetTime = $this->calculateNextResetTime($fresh);
 
-        $user->update([
+        $fresh->update([
           'u' => 0,
           'd' => 0,
           'last_reset_at' => time(),
-          'reset_count' => $user->reset_count + 1,
+          'reset_count' => $fresh->reset_count + 1,
           'next_reset_at' => $nextResetTime ? $nextResetTime->timestamp : null,
         ]);
 
-        $this->recordResetLog($user, [
-          'reset_type' => $this->getResetTypeFromPlan($user->plan),
+        // 保证调用方拿到的 $user 实例也看到最新值（buyByPeriod 里依赖这些字段）
+        $user->u = 0;
+        $user->d = 0;
+        $user->last_reset_at = $fresh->last_reset_at;
+        $user->reset_count = $fresh->reset_count;
+        $user->next_reset_at = $fresh->next_reset_at;
+
+        $this->recordResetLog($fresh, [
+          'reset_type' => $this->getResetTypeFromPlan($fresh->plan),
           'trigger_source' => $triggerSource,
           'old_upload' => $oldUpload,
           'old_download' => $oldDownload,
@@ -60,8 +88,8 @@ class TrafficResetService
           'new_total' => 0,
         ]);
 
-        $this->clearUserCache($user);
-        HookManager::call('traffic.reset.after', $user);
+        $this->clearUserCache($fresh);
+        HookManager::call('traffic.reset.after', $fresh);
         return true;
       });
     } catch (\Exception $e) {
