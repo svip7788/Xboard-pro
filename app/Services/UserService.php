@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use App\Jobs\StatServerJob;
-use App\Jobs\StatUserJob;
 use App\Jobs\TrafficFetchJob;
 use App\Models\Order;
 use App\Models\Plan;
@@ -125,11 +124,36 @@ class UserService
         // Compatible with legacy hook
         list($server, $protocol, $data) = HookManager::filter('traffic.before_process', [$server, $protocol, $data]);
 
+        if (empty($data)) {
+            return;
+        }
+
+        // 先做一次 server 维度的聚合 (整次上报只算一次 sum),
+        // 避免旧实现里按 chunk 分发 N 个 StatServerJob 对同一行做 N 次 upsert。
+        // 这里累加的是"节点原始字节",不乘 rate —— 由 StatServerJob 侧保持原口径。
+        $totalU = 0; $totalD = 0;
+        foreach ($data as $v) {
+            if (!is_array($v)) continue;
+            $totalU += (int) ($v[0] ?? 0);
+            $totalD += (int) ($v[1] ?? 0);
+        }
+
+        // 1 次节点汇总（不再按 chunk 发）
+        if ($totalU > 0 || $totalD > 0) {
+            StatServerJob::dispatch(
+                $server,
+                ['u' => $totalU, 'd' => $totalD],
+                $protocol,
+                'd'
+            );
+        }
+
+        // 用户扣费 + stat_user 合并到 TrafficFetchJob，按 chunk 分发
         $timestamp = strtotime(date('Y-m-d'));
         collect($data)->chunk(1000)->each(function ($chunk) use ($timestamp, $server, $protocol) {
-            TrafficFetchJob::dispatch($server, $chunk->toArray(), $protocol, $timestamp);
-            StatUserJob::dispatch($server, $chunk->toArray(), $protocol, 'd');
-            StatServerJob::dispatch($server, $chunk->toArray(), $protocol, 'd');
+            // 一次 toArray,不再三次
+            $arr = $chunk->toArray();
+            TrafficFetchJob::dispatch($server, $arr, $protocol, $timestamp);
         });
     }
 
