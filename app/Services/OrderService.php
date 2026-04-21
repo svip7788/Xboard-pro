@@ -269,14 +269,18 @@ class OrderService
             $remainSeconds = max(0, $expiredAt->timestamp - $now->timestamp);
             $cycleRatio = $totalSeconds > 0 ? $remainSeconds / $totalSeconds : 0;
 
+            // 原套餐可能已被管理员删除,此时 $plan 为 null。
+            // 旧代码 $plan?->transfer_enable * $orderMonthSum 会得到 0,
+            // 再进入 min($cycleRatio, $trafficRatio) 时 trafficRatio=0,
+            // 升级退费被压成 0, 用户白嫖剩余价值。
+            // 修复:plan 缺失时直接退回按时间比例,不再叠加流量比例。
             $plan = Plan::find($user->plan_id);
-            $totalTraffic = $plan?->transfer_enable * $orderMonthSum;
-            $usedTraffic = Helper::transferToGB($user->u + $user->d);
-            $remainTraffic = max(0, $totalTraffic - $usedTraffic);
-            $trafficRatio = $totalTraffic > 0 ? $remainTraffic / $totalTraffic : 0;
-
             $ratio = $cycleRatio;
-            if (admin_setting('change_order_event_id', 0) == 1) {
+            if ($plan && admin_setting('change_order_event_id', 0) == 1) {
+                $totalTraffic = (int) $plan->transfer_enable * $orderMonthSum;
+                $usedTraffic = Helper::transferToGB($user->u + $user->d);
+                $remainTraffic = max(0, $totalTraffic - $usedTraffic);
+                $trafficRatio = $totalTraffic > 0 ? $remainTraffic / $totalTraffic : 0;
                 $ratio = min($cycleRatio, $trafficRatio);
             }
 

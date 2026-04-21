@@ -16,24 +16,23 @@ class TicketService
     public function reply($ticket, $message, $userId)
     {
         try {
-            DB::beginTransaction();
-            $ticketMessage = TicketMessage::create([
-                'user_id' => $userId,
-                'ticket_id' => $ticket->id,
-                'message' => $message
-            ]);
-            $isAdmin = $userId !== $ticket->user_id;
-            $ticket->reply_status = $isAdmin
-                ? Ticket::REPLY_STATUS_REPLIED
-                : Ticket::REPLY_STATUS_WAITING;
-            $ticket->last_reply_user_id = $userId;
-            if (!$ticketMessage || !$ticket->save()) {
-                throw new \Exception();
-            }
-            DB::commit();
-            return $ticketMessage;
+            return DB::transaction(function () use ($ticket, $message, $userId) {
+                $ticketMessage = TicketMessage::create([
+                    'user_id' => $userId,
+                    'ticket_id' => $ticket->id,
+                    'message' => $message,
+                ]);
+                $isAdmin = $userId !== $ticket->user_id;
+                $ticket->reply_status = $isAdmin
+                    ? Ticket::REPLY_STATUS_REPLIED
+                    : Ticket::REPLY_STATUS_WAITING;
+                $ticket->last_reply_user_id = $userId;
+                if (!$ticketMessage || !$ticket->save()) {
+                    throw new \RuntimeException('ticket reply save failed');
+                }
+                return $ticketMessage;
+            });
         } catch (\Exception $e) {
-            DB::rollback();
             return false;
         }
     }
@@ -54,10 +53,8 @@ class TicketService
 
     public function createTicket($userId, $subject, $level, $message)
     {
-        try {
-            DB::beginTransaction();
+        return DB::transaction(function () use ($userId, $subject, $level, $message) {
             if (Ticket::where('status', 0)->where('user_id', $userId)->lockForUpdate()->first()) {
-                DB::rollBack();
                 throw new ApiException('存在未关闭的工单');
             }
             $ticket = Ticket::create([
@@ -73,18 +70,13 @@ class TicketService
             $ticketMessage = TicketMessage::create([
                 'user_id' => $userId,
                 'ticket_id' => $ticket->id,
-                'message' => $message
+                'message' => $message,
             ]);
             if (!$ticketMessage) {
-                DB::rollBack();
                 throw new ApiException('工单消息创建失败');
             }
-            DB::commit();
             return $ticket;
-        } catch (\Exception $e) {
-            DB::rollBack();
-            throw $e;
-        }
+        });
     }
 
     // 半小时内不再重复通知

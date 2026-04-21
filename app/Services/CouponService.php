@@ -6,6 +6,7 @@ use App\Exceptions\ApiException;
 use App\Models\Coupon;
 use App\Models\Order;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Redis;
 
 class CouponService
 {
@@ -80,14 +81,42 @@ class CouponService
         }
     }
 
+    /**
+     * 单用户使用次数配额检查。
+     *
+     * 原实现为 count() + 后续 use() 两步非原子,高并发下同一用户可突破个人配额。
+     * 这里在 count() 之上再叠加一个 Redis 原子计数:
+     *   - 用 INCR 取得"当前占位数",满额则立刻 DECR 归还并拒绝;
+     *   - 订单正常创建 → 占位落入实际 Order 表,Redis 计数会在 TTL(30min)后
+     *     自动衰减,由后续真实订单 count() 兜底,不会长期漂移。
+     *
+     * 这不是强一致方案,但把"同一用户秒级并发超用"收敛到 Redis 原子粒度,足够对抗
+     * 普通脚本刷券。真正的强一致要落在 DB 唯一索引,超出本次修复范围。
+     */
     public function checkLimitUseWithUser(): bool
     {
+        $limit = (int) $this->coupon->limit_use_with_user;
+        if ($limit <= 0) return true;
+
         $usedCount = Order::where('coupon_id', $this->coupon->id)
             ->where('user_id', $this->userId)
             ->whereNotIn('status', [0, 2])
             ->count();
-        if ($usedCount >= $this->coupon->limit_use_with_user)
+        if ($usedCount >= $limit) {
             return false;
+        }
+
+        $remain = $limit - $usedCount;
+        $key = 'coupon:user_quota:' . $this->coupon->id . ':' . $this->userId;
+        // INCR 拿到占位后的总数
+        $current = (int) Redis::incr($key);
+        if ($current === 1) {
+            Redis::expire($key, 1800);
+        }
+        if ($current > $remain) {
+            Redis::decr($key);
+            return false;
+        }
         return true;
     }
 

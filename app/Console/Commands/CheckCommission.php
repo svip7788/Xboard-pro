@@ -120,15 +120,16 @@ class CheckCommission extends Command
             if (!isset($commissionShareLevels[$l])) continue;
             $commissionBalance = $order->commission_balance * ($commissionShareLevels[$l] / 100);
             if (!$commissionBalance) continue;
+
+            // increment 本身就已经是原子 SQL 并落库,不再追加一次 save()。
+            // 原来那次 save() 不仅冗余,它还会把 $inviter 内存里的其它脏字段写回,
+            // 并发场景下有可能覆盖别的请求刚写入的数据。
             if ((int)admin_setting('withdraw_close_enable', 0)) {
                 $inviter->increment('balance', $commissionBalance);
             } else {
                 $inviter->increment('commission_balance', $commissionBalance);
             }
-            if (!$inviter->save()) {
-                // 外层 DB::transaction 会在我们返回 false 后触发异常并整体回滚
-                return false;
-            }
+
             CommissionLog::create([
                 'invite_user_id' => $inviteUserId,
                 'user_id' => $order->user_id,
