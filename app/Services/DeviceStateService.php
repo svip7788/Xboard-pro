@@ -50,14 +50,16 @@ class DeviceStateService
     /**
      * 获取某节点的所有设备数据
      * 返回: {userId: [ip1, ip2, ...], ...}
+     *
+     * 关键：必须用 SCAN 迭代代替 KEYS('*')，后者在 Redis 里是 O(N) 单线程阻塞命令。
+     * 16k+ 用户 + 多节点高频上报时会把整个 Redis 卡住 (影响队列/缓存/会话)。
      */
     public function getNodeDevices(int $nodeId): array
     {
-        $keys = Redis::keys(self::PREFIX . '*');
         $prefix = "{$nodeId}:";
         $result = [];
-        foreach ($keys as $key) {
-            $actualKey = $this->removeRedisPrefix($key);
+
+        foreach ($this->scanUserDeviceKeys() as $actualKey) {
             $uid = (int) substr($actualKey, strlen(self::PREFIX));
             $data = Redis::hgetall($actualKey);
             foreach ($data as $field => $timestamp) {
@@ -69,6 +71,35 @@ class DeviceStateService
         }
 
         return $result;
+    }
+
+    /**
+     * 用 SCAN 迭代 user_devices:* 的所有 key，yield 去掉 Redis 前缀后的原始 key。
+     *
+     * phpredis 和 predis 的 SCAN 行为略不同：phpredis 的 Redis::scan 需要传
+     * &$cursor 按引用，predis 的 client->scan 返回 [cursor, keys]。
+     * 这里用 Redis::command('SCAN', ...) 兜底，兼容两套客户端。
+     */
+    private function scanUserDeviceKeys(): \Generator
+    {
+        $configuredPrefix = (string) config('database.redis.options.prefix', '');
+        $pattern = $configuredPrefix . self::PREFIX . '*';
+        $cursor = '0';
+
+        do {
+            $resp = Redis::command('SCAN', [$cursor, 'MATCH', $pattern, 'COUNT', 500]);
+            // phpredis: [cursor, keys]; predis: same structure
+            if (!is_array($resp) || count($resp) < 2) {
+                break;
+            }
+            [$cursor, $keys] = $resp;
+
+            if (!empty($keys)) {
+                foreach ($keys as $key) {
+                    yield $this->removeRedisPrefix($key);
+                }
+            }
+        } while ((string) $cursor !== '0');
     }
 
     /**
@@ -188,20 +219,28 @@ class DeviceStateService
 
     /**
      * notify update (throttle control)
+     *
+     * 关键：必须保留 throttle。每个 WS report.devices 都调用这里，
+     * 没有节流的话等于每秒 N 个节点 * M 个用户 = 数千次 UPDATE v2_user，
+     * 直接把 MySQL 主库打到 IO 瓶颈（老版本线上队列积压的另一个源头）。
+     *
+     * 原代码用的 setnx+expire 有"setnx 成功但 expire 前进程崩"的竞争窗口，
+     * 这里换成 SET NX EX 原子命令。
      */
     public function notifyUpdate(int $userId): void
     {
         $dbThrottleKey = "device:db_throttle:{$userId}";
 
-        // if (Redis::setnx($dbThrottleKey, 1)) {
-        //     Redis::expire($dbThrottleKey, self::DB_THROTTLE);
+        $acquired = Redis::set($dbThrottleKey, 1, 'EX', self::DB_THROTTLE, 'NX');
+        if (!$acquired) {
+            return;
+        }
 
-            User::query()
-                ->whereKey($userId)
-                ->update([
-                    'online_count' => $this->getDeviceCount($userId),
-                    'last_online_at' => now(),
-                ]);
-        // }
+        User::query()
+            ->whereKey($userId)
+            ->update([
+                'online_count' => $this->getDeviceCount($userId),
+                'last_online_at' => now(),
+            ]);
     }
 }

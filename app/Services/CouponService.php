@@ -16,9 +16,10 @@ class CouponService
 
     public function __construct($code)
     {
-        $this->coupon = Coupon::where('code', $code)
-            ->lockForUpdate()
-            ->first();
+        // 原代码在构造函数里 lockForUpdate，但若调用方不在事务中，
+        // 这个锁立刻被释放，并无实际并发保护作用。
+        // 改为普通查询，实际并发保护移到 limit_use 递减那一步用原子 UPDATE 完成。
+        $this->coupon = Coupon::where('code', $code)->first();
     }
 
     public function use(Order $order): bool
@@ -39,12 +40,15 @@ class CouponService
             $order->discount_amount = $order->total_amount;
         }
         if ($this->coupon->limit_use !== NULL) {
-            if ($this->coupon->limit_use <= 0)
-                return false;
-            $this->coupon->limit_use = $this->coupon->limit_use - 1;
-            if (!$this->coupon->save()) {
+            // 原子递减：只有 limit_use > 0 时才能扣减，影响行数==0 说明已被别的请求领完。
+            // 这样即使无事务上下文，两个并发请求也只有一个能领到最后一张券。
+            $affected = Coupon::where('id', $this->coupon->id)
+                ->where('limit_use', '>', 0)
+                ->decrement('limit_use');
+            if ($affected === 0) {
                 return false;
             }
+            $this->coupon->limit_use = max(0, $this->coupon->limit_use - 1);
         }
         return true;
     }
