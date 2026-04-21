@@ -135,24 +135,35 @@ class NodeWorker
 
     public function onWebSocketConnect(TcpConnection $conn, $httpMessage): void
     {
-        $queryString = '';
-        if (is_string($httpMessage)) {
-            $queryString = parse_url($httpMessage, PHP_URL_QUERY) ?? '';
-        } elseif ($httpMessage instanceof \Workerman\Protocols\Http\Request) {
-            $queryString = $httpMessage->queryString();
-        }
+        // 任何业务异常都不能让 workerman 触发 Worker::stopAll()
+        try {
+            $queryString = '';
+            if (is_string($httpMessage)) {
+                $queryString = parse_url($httpMessage, PHP_URL_QUERY) ?? '';
+            } elseif ($httpMessage instanceof \Workerman\Protocols\Http\Request) {
+                $queryString = $httpMessage->queryString();
+            }
 
-        parse_str($queryString, $params);
+            parse_str($queryString, $params);
 
-        if (isset($conn->authTimer)) {
-            Timer::del($conn->authTimer);
-        }
+            if (isset($conn->authTimer)) {
+                Timer::del($conn->authTimer);
+            }
 
-        // 判断认证模式
-        if (!empty($params['machine_id'])) {
-            $this->authenticateMachine($conn, $params);
-        } else {
-            $this->authenticateNode($conn, $params);
+            if (!empty($params['machine_id'])) {
+                $this->authenticateMachine($conn, $params);
+            } else {
+                $this->authenticateNode($conn, $params);
+            }
+        } catch (\Throwable $e) {
+            Log::error('[WS] onWebSocketConnect exception', [
+                'msg' => $e->getMessage(),
+                'file' => $e->getFile() . ':' . $e->getLine(),
+            ]);
+            $conn->close(json_encode([
+                'event' => 'error',
+                'data' => ['message' => 'internal error'],
+            ]));
         }
     }
 

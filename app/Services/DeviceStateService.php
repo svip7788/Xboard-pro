@@ -87,14 +87,19 @@ class DeviceStateService
         $cursor = '0';
 
         do {
-            $resp = Redis::command('SCAN', [$cursor, 'MATCH', $pattern, 'COUNT', 500]);
-            // phpredis: [cursor, keys]; predis: same structure
+            // Laravel 封装：phpredis/predis 都接受 ['match'=>..., 'count'=>...]
+            // 返回 [cursor, keys]；phpredis 遇到空批时 keys 可能是 false
+            try {
+                $resp = Redis::scan($cursor, ['match' => $pattern, 'count' => 500]);
+            } catch (\Throwable $e) {
+                break;
+            }
             if (!is_array($resp) || count($resp) < 2) {
                 break;
             }
             [$cursor, $keys] = $resp;
 
-            if (!empty($keys)) {
+            if (is_array($keys) && !empty($keys)) {
                 foreach ($keys as $key) {
                     yield $this->removeRedisPrefix($key);
                 }
