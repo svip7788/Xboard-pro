@@ -13,6 +13,7 @@ use App\Services\Plugin\HookManager;
 use App\Services\TrafficResetService;
 use App\Models\TrafficResetLog;
 use App\Utils\Helper;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 
 class UserService
@@ -89,18 +90,19 @@ class UserService
 
     public function addBalance(int $userId, int $balance): bool
     {
-        $user = User::lockForUpdate()->find($userId);
-        if (!$user) {
-            return false;
-        }
-        $user->balance = $user->balance + $balance;
-        if ($user->balance < 0) {
-            return false;
-        }
-        if (!$user->save()) {
-            return false;
-        }
-        return true;
+        // lockForUpdate 必须在事务里才真正持有行锁。
+        // Laravel 对嵌套事务用 savepoint 兜底，外层已有事务时这里不会破坏一致性。
+        return (bool) DB::transaction(function () use ($userId, $balance) {
+            $user = User::lockForUpdate()->find($userId);
+            if (!$user) {
+                return false;
+            }
+            $user->balance = $user->balance + $balance;
+            if ($user->balance < 0) {
+                return false;
+            }
+            return $user->save();
+        });
     }
 
     public function isNotCompleteOrderByUserId(int $userId): bool

@@ -96,6 +96,9 @@ class OrderService
     {
         $order = $this->order;
         $plan = Plan::find($order->plan_id);
+        if (!$plan) {
+            throw new \RuntimeException("Plan {$order->plan_id} not found for order {$order->trade_no}");
+        }
 
         HookManager::call('order.open.before', $order);
 
@@ -132,10 +135,10 @@ class OrderService
         });
 
         $eventId = match ((int) $order->type) {
-            Order::STATUS_PROCESSING => admin_setting('new_order_event_id', 0),
-            Order::TYPE_RENEWAL => admin_setting('renew_order_event_id', 0),
-            Order::TYPE_UPGRADE => admin_setting('change_order_event_id', 0),
-            default => 0,
+            Order::TYPE_NEW_PURCHASE => admin_setting('new_order_event_id', 0),
+            Order::TYPE_RENEWAL      => admin_setting('renew_order_event_id', 0),
+            Order::TYPE_UPGRADE      => admin_setting('change_order_event_id', 0),
+            default                  => 0,
         };
 
         if ($eventId) {
@@ -286,13 +289,28 @@ class OrderService
     public function paid(string $callbackNo)
     {
         $order = $this->order;
-        if ($order->status !== Order::STATUS_PENDING)
+        if ($order->status !== Order::STATUS_PENDING) {
             return true;
-        $order->status = Order::STATUS_PROCESSING;
-        $order->paid_at = time();
-        $order->callback_no = $callbackNo;
-        if (!$order->save())
-            return false;
+        }
+
+        // 原子状态迁移：用 WHERE status=PENDING + 影响行数判断,
+        // 并发回调下只有第一个会成功,其余返回 true 视为"已被处理"。
+        $affected = Order::where('id', $order->id)
+            ->where('status', Order::STATUS_PENDING)
+            ->update([
+                'status'      => Order::STATUS_PROCESSING,
+                'paid_at'     => time(),
+                'callback_no' => $callbackNo,
+            ]);
+
+        if ($affected === 0) {
+            // 别的回调已经把订单推进到后续状态了
+            return true;
+        }
+
+        $order->refresh();
+        $this->order = $order;
+
         try {
             OrderHandleJob::dispatchSync($order->trade_no);
         } catch (\Exception $e) {

@@ -33,14 +33,16 @@ class PaymentController extends Controller
         }
     }
 
-    private function handle($tradeNo, $callbackNo)
+    private function handle($tradeNo, $callbackNo): bool
     {
         $order = Order::where('trade_no', $tradeNo)->first();
         if (!$order) {
-            return $this->fail([400202, 'order is not found']);
+            Log::warning('payment.notify: order not found', ['trade_no' => $tradeNo]);
+            return false;
         }
-        if ($order->status !== Order::STATUS_PENDING)
+        if ($order->status !== Order::STATUS_PENDING) {
             return true;
+        }
         $orderService = new OrderService($order);
         if (!$orderService->paid($callbackNo)) {
             return false;
