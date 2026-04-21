@@ -2,7 +2,10 @@
 
 namespace App\Providers;
 
+use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Route;
 
 class RouteServiceProvider extends ServiceProvider
@@ -24,7 +27,50 @@ class RouteServiceProvider extends ServiceProvider
     public function boot()
     {
         // HTTPS scheme is forced per-request via middleware (Octane-safe).
+        $this->configureRateLimiters();
         parent::boot();
+    }
+
+    /**
+     * 针对无需登录的敏感接口配置限流：
+     *   - passport.login:  每 IP 每分钟 10 次 + 每 email 每分钟 5 次
+     *   - passport.forget: 每 IP 每分钟 5 次  + 每 email 每分钟 3 次
+     *   - passport.send:   每 IP 每分钟 10 次 + 每 email 每分钟 1 次（邮件验证码）
+     *   - passport.basic:  其他注册/令牌登录等，每 IP 每分钟 20 次
+     *
+     * 历史原因 Kernel.php 里把 'api' 分组的 throttle 注释掉了，导致登录/验证码/忘密
+     * 全部无限流，可被爆破密码、轰炸邮箱、撞 6 位验证码。
+     */
+    protected function configureRateLimiters(): void
+    {
+        RateLimiter::for('passport.login', function (Request $request) {
+            $email = strtolower((string) $request->input('email', ''));
+            return [
+                Limit::perMinute(10)->by('ip:' . $request->ip()),
+                Limit::perMinute(5)->by('login-email:' . $email),
+            ];
+        });
+
+        RateLimiter::for('passport.forget', function (Request $request) {
+            $email = strtolower((string) $request->input('email', ''));
+            return [
+                Limit::perMinute(5)->by('ip:' . $request->ip()),
+                Limit::perMinute(3)->by('forget-email:' . $email),
+            ];
+        });
+
+        RateLimiter::for('passport.send', function (Request $request) {
+            $email = strtolower((string) $request->input('email', ''));
+            return [
+                Limit::perMinute(10)->by('ip:' . $request->ip()),
+                // Controller 里已有 60s 冷却，这里再设一个保险阈值
+                Limit::perMinute(1)->by('send-email:' . $email),
+            ];
+        });
+
+        RateLimiter::for('passport.basic', function (Request $request) {
+            return Limit::perMinute(20)->by('ip:' . $request->ip());
+        });
     }
 
     /**
