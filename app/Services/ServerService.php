@@ -120,6 +120,9 @@ class ServerService
 
     /**
      * 处理节点流量数据汇报
+     *
+     * 安全关键：必须过滤出"属于本节点 group_ids 的用户"再做扣费，
+     * 否则持有任一节点 server_token 的攻击者/误配节点都能扣掉任意用户流量。
      */
     public static function processTraffic(Server $node, array $traffic): void
     {
@@ -128,6 +131,11 @@ class ServerService
             && is_numeric($item[0]) && is_numeric($item[1])
         );
 
+        if (empty($data)) {
+            return;
+        }
+
+        $data = self::filterUserIdsByNodeGroup($node, $data);
         if (empty($data)) {
             return;
         }
@@ -143,13 +151,66 @@ class ServerService
 
     /**
      * 处理节点在线设备汇报
+     *
+     * 同样按 group_ids 过滤，防止任意节点伪造他人在线设备数、干扰 device_limit。
      */
     public static function processAlive(int $nodeId, array $alive): void
     {
+        if (empty($alive)) {
+            return;
+        }
+
+        $node = Server::find($nodeId);
+        if (!$node) {
+            return;
+        }
+
+        $alive = self::filterUserIdsByNodeGroup($node, $alive);
+        if (empty($alive)) {
+            return;
+        }
+
         $service = app(DeviceStateService::class);
         foreach ($alive as $uid => $ips) {
             $service->setDevices((int) $uid, $nodeId, (array) $ips);
         }
+    }
+
+    /**
+     * 只保留"属于本节点 group_ids"的 uid。用户-节点授权校验核心。
+     *
+     * @param Server $node
+     * @param array<int|string,mixed> $payload uid => value 的数组
+     * @return array<int,mixed>
+     */
+    protected static function filterUserIdsByNodeGroup(Server $node, array $payload): array
+    {
+        $groupIds = $node->group_ids ?? [];
+        if (empty($groupIds) || empty($payload)) {
+            return [];
+        }
+
+        $uids = array_map('intval', array_keys($payload));
+        $uids = array_filter($uids, fn($uid) => $uid > 0);
+        if (empty($uids)) {
+            return [];
+        }
+
+        $allowed = User::toBase()
+            ->whereIn('id', $uids)
+            ->whereIn('group_id', $groupIds)
+            ->pluck('id')
+            ->all();
+
+        $allowedMap = array_flip($allowed);
+
+        $result = [];
+        foreach ($payload as $uid => $value) {
+            if (isset($allowedMap[(int) $uid])) {
+                $result[(int) $uid] = $value;
+            }
+        }
+        return $result;
     }
 
     /**
