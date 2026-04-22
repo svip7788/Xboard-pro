@@ -104,7 +104,9 @@ class TrafficFetchJob implements ShouldQueue, ShouldBeUnique
         $sqlD   = implode(' ', $casesD);
 
         // 1) 扣费：更新 v2_user.u / v2_user.d
-        DB::update(
+        // 多个节点并发上报时，不同 chunk 的用户 id 容易交叉，MySQL 偶发死锁（1213）。
+        // 这里内联重试——死锁必然整条 UPDATE 回滚，重试不会导致重复扣费。
+        $this->updateWithDeadlockRetry(
             "UPDATE v2_user
              SET u = CASE id {$sqlU} ELSE u END,
                  d = CASE id {$sqlD} ELSE d END,
@@ -167,5 +169,32 @@ class TrafficFetchJob implements ShouldQueue, ShouldBeUnique
                 'updated_at' => $now,
             ]
         );
+    }
+
+    /**
+     * 死锁（SQLSTATE 40001 / 1213）小重试。
+     *
+     * 指数退避 + 抖动避免连环死锁。抛出其它错误时直接透出。
+     */
+    protected function updateWithDeadlockRetry(string $sql, int $maxAttempts = 4): void
+    {
+        $attempt = 0;
+        while (true) {
+            try {
+                DB::update($sql);
+                return;
+            } catch (\Throwable $e) {
+                $attempt++;
+                $msg = $e->getMessage();
+                $isDeadlock = str_contains($msg, '1213')
+                    || str_contains($msg, 'Deadlock')
+                    || str_contains($msg, '40001');
+                if (!$isDeadlock || $attempt >= $maxAttempts) {
+                    throw $e;
+                }
+                // 50ms、100ms、200ms 退避 + 随机抖动
+                usleep((1 << ($attempt - 1)) * 50000 + random_int(0, 30000));
+            }
+        }
     }
 }
