@@ -90,8 +90,8 @@ class StatServerJob implements ShouldQueue, ShouldBeUnique
             . '-' . $this->protocol
             . '-' . $this->recordType
             . '-' . $this->timestamp
-            . '-' . $this->data['u']
-            . '-' . $this->data['d'];
+            . '-' . ($this->data['u'] ?? 0)
+            . '-' . ($this->data['d'] ?? 0);
     }
 
     public function uniqueFor(): int
