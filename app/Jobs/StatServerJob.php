@@ -36,11 +36,11 @@ class StatServerJob implements ShouldQueue, ShouldBeUnique
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /** @var array{u:int,d:int} */
-    protected array $data;
-    protected array $server;
-    protected string $protocol;
-    protected string $recordType;
-    protected int $timestamp;
+    protected array $data = ['u' => 0, 'd' => 0];
+    protected array $server = [];
+    protected string $protocol = '';
+    protected string $recordType = 'd';
+    protected int $timestamp = 0;
 
     public $tries = 3;
     public $timeout = 60;
