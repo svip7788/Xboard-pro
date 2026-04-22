@@ -314,7 +314,9 @@ class MailService
             'error' => $error,
             'config' => config('mail')
         ];
-        MailLog::create($log);
+        if ($error === null) {
+            MailLog::create($log);
+        }
         return $log;
     }
 

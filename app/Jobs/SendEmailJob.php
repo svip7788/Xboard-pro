@@ -14,8 +14,9 @@ class SendEmailJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
     protected $params;
 
-    public $tries = 3;
+    public $tries = 1;
     public $timeout = 10;
+    public $failOnTimeout = true;
     /**
      * Create a new job instance.
      *
@@ -30,13 +31,23 @@ class SendEmailJob implements ShouldQueue
     /**
      * Execute the job.
      *
+     * 发送失败不重试、不记录到 failed_jobs。
+     *
      * @return void
      */
     public function handle()
     {
-        $mailLog = MailService::sendEmail($this->params);
-        if ($mailLog['error']) {
-            $this->release(); //发送失败将触发重试
-        }
+        MailService::sendEmail($this->params);
+    }
+
+    /**
+     * 失败时吞掉异常，避免写入 failed_jobs。
+     */
+    public function failed(\Throwable $e): void
+    {
+        \Log::warning('SendEmailJob failed (dropped)', [
+            'email' => $this->params['email'] ?? null,
+            'error' => $e->getMessage(),
+        ]);
     }
 }
