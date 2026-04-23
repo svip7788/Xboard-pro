@@ -15,7 +15,7 @@ class SendEmailJob implements ShouldQueue
     protected $params;
 
     public $tries = 1;
-    public $timeout = 10;
+    public $timeout = 20;
     public $failOnTimeout = true;
     /**
      * Create a new job instance.
@@ -41,7 +41,7 @@ class SendEmailJob implements ShouldQueue
     }
 
     /**
-     * 失败时吞掉异常，避免写入 failed_jobs。
+     * 失败时记录 warning 日志并立即从 failed_jobs 清除，避免长期堆积。
      */
     public function failed(\Throwable $e): void
     {
@@ -49,5 +49,11 @@ class SendEmailJob implements ShouldQueue
             'email' => $this->params['email'] ?? null,
             'error' => $e->getMessage(),
         ]);
+        try {
+            if ($this->job && ($uuid = $this->job->uuid())) {
+                app('queue.failer')->forget($uuid);
+            }
+        } catch (\Throwable $ignore) {
+        }
     }
 }
