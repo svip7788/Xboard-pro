@@ -29,13 +29,25 @@ class TelegramService
 
     public function sendMessage(int $chatId, string $text, string $parseMode = ''): void
     {
-        $text = $parseMode === 'markdown' ? str_replace('_', '\_', $text) : $text;
-
-        $this->request('sendMessage', [
-            'chat_id' => $chatId,
-            'text' => $text,
-            'parse_mode' => $parseMode ?: null,
-        ]);
+        try {
+            $this->request('sendMessage', [
+                'chat_id' => $chatId,
+                'text' => $text,
+                'parse_mode' => $parseMode ?: null,
+            ]);
+        } catch (ApiException $e) {
+            // Telegram 解析失败（用户内容里含未配对的 markdown 字符），
+            // 降级为纯文本重发一次，避免格式错误导致整条消息丢失
+            if ($parseMode !== '' && str_contains($e->getMessage(), "can't parse entities")) {
+                $this->request('sendMessage', [
+                    'chat_id' => $chatId,
+                    'text' => $text,
+                    'parse_mode' => null,
+                ]);
+                return;
+            }
+            throw $e;
+        }
     }
 
     public function approveChatJoinRequest(int $chatId, int $userId): void
