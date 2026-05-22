@@ -15,7 +15,8 @@ class AuthRegister extends FormRequest
     {
         return [
             'email' => 'required|email:strict',
-            'password' => 'required|min:8'
+            'password' => 'required|min:8',
+            'email_code' => 'sometimes|nullable|string|digits:6'
         ];
     }
 
@@ -25,7 +26,9 @@ class AuthRegister extends FormRequest
             'email.required' => __('Email can not be empty'),
             'email.email' => __('Email format is incorrect'),
             'password.required' => __('Password can not be empty'),
-            'password.min' => __('Password must be greater than 8 digits')
+            'password.min' => __('Password must be greater than 8 digits'),
+            'email_code.string' => __('Incorrect email verification code'),
+            'email_code.digits' => __('Incorrect email verification code')
         ];
     }
 }

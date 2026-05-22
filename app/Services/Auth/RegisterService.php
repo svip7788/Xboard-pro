@@ -82,10 +82,12 @@ class RegisterService
 
         // 检查邮箱验证
         if ((int) admin_setting('email_verify', 0)) {
-            if (empty($request->input('email_code'))) {
+            $inputCode = $request->input('email_code');
+            if (empty($inputCode)) {
                 return [false, [422, __('Email verification code cannot be empty')]];
             }
-            if ((string) Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $request->input('email'))) !== (string) $request->input('email_code')) {
+            $cachedCode = Cache::get(CacheKey::get('EMAIL_VERIFY_CODE', $request->input('email')));
+            if (empty($cachedCode) || (string) $cachedCode !== (string) $inputCode) {
                 return [false, [400, __('Incorrect email verification code')]];
             }
         }
