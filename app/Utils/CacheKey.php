@@ -16,7 +16,8 @@ class CacheKey
         'PASSWORD_ERROR_LIMIT' => '密码错误次数限制',
         'USER_SESSIONS' => '用户session',
         'FORGET_REQUEST_LIMIT' => '找回密码次数限制',
-        'SUBSCRIBE_REFRESH_ALLOWED' => '订阅刷新解锁窗口'
+        'SUBSCRIBE_REFRESH_ALLOWED' => '订阅刷新解锁窗口',
+        'SUBSCRIBE_UNLOCK_DAILY_COUNT' => '订阅刷新每日解锁次数'
     ];
 
     // 允许的缓存键模式（支持通配符）

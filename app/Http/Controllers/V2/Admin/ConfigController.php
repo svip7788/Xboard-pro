@@ -132,6 +132,7 @@ class ConfigController extends Controller
                 'subscribe_path' => admin_setting('subscribe_path', 's'),
                 'subscribe_refresh_lock_enable' => (bool) admin_setting('subscribe_refresh_lock_enable', 0),
                 'subscribe_refresh_lock_duration_minutes' => (int) admin_setting('subscribe_refresh_lock_duration_minutes', 10),
+                'subscribe_refresh_lock_daily_limit' => admin_setting('subscribe_refresh_lock_daily_limit'),
             ],
             'frontend' => [
                 'frontend_theme' => admin_setting('frontend_theme', 'Xboard'),

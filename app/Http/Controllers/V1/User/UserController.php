@@ -236,23 +236,76 @@ class UserController extends Controller
     }
 
     /**
+     * 获取每日解锁次数上限，0 或 null 表示无限。
+     */
+    private function getSubscribeUnlockDailyLimit(): ?int
+    {
+        $raw = admin_setting('subscribe_refresh_lock_daily_limit');
+        if ($raw === null || $raw === '' || (int) $raw <= 0) {
+            return null;
+        }
+        return min((int) $raw, 1000);
+    }
+
+    /**
+     * 获取每日次数计数器 Redis 键 + 当天剩余秒数。
+     *
+     * @return array{0:string,1:int}
+     */
+    private function getSubscribeUnlockDailyCounter(int $userId): array
+    {
+        $date = date('Ymd');
+        $key = CacheKey::get('SUBSCRIBE_UNLOCK_DAILY_COUNT', $userId . '_' . $date);
+        $ttl = max(60, strtotime('tomorrow') - time());
+        return [$key, $ttl];
+    }
+
+    /**
      * 临时解锁订阅刷新。
      */
     public function unlockSubscribe(Request $request)
     {
         $user = $request->user();
+        $cacheKey = CacheKey::get('SUBSCRIBE_REFRESH_ALLOWED', $user->id);
+        $existing = Cache::get($cacheKey);
+        $now = time();
         $minutes = $this->getSubscribeUnlockMinutes();
-        $expiresAt = time() + $minutes * 60;
-        Cache::put(
-            CacheKey::get('SUBSCRIBE_REFRESH_ALLOWED', $user->id),
-            $expiresAt,
-            $minutes * 60
-        );
+        $limit = $this->getSubscribeUnlockDailyLimit();
+
+        [$counterKey, $counterTtl] = $this->getSubscribeUnlockDailyCounter($user->id);
+        $used = (int) Cache::get($counterKey, 0);
+
+        // 已在解锁窗口内：续期不扣次数（幂等）
+        if ($existing && (int) $existing > $now) {
+            $expiresAt = $now + $minutes * 60;
+            Cache::put($cacheKey, $expiresAt, $minutes * 60);
+            return $this->success([
+                'locked' => false,
+                'expires_at' => $expiresAt,
+                'duration_minutes' => $minutes,
+                'daily_limit' => $limit,
+                'daily_used' => $used,
+                'daily_remaining' => $limit === null ? null : max(0, $limit - $used),
+            ]);
+        }
+
+        // 新开窗口：先检查次数上限
+        if ($limit !== null && $used >= $limit) {
+            return $this->fail([429, __('Daily unlock limit reached, try again tomorrow')]);
+        }
+
+        $expiresAt = $now + $minutes * 60;
+        Cache::put($cacheKey, $expiresAt, $minutes * 60);
+        $newUsed = $used + 1;
+        Cache::put($counterKey, $newUsed, $counterTtl);
 
         return $this->success([
             'locked' => false,
             'expires_at' => $expiresAt,
             'duration_minutes' => $minutes,
+            'daily_limit' => $limit,
+            'daily_used' => $newUsed,
+            'daily_remaining' => $limit === null ? null : max(0, $limit - $newUsed),
         ]);
     }
 
@@ -264,10 +317,17 @@ class UserController extends Controller
         $user = $request->user();
         Cache::forget(CacheKey::get('SUBSCRIBE_REFRESH_ALLOWED', $user->id));
 
+        $limit = $this->getSubscribeUnlockDailyLimit();
+        [$counterKey] = $this->getSubscribeUnlockDailyCounter($user->id);
+        $used = (int) Cache::get($counterKey, 0);
+
         return $this->success([
             'locked' => true,
             'expires_at' => null,
             'remaining_seconds' => 0,
+            'daily_limit' => $limit,
+            'daily_used' => $used,
+            'daily_remaining' => $limit === null ? null : max(0, $limit - $used),
         ]);
     }
 
@@ -283,12 +343,19 @@ class UserController extends Controller
         $now = time();
         $unlocked = $expiresAt && (int) $expiresAt > $now;
 
+        $limit = $this->getSubscribeUnlockDailyLimit();
+        [$counterKey] = $this->getSubscribeUnlockDailyCounter($user->id);
+        $used = (int) Cache::get($counterKey, 0);
+
         return $this->success([
             'feature_enabled' => $featureEnabled,
             'locked' => !$unlocked,
             'expires_at' => $unlocked ? (int) $expiresAt : null,
             'remaining_seconds' => $unlocked ? (int) $expiresAt - $now : 0,
             'duration_minutes' => $this->getSubscribeUnlockMinutes(),
+            'daily_limit' => $limit,
+            'daily_used' => $used,
+            'daily_remaining' => $limit === null ? null : max(0, $limit - $used),
         ]);
     }
 }

@@ -48,6 +48,7 @@ class ConfigSave extends FormRequest
         'subscribe_path' => '',
         'subscribe_refresh_lock_enable' => 'boolean',
         'subscribe_refresh_lock_duration_minutes' => 'integer|min:1|max:1440',
+        'subscribe_refresh_lock_daily_limit' => 'nullable|integer|min:0|max:1000',
         // server
         'server_token' => 'nullable|min:16',
         'server_pull_interval' => 'integer',
