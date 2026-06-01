@@ -36,6 +36,10 @@ class UserRoute
             $router->post('/getQuickLoginUrl', [UserController::class, 'getQuickLoginUrl']);
             $router->get('/getActiveSession', [UserController::class, 'getActiveSession']);
             $router->post('/removeActiveSession', [UserController::class, 'removeActiveSession']);
+            // Subscribe refresh lock
+            $router->get('/subscribe/lockStatus', [UserController::class, 'subscribeLockStatus']);
+            $router->post('/subscribe/unlock', [UserController::class, 'unlockSubscribe']);
+            $router->post('/subscribe/lock', [UserController::class, 'lockSubscribe']);
             // Order
             $router->post('/order/save', [OrderController::class, 'save']);
             $router->post('/order/checkout', [OrderController::class, 'checkout']);

@@ -8,8 +8,10 @@ use App\Protocols\General;
 use App\Services\Plugin\HookManager;
 use App\Services\ServerService;
 use App\Services\UserService;
+use App\Utils\CacheKey;
 use App\Utils\Helper;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 class ClientController extends Controller
 {
@@ -46,6 +48,18 @@ class ClientController extends Controller
         if (!$userService->isAvailable($user)) {
             HookManager::call('client.subscribe.unavailable');
             return response('', 403, ['Content-Type' => 'text/plain']);
+        }
+
+        if ((int) admin_setting('subscribe_refresh_lock_enable', 0) === 1) {
+            $expiresAt = Cache::get(CacheKey::get('SUBSCRIBE_REFRESH_ALLOWED', $user->id));
+            if (!$expiresAt || (int) $expiresAt <= time()) {
+                HookManager::call('client.subscribe.locked');
+                return response(
+                    'Subscribe refresh is locked. Unlock it in your dashboard before fetching the subscription.',
+                    403,
+                    ['Content-Type' => 'text/plain']
+                );
+            }
         }
 
         return $this->doSubscribe($request, $user);

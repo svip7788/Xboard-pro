@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\File;
 class UpdateService
 {
     const UPDATE_CHECK_INTERVAL = 86400; // 24 hours
-    const GITHUB_API_URL = 'https://api.github.com/repos/cedar2025/xboard/commits';
+    const GITHUB_API_URL = 'https://api.github.com/repos/svip7788/Xboard-pro/commits';
     const CACHE_UPDATE_INFO = 'UPDATE_INFO';
     const CACHE_LAST_CHECK = 'LAST_UPDATE_CHECK';
     const CACHE_UPDATE_LOCK = 'UPDATE_LOCK';
@@ -190,6 +190,17 @@ class UpdateService
             ];
         }
 
+        // 记录回滚点：当前 HEAD commit
+        $rollbackPoint = null;
+        try {
+            $head = Process::run('git rev-parse HEAD');
+            if ($head->successful()) {
+                $rollbackPoint = trim($head->output());
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Failed to capture rollback HEAD: ' . $e->getMessage());
+        }
+
         try {
             // Set update lock
             Cache::put(self::CACHE_UPDATE_LOCK, true, now()->addMinutes(30));
@@ -212,8 +223,9 @@ class UpdateService
             // 5. Create update flag
             $this->createUpdateFlag();
 
-            // 6. Restart Octane if running
+            // 6. Restart Octane + Horizon if running
             $this->restartOctane();
+            $this->restartHorizon();
 
             // Remove update lock
             Cache::forget(self::CACHE_UPDATE_LOCK);
@@ -245,12 +257,40 @@ class UpdateService
 
         } catch (\Exception $e) {
             Log::error('Update execution failed: ' . $e->getMessage());
+
+            // 回滚到之前的 HEAD（如果记录到了）
+            $rollbackMsg = '';
+            if ($rollbackPoint) {
+                try {
+                    Process::run(sprintf('git reset --hard %s', escapeshellarg($rollbackPoint)));
+                    Process::run('composer install --no-dev --optimize-autoloader');
+                    $this->updateVersionCache();
+                    $rollbackMsg = ' (已自动回滚到 ' . substr($rollbackPoint, 0, 7) . ')';
+                    Log::info('Rollback to ' . $rollbackPoint . ' succeeded');
+                } catch (\Throwable $rollbackErr) {
+                    $rollbackMsg = ' (回滚也失败: ' . $rollbackErr->getMessage() . '，请 SSH 处理)';
+                    Log::error('Rollback failed: ' . $rollbackErr->getMessage());
+                }
+            }
+
             Cache::forget(self::CACHE_UPDATE_LOCK);
-            
+
             return [
                 'success' => false,
-                'message' => __('update.failed', ['error' => $e->getMessage()])
+                'message' => __('update.failed', ['error' => $e->getMessage()]) . $rollbackMsg
             ];
+        }
+    }
+
+    protected function restartHorizon(): void
+    {
+        try {
+            $result = Process::run('php artisan horizon:terminate');
+            if ($result->successful()) {
+                Log::info('Horizon terminated, supervisor will respawn.');
+            }
+        } catch (\Throwable $e) {
+            Log::warning('Failed to terminate Horizon: ' . $e->getMessage());
         }
     }
 
@@ -387,11 +427,11 @@ class UpdateService
 
             $output = $statusResult->output();
             if (str_contains($output, 'Octane server is running')) {
-                Log::info('Restarting Octane server after update...');
-                // Update version cache before restart
+                Log::info('Reloading Octane server after update...');
                 $this->updateVersionCache();
-                Process::run('php artisan octane:stop');
-                Log::info('Octane server restarted successfully.');
+                // reload 是无缝热重启（worker 平滑替换），比 stop 更稳
+                Process::run('php artisan octane:reload');
+                Log::info('Octane server reloaded successfully.');
             } else {
                 Log::info('Octane is not running, skipping restart.');
             }

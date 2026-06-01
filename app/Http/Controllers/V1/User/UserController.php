@@ -220,4 +220,75 @@ class UserController extends Controller
         $url = $this->loginService->generateQuickLoginUrl($user, $request->input('redirect'));
         return $this->success($url);
     }
+
+    /**
+     * 获取订阅刷新解锁窗口时长（分钟），从 admin_setting 读取，clamp 到 [1, 1440]。
+     */
+    private function getSubscribeUnlockMinutes(): int
+    {
+        $minutes = (int) admin_setting('subscribe_refresh_lock_duration_minutes', 10);
+        if ($minutes < 1) {
+            $minutes = 1;
+        } elseif ($minutes > 1440) {
+            $minutes = 1440;
+        }
+        return $minutes;
+    }
+
+    /**
+     * 临时解锁订阅刷新。
+     */
+    public function unlockSubscribe(Request $request)
+    {
+        $user = $request->user();
+        $minutes = $this->getSubscribeUnlockMinutes();
+        $expiresAt = time() + $minutes * 60;
+        Cache::put(
+            CacheKey::get('SUBSCRIBE_REFRESH_ALLOWED', $user->id),
+            $expiresAt,
+            $minutes * 60
+        );
+
+        return $this->success([
+            'locked' => false,
+            'expires_at' => $expiresAt,
+            'duration_minutes' => $minutes,
+        ]);
+    }
+
+    /**
+     * 立刻锁定订阅刷新（用户主动取消窗口）。
+     */
+    public function lockSubscribe(Request $request)
+    {
+        $user = $request->user();
+        Cache::forget(CacheKey::get('SUBSCRIBE_REFRESH_ALLOWED', $user->id));
+
+        return $this->success([
+            'locked' => true,
+            'expires_at' => null,
+            'remaining_seconds' => 0,
+        ]);
+    }
+
+    /**
+     * 查询当前订阅锁定状态。
+     */
+    public function subscribeLockStatus(Request $request)
+    {
+        $user = $request->user();
+        $featureEnabled = (bool) (int) admin_setting('subscribe_refresh_lock_enable', 0);
+        $expiresAt = Cache::get(CacheKey::get('SUBSCRIBE_REFRESH_ALLOWED', $user->id));
+
+        $now = time();
+        $unlocked = $expiresAt && (int) $expiresAt > $now;
+
+        return $this->success([
+            'feature_enabled' => $featureEnabled,
+            'locked' => !$unlocked,
+            'expires_at' => $unlocked ? (int) $expiresAt : null,
+            'remaining_seconds' => $unlocked ? (int) $expiresAt - $now : 0,
+            'duration_minutes' => $this->getSubscribeUnlockMinutes(),
+        ]);
+    }
 }

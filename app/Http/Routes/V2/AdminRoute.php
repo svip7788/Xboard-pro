@@ -249,12 +249,12 @@ class AdminRoute
             });
 
             // Update
-            // $router->group([
-            //     'prefix' => 'update'
-            // ], function ($router) {
-            //     $router->get('/check', [UpdateController::class, 'checkUpdate']);
-            //     $router->post('/execute', [UpdateController::class, 'executeUpdate']);
-            // });
+            $router->group([
+                'prefix' => 'update'
+            ], function ($router) {
+                $router->get('/check', [\App\Http\Controllers\V2\Admin\UpdateController::class, 'checkUpdate']);
+                $router->post('/execute', [\App\Http\Controllers\V2\Admin\UpdateController::class, 'executeUpdate']);
+            });
 
             // Theme
             $router->group([

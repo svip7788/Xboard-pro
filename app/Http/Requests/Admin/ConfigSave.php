@@ -46,6 +46,8 @@ class ConfigSave extends FormRequest
         'show_info_to_server_enable' => '',
         'show_protocol_to_server_enable' => '',
         'subscribe_path' => '',
+        'subscribe_refresh_lock_enable' => 'boolean',
+        'subscribe_refresh_lock_duration_minutes' => 'integer|min:1|max:1440',
         // server
         'server_token' => 'nullable|min:16',
         'server_pull_interval' => 'integer',
