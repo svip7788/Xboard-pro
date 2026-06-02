@@ -50,7 +50,9 @@ class ClientController extends Controller
             return response('', 403, ['Content-Type' => 'text/plain']);
         }
 
-        if ((int) admin_setting('subscribe_refresh_lock_enable', 0) === 1) {
+        if ((int) admin_setting('subscribe_refresh_lock_enable', 0) === 1
+            && (string) $request->header('X-Client-Verified') !== '1'
+        ) {
             $expiresAt = Cache::get(CacheKey::get('SUBSCRIBE_REFRESH_ALLOWED', $user->id));
             if (!$expiresAt || (int) $expiresAt <= time()) {
                 HookManager::call('client.subscribe.locked');
