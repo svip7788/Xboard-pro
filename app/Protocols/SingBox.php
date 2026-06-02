@@ -777,9 +777,13 @@ class SingBox extends AbstractProtocol
             'tls' => [
                 'enabled' => true,
                 'insecure' => (bool) data_get($protocol_settings, 'tls.allow_insecure', false),
-                'alpn' => data_get($protocol_settings, 'alpn', ['h3']),
             ]
         ];
+
+        // anytls 走 TCP/TLS，不要默认 h3（QUIC ALPN）；仅在用户显式配置时输出
+        if ($alpn = data_get($protocol_settings, 'alpn')) {
+            $array['tls']['alpn'] = is_array($alpn) ? $alpn : [$alpn];
+        }
 
         if ($serverName = data_get($protocol_settings, 'tls.server_name')) {
             $array['tls']['server_name'] = $serverName;
