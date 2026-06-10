@@ -28,7 +28,13 @@ class CouponService
         $this->setPlanId($order->plan_id);
         $this->setUserId($order->user_id);
         $this->setPeriod($order->period);
+        // 下单时才占用单用户配额（check() 只做静态校验，不副作用，避免「验证后无法付款」）
         $this->check();
+        if (!$this->acquireUserQuota()) {
+            throw new ApiException(__('The coupon can only be used :limit_use_with_user per person', [
+                'limit_use_with_user' => $this->coupon->limit_use_with_user
+            ]));
+        }
         switch ($this->coupon->type) {
             case 1:
                 $order->discount_amount = $this->coupon->value;
@@ -47,6 +53,8 @@ class CouponService
                 ->where('limit_use', '>', 0)
                 ->decrement('limit_use');
             if ($affected === 0) {
+                // 全局额度已空，归还之前占位的单用户配额
+                $this->releaseUserQuota();
                 return false;
             }
             $this->coupon->limit_use = max(0, $this->coupon->limit_use - 1);
@@ -82,21 +90,34 @@ class CouponService
     }
 
     /**
-     * 单用户使用次数配额检查。
-     *
-     * 原实现为 count() + 后续 use() 两步非原子,高并发下同一用户可突破个人配额。
-     * 这里在 count() 之上再叠加一个 Redis 原子计数:
-     *   - 用 INCR 取得"当前占位数",满额则立刻 DECR 归还并拒绝;
-     *   - 订单正常创建 → 占位落入实际 Order 表,Redis 计数会在 TTL(30min)后
-     *     自动衰减,由后续真实订单 count() 兜底,不会长期漂移。
-     *
-     * 这不是强一致方案,但把"同一用户秒级并发超用"收敛到 Redis 原子粒度,足够对抗
-     * 普通脚本刷券。真正的强一致要落在 DB 唯一索引,超出本次修复范围。
+     * 静态单用户配额检查：仅 count 已成交订单，不写 Redis。
+     * 验证按钮和下单前置都用它，多次调用幂等。
      */
     public function checkLimitUseWithUser(): bool
     {
         $limit = (int) $this->coupon->limit_use_with_user;
         if ($limit <= 0) return true;
+
+        $usedCount = Order::where('coupon_id', $this->coupon->id)
+            ->where('user_id', $this->userId)
+            ->whereNotIn('status', [0, 2])
+            ->count();
+        return $usedCount < $limit;
+    }
+
+    /**
+     * 占用单用户配额（仅下单时调用）。
+     *
+     * 原实现把 Redis INCR 占位塞在 check() 里，导致「验证」按钮也会占位，
+     * 用户验证后再付款时第二次 check 直接踩到上限 → 报"已达上限"，付不了款。
+     *
+     * 现在拆出来：check() 只做静态校验；占位放到 use() 真正下单时进行。
+     * 失败由 use() 或外部统一调 releaseUserQuota() 回滚。
+     */
+    private function acquireUserQuota(): bool
+    {
+        $limit = (int) $this->coupon->limit_use_with_user;
+        if ($limit <= 0 || !$this->userId) return true;
 
         $usedCount = Order::where('coupon_id', $this->coupon->id)
             ->where('user_id', $this->userId)
@@ -108,7 +129,6 @@ class CouponService
 
         $remain = $limit - $usedCount;
         $key = 'coupon:user_quota:' . $this->coupon->id . ':' . $this->userId;
-        // INCR 拿到占位后的总数
         $current = (int) Redis::incr($key);
         if ($current === 1) {
             Redis::expire($key, 1800);
@@ -118,6 +138,18 @@ class CouponService
             return false;
         }
         return true;
+    }
+
+    /**
+     * 回滚 acquireUserQuota 的占位（仅 use() 后续步骤失败时调）。
+     */
+    private function releaseUserQuota(): void
+    {
+        if ((int) $this->coupon->limit_use_with_user <= 0 || !$this->userId) {
+            return;
+        }
+        $key = 'coupon:user_quota:' . $this->coupon->id . ':' . $this->userId;
+        Redis::decr($key);
     }
 
     public function check()
