@@ -45,12 +45,14 @@ class PlanController extends Controller
             
             DB::beginTransaction();
             try {
+                $extra = $params['extra_group_ids'] ?? null;
+                // 空数组也按 NULL 存，避免 v2_user.extra_group_ids 出现 "[]" 干扰判定
+                $extraNormalized = (is_array($extra) && count($extra) > 0)
+                    ? array_values(array_unique(array_map('intval', $extra)))
+                    : null;
+                $extraEncoded = $extraNormalized !== null ? json_encode($extraNormalized) : null;
+
                 if ($request->input('force_update')) {
-                    $extra = $params['extra_group_ids'] ?? null;
-                    // 空数组也按 NULL 存，避免 v2_user.extra_group_ids 出现 "[]" 干扰判定
-                    $extraEncoded = (is_array($extra) && count($extra) > 0)
-                        ? json_encode(array_values(array_unique(array_map('intval', $extra))))
-                        : null;
                     User::where('plan_id', $plan->id)->update([
                         'group_id' => $params['group_id'],
                         'extra_group_ids' => $extraEncoded,
@@ -58,6 +60,16 @@ class PlanController extends Controller
                         'speed_limit' => $params['speed_limit'],
                         'device_limit' => $params['device_limit'],
                     ]);
+                } else {
+                    // 即便没勾"强制更新"，附加权限组的变更也自动同步给该套餐所有用户。
+                    // 附加组是纯权限放大，自动同步无负面影响，避免管理员忘勾导致用户拉不到新组节点。
+                    $oldExtra = is_array($plan->extra_group_ids) && count($plan->extra_group_ids) > 0
+                        ? array_values(array_unique(array_map('intval', $plan->extra_group_ids)))
+                        : null;
+                    if ($oldExtra !== $extraNormalized) {
+                        User::where('plan_id', $plan->id)
+                            ->update(['extra_group_ids' => $extraEncoded]);
+                    }
                 }
                 $plan->update($params);
                 DB::commit();
