@@ -246,12 +246,28 @@ class UserService
 
         $user->plan_id = $plan->id;
         $user->group_id = $plan->group_id;
+        $user->extra_group_ids = self::normalizePlanExtraGroupIds($plan->extra_group_ids);
         $user->transfer_enable = $plan->transfer_enable * 1073741824;
         $user->speed_limit = $plan->speed_limit;
 
         if ($expiredAt) {
             $user->expired_at = $expiredAt;
         }
+    }
+
+    /**
+     * 规范化套餐附加组 → 写入 user.extra_group_ids 的格式。
+     */
+    public static function normalizePlanExtraGroupIds($value): ?array
+    {
+        if (!is_array($value)) {
+            return null;
+        }
+        $clean = array_values(array_unique(array_filter(
+            array_map('intval', $value),
+            fn ($v) => $v > 0
+        )));
+        return count($clean) > 0 ? $clean : null;
     }
 
     /**
@@ -266,6 +282,7 @@ class UserService
     {
         $user->plan_id = $plan->id;
         $user->group_id = $plan->group_id;
+        $user->extra_group_ids = self::normalizePlanExtraGroupIds($plan->extra_group_ids);
         $user->transfer_enable = $plan->transfer_enable * 1073741824;
         $user->speed_limit = $plan->speed_limit;
         $user->device_limit = $plan->device_limit;
@@ -308,6 +325,7 @@ class UserService
         $user->transfer_enable = $plan->transfer_enable * 1073741824;
         $user->plan_id = $plan->id;
         $user->group_id = $plan->group_id;
+        $user->extra_group_ids = self::normalizePlanExtraGroupIds($plan->extra_group_ids);
         $user->expired_at = time() + (admin_setting('try_out_hour', 1) * 3600);
         $user->speed_limit = $plan->speed_limit;
     }

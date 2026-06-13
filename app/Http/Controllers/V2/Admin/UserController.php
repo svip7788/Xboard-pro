@@ -238,6 +238,7 @@ class UserController extends Controller
                 return $this->fail([400202, '订阅计划不存在']);
             }
             $params['group_id'] = $plan->group_id;
+            $params['extra_group_ids'] = \App\Services\UserService::normalizePlanExtraGroupIds($plan->extra_group_ids);
         }
         // 处理邀请用户
         if ($request->input('invite_user_email') && $inviteUser = User::byEmail($request->input('invite_user_email'))->first()) {

@@ -56,10 +56,16 @@ class NodeSyncService
      */
     public static function notifyUserChanged(User $user): void
     {
-        if (!$user->group_id)
+        $groupIds = ServerService::getUserGroupIds($user);
+        if (empty($groupIds)) {
             return;
+        }
 
-        $servers = Server::whereJsonContains('group_ids', (string) $user->group_id)->get();
+        $servers = Server::where(function ($q) use ($groupIds) {
+            foreach ($groupIds as $gid) {
+                $q->orWhereJsonContains('group_ids', (string) $gid);
+            }
+        })->get();
         foreach ($servers as $server) {
             if (!self::isNodeOnline($server->id))
                 continue;

@@ -46,8 +46,14 @@ class PlanController extends Controller
             DB::beginTransaction();
             try {
                 if ($request->input('force_update')) {
+                    $extra = $params['extra_group_ids'] ?? null;
+                    // 空数组也按 NULL 存，避免 v2_user.extra_group_ids 出现 "[]" 干扰判定
+                    $extraEncoded = (is_array($extra) && count($extra) > 0)
+                        ? json_encode(array_values(array_unique(array_map('intval', $extra))))
+                        : null;
                     User::where('plan_id', $plan->id)->update([
                         'group_id' => $params['group_id'],
+                        'extra_group_ids' => $extraEncoded,
                         'transfer_enable' => $params['transfer_enable'] * 1073741824,
                         'speed_limit' => $params['speed_limit'],
                         'device_limit' => $params['device_limit'],

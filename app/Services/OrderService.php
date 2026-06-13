@@ -372,6 +372,7 @@ class OrderService
             app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER);
         $this->user->plan_id = $plan->id;
         $this->user->group_id = $plan->group_id;
+        $this->user->extra_group_ids = UserService::normalizePlanExtraGroupIds($plan->extra_group_ids);
         $this->user->expired_at = $this->getTime($order->period, $this->user->expired_at);
     }
 
@@ -381,6 +382,7 @@ class OrderService
         $this->user->transfer_enable = $plan->transfer_enable * 1073741824;
         $this->user->plan_id = $plan->id;
         $this->user->group_id = $plan->group_id;
+        $this->user->extra_group_ids = UserService::normalizePlanExtraGroupIds($plan->extra_group_ids);
         $this->user->expired_at = NULL;
     }
 

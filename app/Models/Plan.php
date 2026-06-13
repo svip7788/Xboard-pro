@@ -75,6 +75,7 @@ class Plan extends Model
 
     protected $fillable = [
         'group_id',
+        'extra_group_ids',
         'transfer_enable',
         'name',
         'speed_limit',
@@ -96,6 +97,7 @@ class Plan extends Model
         'created_at' => 'timestamp',
         'updated_at' => 'timestamp',
         'group_id' => 'integer',
+        'extra_group_ids' => 'array',
         'prices' => 'array',
         'tags' => 'array',
         'reset_traffic_method' => 'integer',

@@ -48,13 +48,38 @@ class ServerService
     }
 
     /**
+     * 收集用户可用的全部权限组 ID（含主组 + 套餐附加组）。
+     */
+    public static function getUserGroupIds(User $user): array
+    {
+        $ids = [];
+        if ($user->group_id) {
+            $ids[] = (int) $user->group_id;
+        }
+        foreach ((array) ($user->extra_group_ids ?? []) as $gid) {
+            if ((int) $gid > 0) {
+                $ids[] = (int) $gid;
+            }
+        }
+        return array_values(array_unique($ids));
+    }
+
+    /**
      * 获取指定用户可用的服务器列表
      * @param User $user
      * @return array
      */
     public static function getAvailableServers(User $user): array
     {
-        $servers = Server::whereJsonContains('group_ids', (string) $user->group_id)
+        $userGroups = self::getUserGroupIds($user);
+        if (empty($userGroups)) {
+            return [];
+        }
+        $servers = Server::where(function ($q) use ($userGroups) {
+            foreach ($userGroups as $gid) {
+                $q->orWhereJsonContains('group_ids', (string) $gid);
+            }
+        })
             ->where('show', true)
             ->where(function ($query) {
                 $query->whereNull('transfer_enable')
@@ -93,8 +118,14 @@ class ServerService
         if (empty($groupIds)) {
             return collect();
         }
+        // 匹配主 group_id 或 extra_group_ids 任一命中 node.group_ids
         $users = User::toBase()
-            ->whereIn('group_id', $groupIds)
+            ->where(function ($q) use ($groupIds) {
+                $q->whereIn('group_id', $groupIds);
+                foreach ($groupIds as $gid) {
+                    $q->orWhereJsonContains('extra_group_ids', (int) $gid);
+                }
+            })
             ->whereRaw('u + d < transfer_enable')
             ->where(function ($query) {
                 $query->where('expired_at', '>=', time())
@@ -198,7 +229,12 @@ class ServerService
 
         $allowed = User::toBase()
             ->whereIn('id', $uids)
-            ->whereIn('group_id', $groupIds)
+            ->where(function ($q) use ($groupIds) {
+                $q->whereIn('group_id', $groupIds);
+                foreach ($groupIds as $gid) {
+                    $q->orWhereJsonContains('extra_group_ids', (int) $gid);
+                }
+            })
             ->pluck('id')
             ->all();
 
