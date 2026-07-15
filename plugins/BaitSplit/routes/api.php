@@ -12,9 +12,11 @@ Route::prefix("api/v2/{$securePath}/plugin/bait-split")
     ->middleware('admin')
     ->group(function (): void {
         Route::get('/meta', [AdminController::class, 'meta']);
-        Route::get('/status', [AdminController::class, 'status']);
-        Route::post('/config', [AdminController::class, 'saveConfig']);
-        Route::post('/start', [AdminController::class, 'start']);
-        Route::post('/result', [AdminController::class, 'result']);
-        Route::post('/disable', [AdminController::class, 'disable']);
+        Route::get('/campaigns', [AdminController::class, 'campaigns']);
+        Route::post('/campaigns', [AdminController::class, 'saveCampaign']);
+        Route::delete('/campaigns/{campaignId}', [AdminController::class, 'deleteCampaign']);
+        Route::post('/campaigns/{campaignId}/start', [AdminController::class, 'start']);
+        Route::post('/campaigns/{campaignId}/result', [AdminController::class, 'result']);
+        Route::post('/campaigns/{campaignId}/disable', [AdminController::class, 'disable']);
+        Route::post('/campaigns/{campaignId}/reset', [AdminController::class, 'reset']);
     });

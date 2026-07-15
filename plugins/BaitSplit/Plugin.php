@@ -15,6 +15,11 @@ class Plugin extends AbstractPlugin
         $this->filter('client.subscribe.servers', [$this, 'replaceServerHosts'], 10);
     }
 
+    public function update(string $oldVersion, string $newVersion): void
+    {
+        (new BaitSplitService($this->getConfig()))->persistMigration();
+    }
+
     public function replaceServerHosts(
         array $servers,
         User $user,

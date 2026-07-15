@@ -3,12 +3,10 @@
 namespace Plugin\BaitSplit\Controllers;
 
 use App\Http\Controllers\PluginController;
-use App\Models\Plugin as PluginModel;
 use App\Models\Server;
 use App\Models\ServerGroup;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Validation\Rule;
 use Plugin\BaitSplit\Services\BaitSplitService;
 
@@ -30,17 +28,28 @@ class AdminController extends PluginController
                 ->where('show', 1)
                 ->orderBy('sort')
                 ->get(['id', 'name', 'type']),
-            'config' => $this->pluginConfig(),
+            'campaigns' => BaitSplitService::fromDatabase()->campaigns(),
         ]);
     }
 
-    public function saveConfig(Request $request): JsonResponse
+    public function campaigns(): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+
+        return $this->success(BaitSplitService::fromDatabase()->campaigns());
+    }
+
+    public function saveCampaign(Request $request): JsonResponse
     {
         if ($response = $this->ensureEnabled()) {
             return $response;
         }
 
         $data = $request->validate([
+            'campaign_id' => ['nullable', 'string', 'max:64'],
+            'name' => ['required', 'string', 'max:50'],
             'target_group_id' => [
                 'required',
                 'integer',
@@ -56,88 +65,88 @@ class AdminController extends PluginController
             ],
         ]);
 
-        $plugin = PluginModel::query()->where('code', 'bait_split')->firstOrFail();
-        $config = $this->pluginConfig();
-        $config['target_group_id'] = $data['target_group_id'];
-        $config['target_server_ids'] = $data['target_server_ids'];
-        $plugin->config = json_encode($config);
-        $plugin->save();
-        Cache::forget('plugin_config_bait_split');
-
-        return $this->success([
-            'config' => $data,
-            'status' => BaitSplitService::fromDatabase()->status(),
-        ]);
-    }
-
-    public function status(): JsonResponse
-    {
-        if ($response = $this->ensureEnabled()) {
-            return $response;
-        }
-
-        return $this->success(BaitSplitService::fromDatabase()->status());
-    }
-
-    public function start(Request $request): JsonResponse
-    {
-        if ($response = $this->ensureEnabled()) {
-            return $response;
-        }
-
-        $data = $request->validate([
-            'host_a' => ['required', 'string', 'max:253'],
-            'host_b' => ['required', 'string', 'max:253', 'different:host_a'],
-            'prefix' => ['nullable', 'string', 'regex:/^[01]*$/', 'max:64'],
-        ]);
-
-        return $this->success(BaitSplitService::fromDatabase()->start(
-            $data['host_a'],
-            $data['host_b'],
-            array_key_exists('prefix', $data) ? $data['prefix'] : null
+        return $this->success(BaitSplitService::fromDatabase()->saveCampaign(
+            $data['campaign_id'] ?? null,
+            $data['name'],
+            $data['target_group_id'],
+            $data['target_server_ids']
         ));
     }
 
-    public function result(Request $request): JsonResponse
+    public function deleteCampaign(string $campaignId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+
+        return $this->success(
+            BaitSplitService::fromDatabase()->deleteCampaign($campaignId)
+        );
+    }
+
+    public function start(Request $request, string $campaignId): JsonResponse
     {
         if ($response = $this->ensureEnabled()) {
             return $response;
         }
 
         $data = $request->validate([
-            'result' => ['required', Rule::in(['a', 'b', 'both', 'none'])],
+            'domains' => ['required', 'array', 'min:2', 'max:10'],
+            'domains.*' => ['required', 'string', 'max:253', 'distinct'],
         ]);
 
         return $this->success(
-            BaitSplitService::fromDatabase()->recordResult($data['result'])
+            BaitSplitService::fromDatabase()->startCampaign(
+                $campaignId,
+                $data['domains']
+            )
         );
     }
 
-    public function disable(): JsonResponse
+    public function result(Request $request, string $campaignId): JsonResponse
     {
         if ($response = $this->ensureEnabled()) {
             return $response;
         }
 
-        return $this->success(BaitSplitService::fromDatabase()->disable());
+        $data = $request->validate([
+            'positive_buckets' => ['present', 'array'],
+            'positive_buckets.*' => ['integer', 'min:0', 'max:9', 'distinct'],
+        ]);
+
+        return $this->success(
+            BaitSplitService::fromDatabase()->recordResult(
+                $campaignId,
+                $data['positive_buckets']
+            )
+        );
+    }
+
+    public function disable(string $campaignId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+
+        return $this->success(
+            BaitSplitService::fromDatabase()->disableCampaign($campaignId)
+        );
+    }
+
+    public function reset(string $campaignId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+
+        return $this->success(
+            BaitSplitService::fromDatabase()->resetCampaign($campaignId)
+        );
     }
 
     private function ensureEnabled(): ?JsonResponse
     {
         $error = $this->beforePluginAction();
         return $error ? $this->fail($error) : null;
-    }
-
-    private function pluginConfig(): array
-    {
-        $config = PluginModel::query()
-            ->where('code', 'bait_split')
-            ->value('config');
-
-        if (is_array($config)) {
-            return $config;
-        }
-
-        return is_string($config) ? (json_decode($config, true) ?: []) : [];
     }
 }

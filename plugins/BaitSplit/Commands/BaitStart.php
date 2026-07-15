@@ -8,33 +8,32 @@ use Plugin\BaitSplit\Services\BaitSplitService;
 class BaitStart extends Command
 {
     protected $signature = 'bait:start
-        {--host-a= : A 组使用的新域名或 IP}
-        {--host-b= : B 组使用的新域名或 IP}
-        {--prefix= : 可选，手动指定二进制分支前缀}';
+        {campaign=legacy : 排查任务 ID}
+        {--domain=* : 分组域名或 IP，可重复 2 至 10 次}
+        {--host-a= : 兼容旧命令的 A 组域名}
+        {--host-b= : 兼容旧命令的 B 组域名}';
 
-    protected $description = '启动一轮订阅诱饵 A/B 分组';
+    protected $description = '启动指定任务的一轮多域名分组';
 
     public function handle(): int
     {
         try {
-            $hostA = (string) $this->option('host-a');
-            $hostB = (string) $this->option('host-b');
-            if ($hostA === '' || $hostB === '') {
-                $this->error('必须同时提供 --host-a 和 --host-b');
-                return self::FAILURE;
+            $domains = (array) $this->option('domain');
+            if ($domains === [] && $this->option('host-a') && $this->option('host-b')) {
+                $domains = [
+                    (string) $this->option('host-a'),
+                    (string) $this->option('host-b'),
+                ];
             }
-
-            $prefix = $this->option('prefix');
-            $status = BaitSplitService::fromDatabase()->start(
-                $hostA,
-                $hostB,
-                $prefix === null ? null : (string) $prefix
+            $status = BaitSplitService::fromDatabase()->startCampaign(
+                (string) $this->argument('campaign'),
+                $domains
             );
 
             $this->info("第 {$status['round']} 轮已启动");
-            $this->line("当前分支：{$status['active_prefix']}");
-            $this->line("A 组：{$status['group_counts']['A']} 人");
-            $this->line("B 组：{$status['group_counts']['B']} 人");
+            foreach ($status['bucket_labels'] as $index => $label) {
+                $this->line("{$label} 组：{$status['bucket_counts'][$index]} 人");
+            }
             return self::SUCCESS;
         } catch (\Throwable $exception) {
             $this->error($exception->getMessage());

@@ -1,8 +1,8 @@
 {
     "name": "订阅诱饵分组",
     "code": "bait_split",
-    "version": "1.1.2",
-    "description": "按用户稳定分组并替换指定节点域名，用于定位订阅泄露账号",
+    "version": "2.0.0",
+    "description": "为多个用户组分别执行多域名稳定分组，用于定位订阅泄露账号",
     "author": "XBoard Custom",
     "type": "feature",
     "require": {
