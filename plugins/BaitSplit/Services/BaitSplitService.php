@@ -36,31 +36,30 @@ class BaitSplitService
     {
         foreach ($this->state()['campaigns'] as $campaign) {
             if (
-                !$campaign['enabled']
+                !$campaign['serving']
                 || (int) $campaign['target_group_id'] !== (int) $user->group_id
-                || !$this->matchesPath((int) $user->id, $campaign)
             ) {
                 continue;
             }
 
-            $bucket = $this->bucketForCampaign(
-                (int) $user->id,
-                count($campaign['active_path']),
-                $campaign
-            );
-            $host = $campaign['domains'][$bucket] ?? null;
-            if (!$host) {
+            $assignment = $this->assignmentForUser($campaign, (int) $user->id);
+            if (!$assignment) {
                 continue;
             }
 
             foreach ($servers as &$server) {
                 if (in_array((int) ($server['id'] ?? 0), $campaign['target_server_ids'], true)) {
-                    $server['host'] = $host;
+                    $server['host'] = $assignment['host'];
                 }
             }
             unset($server);
 
-            $this->recordExposure($campaign, $bucket, (int) $user->id);
+            $this->recordExposure(
+                $campaign,
+                $assignment['bucket'],
+                (int) $user->id,
+                $assignment['round']
+            );
             break;
         }
 
@@ -73,6 +72,48 @@ class BaitSplitService
             fn(array $campaign): array => $this->campaignStatus($campaign),
             $this->state()['campaigns']
         ));
+    }
+
+    public function exposureUsers(string $campaignId): array
+    {
+        $state = $this->state();
+        $campaign = $this->requireCampaign($state, $campaignId);
+        $assignmentUserIds = [];
+
+        foreach ($campaign['branch_hosts'] as $index => $assignment) {
+            try {
+                $key = $this->exposureKey(
+                    $campaign,
+                    $assignment['round'],
+                    $assignment['bucket']
+                );
+                $assignmentUserIds[$index] = $this->normalizeIds(Redis::smembers($key));
+                sort($assignmentUserIds[$index]);
+            } catch (\Throwable) {
+                $assignmentUserIds[$index] = [];
+            }
+        }
+
+        $users = User::query()
+            ->whereIn('id', array_values(array_unique(array_merge([], ...$assignmentUserIds))))
+            ->get(['id', 'email'])
+            ->keyBy(fn(User $user): int => (int) $user->id);
+
+        return array_map(
+            fn(array $assignment, int $index): array => [
+                'path' => $assignment['path'],
+                'label' => $this->pathLabel($assignment['path']),
+                'host' => $assignment['host'],
+                'users' => array_values(array_filter(array_map(
+                    fn(int $userId): ?array => isset($users[$userId])
+                        ? ['id' => $userId, 'email' => $users[$userId]->email]
+                        : null,
+                    $assignmentUserIds[$index]
+                ))),
+            ],
+            $campaign['branch_hosts'],
+            array_keys($campaign['branch_hosts'])
+        );
     }
 
     public function persistMigration(): void
@@ -99,13 +140,16 @@ class BaitSplitService
         $existing = $state['campaigns'][$campaignId] ?? null;
         if (
             $existing
-            && $existing['enabled']
+            && $existing['serving']
             && (int) $existing['target_group_id'] !== $targetGroupId
         ) {
             throw new InvalidArgumentException('运行中的任务不能修改用户组，请先停止并重置');
         }
 
         $campaign = $existing ?: $this->newCampaign($campaignId);
+        if (!$existing) {
+            $campaign['generation'] = bin2hex(random_bytes(8));
+        }
         if ($existing && (int) $existing['target_group_id'] !== $targetGroupId) {
             if (
                 (int) $existing['target_group_id'] > 0
@@ -132,7 +176,7 @@ class BaitSplitService
     {
         $state = $this->state();
         $campaign = $this->requireCampaign($state, $campaignId);
-        if ($campaign['enabled']) {
+        if ($campaign['serving']) {
             throw new InvalidArgumentException('运行中的任务不能删除，请先停止');
         }
 
@@ -149,6 +193,9 @@ class BaitSplitService
         $domains = $this->normalizeDomains($domains);
         $bucketCount = count($domains);
 
+        if ($campaign['enabled']) {
+            throw new InvalidArgumentException('当前轮次已经启动');
+        }
         if ($campaign['target_server_ids'] === []) {
             throw new InvalidArgumentException('请先选择需要替换域名的节点');
         }
@@ -161,7 +208,7 @@ class BaitSplitService
         foreach ($state['campaigns'] as $other) {
             if (
                 $other['id'] !== $campaignId
-                && $other['enabled']
+                && $other['serving']
                 && (int) $other['target_group_id'] === (int) $campaign['target_group_id']
             ) {
                 throw new InvalidArgumentException('同一用户组已有运行中的排查任务');
@@ -179,6 +226,8 @@ class BaitSplitService
         $campaign['round']++;
         $campaign['domains'] = $domains;
         $campaign['enabled'] = true;
+        $campaign['serving'] = true;
+        $campaign['branch_hosts'] = $this->replaceActiveBranchHosts($campaign, $domains);
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
 
@@ -263,6 +312,7 @@ class BaitSplitService
         $state = $this->state();
         $campaign = $this->requireCampaign($state, $campaignId);
         $campaign['enabled'] = false;
+        $campaign['serving'] = false;
         $campaign['domains'] = [];
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
@@ -274,7 +324,7 @@ class BaitSplitService
     {
         $state = $this->state();
         $campaign = $this->requireCampaign($state, $campaignId);
-        if ($campaign['enabled']) {
+        if ($campaign['serving']) {
             throw new InvalidArgumentException('请先停止运行中的任务');
         }
 
@@ -282,6 +332,7 @@ class BaitSplitService
             'name' => $campaign['name'],
             'target_group_id' => $campaign['target_group_id'],
             'target_server_ids' => $campaign['target_server_ids'],
+            'generation' => bin2hex(random_bytes(8)),
         ]);
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
@@ -305,12 +356,10 @@ class BaitSplitService
         }
 
         $exposedCounts = array_fill(0, $campaign['bucket_count'], 0);
-        if ($campaign['round'] > 0) {
+        if ($campaign['enabled'] && $campaign['round'] > 0) {
             foreach ($exposedCounts as $bucket => $_) {
                 try {
-                    $key = $campaign['hash_algo'] === 'bit'
-                        ? "bait_split:exposure:{$campaign['round']}:{$this->bucketLabel($bucket)}"
-                        : $this->exposureKey($campaign['id'], $campaign['round'], $bucket);
+                    $key = $this->exposureKey($campaign, $campaign['round'], $bucket);
                     $exposedCounts[$bucket] = (int) Redis::scard($key);
                 } catch (\Throwable) {
                     break;
@@ -322,6 +371,7 @@ class BaitSplitService
             'id' => $campaign['id'],
             'name' => $campaign['name'],
             'enabled' => $campaign['enabled'],
+            'serving' => $campaign['serving'],
             'target_group_id' => $campaign['target_group_id'],
             'target_server_ids' => $campaign['target_server_ids'],
             'round' => $campaign['round'],
@@ -339,6 +389,16 @@ class BaitSplitService
             ),
             'positive_queue' => array_map([$this, 'pathLabel'], $campaign['positive_queue']),
             'deferred_queue' => array_map([$this, 'pathLabel'], $campaign['deferred_queue']),
+            'branch_hosts' => array_map(
+                fn(array $assignment): array => [
+                    'path' => $assignment['path'],
+                    'label' => $this->pathLabel($assignment['path']),
+                    'host' => $assignment['host'],
+                    'round' => $assignment['round'],
+                    'bucket' => $assignment['bucket'],
+                ],
+                $campaign['branch_hosts']
+            ),
             'findings' => array_values($campaign['findings']),
         ];
     }
@@ -373,6 +433,7 @@ class BaitSplitService
         $campaign['target_group_id'] = $groupId;
         $campaign['target_server_ids'] = $serverIds;
         $campaign['enabled'] = $groupId > 0 && (bool) ($legacy['enabled'] ?? false);
+        $campaign['serving'] = $campaign['enabled'];
         $campaign['secret'] = (string) ($legacy['secret'] ?? '');
         $campaign['hash_algo'] = 'bit';
         $campaign['round'] = (int) ($legacy['round'] ?? 0);
@@ -389,6 +450,12 @@ class BaitSplitService
             $legacy['host_a'] ?? '',
             $legacy['host_b'] ?? '',
         ]));
+        if ($campaign['serving'] && $campaign['domains'] !== []) {
+            $campaign['branch_hosts'] = $this->replaceActiveBranchHosts(
+                $campaign,
+                $campaign['domains']
+            );
+        }
 
         return ['version' => 2, 'campaigns' => ['legacy' => $campaign]];
     }
@@ -406,6 +473,8 @@ class BaitSplitService
             'target_group_id' => 0,
             'target_server_ids' => [],
             'enabled' => false,
+            'serving' => false,
+            'generation' => '',
             'secret' => '',
             'hash_algo' => 'mod',
             'round' => 0,
@@ -414,6 +483,7 @@ class BaitSplitService
             'active_path' => [],
             'positive_queue' => [],
             'deferred_queue' => [],
+            'branch_hosts' => [],
             'findings' => [],
             'history' => [],
         ];
@@ -422,11 +492,14 @@ class BaitSplitService
     private function normalizeCampaign(array $campaign, string $id): array
     {
         $hasHashAlgorithm = array_key_exists('hash_algo', $campaign);
+        $hasServing = array_key_exists('serving', $campaign);
+        $hasBranchHosts = array_key_exists('branch_hosts', $campaign);
         $campaign = array_merge($this->newCampaign($id), $campaign);
         $campaign['id'] = $id;
         $campaign['target_group_id'] = (int) $campaign['target_group_id'];
         $campaign['target_server_ids'] = $this->normalizeIds($campaign['target_server_ids']);
         $campaign['bucket_count'] = (int) $campaign['bucket_count'];
+        $campaign['generation'] = (string) $campaign['generation'];
         $campaign['hash_algo'] = $id === 'legacy' && !$hasHashAlgorithm
             ? 'bit'
             : ($campaign['hash_algo'] === 'bit' ? 'bit' : 'mod');
@@ -434,6 +507,16 @@ class BaitSplitService
         $campaign['positive_queue'] = $this->normalizePaths($campaign['positive_queue']);
         $campaign['deferred_queue'] = $this->normalizePaths($campaign['deferred_queue']);
         $campaign['domains'] = is_array($campaign['domains']) ? array_values($campaign['domains']) : [];
+        $campaign['serving'] = $hasServing
+            ? (bool) $campaign['serving']
+            : (bool) $campaign['enabled'];
+        $campaign['branch_hosts'] = $this->normalizeBranchHosts($campaign['branch_hosts']);
+        if (!$hasBranchHosts && $campaign['serving'] && $campaign['domains'] !== []) {
+            $campaign['branch_hosts'] = $this->replaceActiveBranchHosts(
+                $campaign,
+                $campaign['domains']
+            );
+        }
         $campaign['findings'] = is_array($campaign['findings']) ? $campaign['findings'] : [];
         $campaign['history'] = is_array($campaign['history']) ? $campaign['history'] : [];
         return $campaign;
@@ -592,6 +675,74 @@ class BaitSplitService
             : [];
     }
 
+    private function normalizeBranchHosts(mixed $assignments): array
+    {
+        if (!is_array($assignments)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(
+            function ($assignment): ?array {
+                if (!is_array($assignment) || trim((string) ($assignment['host'] ?? '')) === '') {
+                    return null;
+                }
+                return [
+                    'path' => $this->normalizePath($assignment['path'] ?? []),
+                    'host' => trim((string) $assignment['host']),
+                    'round' => max(0, (int) ($assignment['round'] ?? 0)),
+                    'bucket' => max(0, (int) ($assignment['bucket'] ?? 0)),
+                ];
+            },
+            $assignments
+        )));
+    }
+
+    private function replaceActiveBranchHosts(array $campaign, array $domains): array
+    {
+        $assignments = array_values(array_filter(
+            $campaign['branch_hosts'],
+            fn(array $assignment): bool => !$this->pathStartsWith(
+                $assignment['path'],
+                $campaign['active_path']
+            )
+        ));
+
+        foreach ($domains as $bucket => $host) {
+            $assignments[] = [
+                'path' => [...$campaign['active_path'], $bucket],
+                'host' => $host,
+                'round' => $campaign['round'],
+                'bucket' => $bucket,
+            ];
+        }
+
+        usort(
+            $assignments,
+            fn(array $left, array $right): int => $left['path'] <=> $right['path']
+        );
+        return $assignments;
+    }
+
+    private function pathStartsWith(array $path, array $prefix): bool
+    {
+        return array_slice($path, 0, count($prefix)) === $prefix;
+    }
+
+    private function assignmentForUser(array $campaign, int $userId): ?array
+    {
+        $assignments = $campaign['branch_hosts'];
+        usort(
+            $assignments,
+            fn(array $left, array $right): int => count($right['path']) <=> count($left['path'])
+        );
+        foreach ($assignments as $assignment) {
+            if ($this->matchesPath($userId, $campaign, $assignment['path'])) {
+                return $assignment;
+            }
+        }
+        return null;
+    }
+
     private function uniquePaths(array $paths): array
     {
         $unique = [];
@@ -629,12 +780,16 @@ class BaitSplitService
         return chr(65 + $index);
     }
 
-    private function recordExposure(array $campaign, int $bucket, int $userId): void
+    private function recordExposure(
+        array $campaign,
+        int $bucket,
+        int $userId,
+        ?int $round = null
+    ): void
     {
         try {
-            $key = $campaign['hash_algo'] === 'bit'
-                ? "bait_split:exposure:{$campaign['round']}:{$this->bucketLabel($bucket)}"
-                : $this->exposureKey($campaign['id'], $campaign['round'], $bucket);
+            $round ??= $campaign['round'];
+            $key = $this->exposureKey($campaign, $round, $bucket);
             Redis::sadd($key, (string) $userId);
             Redis::expire($key, 86400 * 30);
         } catch (\Throwable) {
@@ -642,8 +797,14 @@ class BaitSplitService
         }
     }
 
-    private function exposureKey(string $campaignId, int $round, int $bucket): string
+    private function exposureKey(array $campaign, int $round, int $bucket): string
     {
-        return "bait_split:exposure:{$campaignId}:{$round}:{$bucket}";
+        if ($campaign['generation'] === '' && $campaign['hash_algo'] === 'bit') {
+            return "bait_split:exposure:{$round}:{$this->bucketLabel($bucket)}";
+        }
+        if ($campaign['generation'] === '') {
+            return "bait_split:exposure:{$campaign['id']}:{$round}:{$bucket}";
+        }
+        return "bait_split:exposure:{$campaign['id']}:{$campaign['generation']}:{$round}:{$bucket}";
     }
 }

@@ -13,6 +13,7 @@ Route::prefix("api/v2/{$securePath}/plugin/bait-split")
     ->group(function (): void {
         Route::get('/meta', [AdminController::class, 'meta']);
         Route::get('/campaigns', [AdminController::class, 'campaigns']);
+        Route::get('/campaigns/{campaignId}/exposures', [AdminController::class, 'exposures']);
         Route::post('/campaigns', [AdminController::class, 'saveCampaign']);
         Route::delete('/campaigns/{campaignId}', [AdminController::class, 'deleteCampaign']);
         Route::post('/campaigns/{campaignId}/start', [AdminController::class, 'start']);

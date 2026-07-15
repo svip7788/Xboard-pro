@@ -42,6 +42,17 @@ class AdminController extends PluginController
         return $this->success(BaitSplitService::fromDatabase()->campaigns());
     }
 
+    public function exposures(string $campaignId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()->exposureUsers($campaignId)
+        );
+    }
+
     public function saveCampaign(Request $request): JsonResponse
     {
         if ($response = $this->ensureEnabled()) {

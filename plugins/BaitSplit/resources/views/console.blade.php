@@ -37,6 +37,7 @@
         .actions { display: flex; flex-wrap: wrap; gap: 10px; }
         button { padding: 9px 16px; color: #fff; background: var(--primary); border: 0; border-radius: 9px; cursor: pointer; }
         button.secondary { color: var(--text); background: #e9edf5; }
+        button.compact { margin-top: 8px; padding: 5px 10px; font-size: 12px; }
         button.danger { background: var(--danger); } button.warning { background: var(--warning); }
         button:disabled { opacity: .45; cursor: not-allowed; }
         .pill { padding: 5px 11px; border-radius: 999px; font-weight: 700; }
@@ -57,6 +58,14 @@
             transition: opacity .2s,transform .2s,visibility .2s; pointer-events: none;
         }
         .toast.show { opacity: 1; visibility: visible; transform: translate(-50%,0); }
+        .loading-overlay,.modal { display: none; position: fixed; inset: 0; z-index: 9997; align-items: center; justify-content: center; background: rgba(23,32,51,.25); }
+        .loading-overlay.show,.modal.show { display: flex; }
+        .loading-box { display: flex; align-items: center; gap: 10px; padding: 13px 18px; background: #fff; border-radius: 10px; box-shadow: 0 8px 28px rgba(22,32,51,.2); }
+        .spinner { width: 18px; height: 18px; border: 2px solid #dce3f5; border-top-color: var(--primary); border-radius: 50%; animation: spin .7s linear infinite; }
+        .modal { z-index: 10000; padding: 16px; }
+        .modal-card { width: min(680px,100%); max-height: 80vh; overflow: auto; padding: 20px; background: #fff; border-radius: 14px; box-shadow: 0 12px 40px rgba(22,32,51,.25); }
+        .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
         table { width: 100%; border-collapse: collapse; } th,td { padding: 9px; text-align: left; border-bottom: 1px solid var(--line); }
         @media (max-width:800px) {
             .card { grid-column: 1/-1; } .stats { grid-template-columns: repeat(2,1fr); }
@@ -77,6 +86,21 @@
 
     <div id="notice" class="toast"></div>
     <div id="authWarning" class="notice error">未检测到管理后台登录令牌，请重新登录后台后打开本页。</div>
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="loading-box"><span class="spinner"></span><span id="loadingText">正在刷新任务数据…</span></div>
+    </div>
+    <div id="exposureModal" class="modal">
+        <div class="modal-card">
+            <div class="modal-head">
+                <h2 id="exposureTitle">本轮拉取用户</h2>
+                <button id="closeExposureModal" type="button" class="secondary">关闭</button>
+            </div>
+            <table>
+                <thead><tr><th>用户 ID</th><th>邮箱</th></tr></thead>
+                <tbody id="exposureUsers"></tbody>
+            </table>
+        </div>
+    </div>
 
     <div class="grid">
         <section class="card wide">
@@ -146,7 +170,13 @@
                 <button id="recordResult" type="button">记录勾选的被墙分组</button>
                 <button id="recordNone" type="button" class="secondary">所有分组都未被墙</button>
             </div>
-            <p class="hint">可以同时勾选 A、B、C 等多个分组，系统会分别加入待排查队列。</p>
+            <p class="hint">被墙组会优先继续细分；未被墙组进入延后复查队列，避免漏掉其他泄露者。</p>
+        </section>
+
+        <section class="card wide">
+            <h2>当前分支 IP</h2>
+            <div id="branchHosts" class="buckets"><span class="hint">启动任务后显示</span></div>
+            <p class="hint">继续细分被墙组时，其他分支仍保持原来的 IP。</p>
         </section>
 
         <section class="card">
@@ -174,6 +204,7 @@
     let selectedNodeIds = new Set();
     let noticeTimer = null;
     let liveRefreshPending = false;
+    const bucketSelections = new Map();
 
     const $ = id => document.getElementById(id);
 
@@ -218,13 +249,22 @@
         noticeTimer = setTimeout(() => element.className = 'toast', 4500);
     }
 
+    function setLoading(show, message = '正在刷新任务数据…') {
+        $('loadingText').textContent = message;
+        $('loadingOverlay').classList.toggle('show', show);
+    }
+
+    function bucketSelectionKey() {
+        return `${current?.id || 'draft'}:${current?.round || 0}`;
+    }
+
     function blankCampaign() {
         return {
-            id: '', name: '', enabled: false, target_group_id: meta.groups[0]?.id || 0,
+            id: '', name: '', enabled: false, serving: false, target_group_id: meta.groups[0]?.id || 0,
             target_server_ids: [], round: 0, bucket_count: 0, domains: [],
-            active_path_label: '根分支', eligible_count: 0, candidate_count: 0,
+            active_path: [], active_path_label: '根分支', eligible_count: 0, candidate_count: 0,
             bucket_counts: [], exposed_counts: [], bucket_labels: [],
-            positive_queue: [], deferred_queue: [], findings: []
+            positive_queue: [], deferred_queue: [], branch_hosts: [], findings: []
         };
     }
 
@@ -258,7 +298,8 @@
         campaigns.forEach(campaign => {
             const option = document.createElement('option');
             option.value = campaign.id;
-            option.textContent = `${campaign.name}${campaign.enabled ? '（运行中）' : ''}`;
+            const stateLabel = campaign.enabled ? '（本轮运行中）' : (campaign.serving ? '（分支持续中）' : '');
+            option.textContent = `${campaign.name}${stateLabel}`;
             option.selected = current?.id === campaign.id;
             select.appendChild(option);
         });
@@ -327,23 +368,103 @@
             container.appendChild(hint);
             return;
         }
+        const selection = bucketSelections.get(bucketSelectionKey()) || new Set();
         current.bucket_labels.forEach((label, index) => {
-            const card = document.createElement('label');
+            const card = document.createElement('div');
             card.className = 'bucket';
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
             checkbox.className = 'positiveBucket';
             checkbox.value = index;
+            checkbox.checked = selection.has(index);
             checkbox.disabled = !current.enabled;
+            checkbox.addEventListener('change', () => {
+                const selected = bucketSelections.get(bucketSelectionKey()) || new Set();
+                checkbox.checked ? selected.add(index) : selected.delete(index);
+                bucketSelections.set(bucketSelectionKey(), selected);
+            });
             const info = document.createElement('div');
             const title = document.createElement('strong');
-            title.textContent = `${label} 组：${current.bucket_counts[index]} 人 / ${current.exposed_counts[index]} 已拉取`;
+            const fullLabel = [
+                ...(current.active_path || []).map(bucket => String.fromCharCode(65 + bucket)),
+                label
+            ].join(' → ');
+            title.textContent = `${fullLabel} 组：${current.bucket_counts[index]} 人 / ${current.exposed_counts[index]} 已拉取`;
             const domain = document.createElement('span');
             domain.textContent = current.domains[index] || '等待下一轮域名';
+            const usersButton = document.createElement('button');
+            usersButton.type = 'button';
+            usersButton.className = 'secondary compact';
+            usersButton.textContent = '查看拉取用户';
+            const path = [...(current.active_path || []), index];
+            const hasAssignment = (current.branch_hosts || []).some(
+                assignment => JSON.stringify(assignment.path) === JSON.stringify(path)
+            );
+            usersButton.addEventListener('click', () => openExposureUsers(path));
             info.append(title, domain);
+            if (hasAssignment) info.append(usersButton);
             card.append(checkbox, info);
             container.appendChild(card);
         });
+    }
+
+    function renderBranchHosts() {
+        const container = $('branchHosts');
+        container.textContent = '';
+        if (!current?.branch_hosts?.length) {
+            const hint = document.createElement('span');
+            hint.className = 'hint';
+            hint.textContent = '启动任务后显示';
+            container.appendChild(hint);
+            return;
+        }
+        current.branch_hosts.forEach(assignment => {
+            const card = document.createElement('div');
+            card.className = 'bucket';
+            const info = document.createElement('div');
+            const title = document.createElement('strong');
+            title.textContent = `${assignment.label} 组`;
+            const host = document.createElement('span');
+            host.textContent = assignment.host;
+            const usersButton = document.createElement('button');
+            usersButton.type = 'button';
+            usersButton.className = 'secondary compact';
+            usersButton.textContent = '查看拉取用户';
+            usersButton.addEventListener('click', () => openExposureUsers(assignment.path));
+            info.append(title, host, usersButton);
+            card.append(info);
+            container.appendChild(card);
+        });
+    }
+
+    async function openExposureUsers(path) {
+        try {
+            setLoading(true, '正在查询拉取用户…');
+            const exposures = await request(`/campaigns/${encodeURIComponent(current.id)}/exposures`);
+            const pathKey = JSON.stringify(path);
+            const exposure = exposures.find(item => JSON.stringify(item.path) === pathKey);
+            const body = $('exposureUsers');
+            body.textContent = '';
+            $('exposureTitle').textContent = `${exposure?.label || '?'} 组本轮拉取用户（${exposure?.users.length || 0}）`;
+            if (!exposure?.users.length) {
+                const row = body.insertRow();
+                const cell = row.insertCell();
+                cell.colSpan = 2;
+                cell.className = 'hint';
+                cell.textContent = '本轮暂无用户拉取该分组';
+            } else {
+                exposure.users.forEach(user => {
+                    const row = body.insertRow();
+                    row.insertCell().textContent = user.id;
+                    row.insertCell().textContent = user.email;
+                });
+            }
+            $('exposureModal').classList.add('show');
+        } catch (error) {
+            showNotice(error.message, 'error');
+        } finally {
+            setLoading(false);
+        }
     }
 
     function renderFindings() {
@@ -368,23 +489,26 @@
         $('bucketCount').textContent = current.bucket_count || 0;
         $('round').textContent = current.round || 0;
         $('activePath').textContent = current.active_path_label || '根分支';
-        $('statusPill').textContent = current.enabled ? '运行中' : (current.id ? '已暂停' : '未创建');
-        $('statusPill').className = `pill ${current.enabled ? 'on' : 'off'}`;
+        $('statusPill').textContent = current.enabled
+            ? '本轮运行中'
+            : (current.serving ? '等待下一轮（其他分支持续）' : (current.id ? '已停止' : '未创建'));
+        $('statusPill').className = `pill ${current.serving ? 'on' : 'off'}`;
         $('groupSelect').disabled = current.round > 0;
         $('groupHint').textContent = current.round > 0
             ? '任务已有轮次；如需修改用户组，请先重置任务。'
             : '';
         $('positiveQueue').textContent = current.positive_queue.join(', ') || '无';
         $('deferredQueue').textContent = current.deferred_queue.join(', ') || '无';
-        $('deleteCampaign').disabled = !current.id || current.enabled;
+        $('deleteCampaign').disabled = !current.id || current.serving;
         $('saveCampaign').disabled = false;
         $('domains').disabled = current.enabled;
         $('startRound').disabled = !current.id || current.enabled;
-        $('disableRound').disabled = !current.enabled;
+        $('disableRound').disabled = !current.serving;
         $('recordResult').disabled = !current.enabled;
         $('recordNone').disabled = !current.enabled;
-        $('resetCampaign').disabled = !current.id || current.enabled;
+        $('resetCampaign').disabled = !current.id || current.serving;
         renderBuckets();
+        renderBranchHosts();
         renderFindings();
     }
 
@@ -435,12 +559,15 @@
     $('campaignSelect').addEventListener('change', async event => {
         const selectedId = event.target.value;
         try {
+            setLoading(true);
             campaigns = await request('/campaigns');
             current = campaigns.find(item => item.id === selectedId) || blankCampaign();
             renderCampaignSelect();
             renderCurrent();
         } catch (error) {
             showNotice(error.message, 'error');
+        } finally {
+            setLoading(false);
         }
     });
     $('newCampaign').addEventListener('click', () => {
@@ -517,9 +644,12 @@
     });
 
     async function submitResult(positiveBuckets) {
-        upsertCampaign(await request(`/campaigns/${encodeURIComponent(current.id)}/result`, {
+        const selectionKey = bucketSelectionKey();
+        const campaign = await request(`/campaigns/${encodeURIComponent(current.id)}/result`, {
             method: 'POST', body: JSON.stringify({ positive_buckets: positiveBuckets })
-        }));
+        });
+        bucketSelections.delete(selectionKey);
+        upsertCampaign(campaign);
         showNotice('结果已记录，请准备下一轮域名');
     }
 
@@ -536,6 +666,10 @@
             if (!confirm('确认所有分组都未被墙？')) return;
             await submitResult([]);
         } catch (error) { showNotice(error.message, 'error'); }
+    });
+    $('closeExposureModal').addEventListener('click', () => $('exposureModal').classList.remove('show'));
+    $('exposureModal').addEventListener('click', event => {
+        if (event.target === $('exposureModal')) $('exposureModal').classList.remove('show');
     });
 
     if (!token) $('authWarning').style.display = 'block';
