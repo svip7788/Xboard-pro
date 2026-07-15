@@ -46,7 +46,17 @@
         .bucket strong,.bucket span { display: block; } .bucket span { color: var(--muted); word-break: break-all; }
         .queue { min-height: 34px; padding: 8px 10px; background: #f7f9fc; border-radius: 8px; word-break: break-all; }
         .notice { display: none; margin-bottom: 16px; padding: 12px 14px; border-radius: 9px; }
-        .notice.show { display: block; } .notice.error { color: #8b1f34; background: #fde8ed; } .notice.success { color: #096640; background: #dff7ec; }
+        .notice.show { display: block; }
+        .notice.error,.toast.error { color: #8b1f34; background: #fde8ed; }
+        .notice.success,.toast.success { color: #096640; background: #dff7ec; }
+        .toast {
+            position: fixed; top: 20px; left: 50%; z-index: 9999;
+            width: max-content; max-width: calc(100% - 32px); padding: 12px 18px;
+            border-radius: 10px; box-shadow: 0 8px 28px rgba(22,32,51,.2);
+            opacity: 0; visibility: hidden; transform: translate(-50%,-12px);
+            transition: opacity .2s,transform .2s,visibility .2s; pointer-events: none;
+        }
+        .toast.show { opacity: 1; visibility: visible; transform: translate(-50%,0); }
         table { width: 100%; border-collapse: collapse; } th,td { padding: 9px; text-align: left; border-bottom: 1px solid var(--line); }
         @media (max-width:800px) {
             .card { grid-column: 1/-1; } .stats { grid-template-columns: repeat(2,1fr); }
@@ -65,7 +75,7 @@
         <a class="back" href="{{ $adminUrl }}">返回管理后台</a>
     </div>
 
-    <div id="notice" class="notice"></div>
+    <div id="notice" class="toast"></div>
     <div id="authWarning" class="notice error">未检测到管理后台登录令牌，请重新登录后台后打开本页。</div>
 
     <div class="grid">
@@ -161,6 +171,7 @@
     let campaigns = [];
     let current = null;
     let selectedNodeIds = new Set();
+    let noticeTimer = null;
 
     const $ = id => document.getElementById(id);
 
@@ -199,9 +210,10 @@
 
     function showNotice(message, type = 'success') {
         const element = $('notice');
+        clearTimeout(noticeTimer);
         element.textContent = message;
-        element.className = `notice show ${type}`;
-        setTimeout(() => element.className = 'notice', 4500);
+        element.className = `toast show ${type}`;
+        noticeTimer = setTimeout(() => element.className = 'toast', 4500);
     }
 
     function blankCampaign() {
