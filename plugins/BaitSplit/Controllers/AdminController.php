@@ -28,7 +28,7 @@ class AdminController extends PluginController
                 ->where('enabled', 1)
                 ->where('show', 1)
                 ->orderBy('sort')
-                ->get(['id', 'name', 'type']),
+                ->get(['id', 'name', 'type', 'group_ids']),
             'campaigns' => BaitSplitService::fromDatabase()->campaigns(),
         ]);
     }
@@ -61,7 +61,13 @@ class AdminController extends PluginController
                 'integer',
                 'distinct',
                 Rule::exists('v2_server', 'id')->where(
-                    fn($query) => $query->where('enabled', 1)->where('show', 1)
+                    fn($query) => $query
+                        ->where('enabled', 1)
+                        ->where('show', 1)
+                        ->whereJsonContains(
+                            'group_ids',
+                            (string) $request->integer('target_group_id')
+                        )
                 ),
             ],
         ]);

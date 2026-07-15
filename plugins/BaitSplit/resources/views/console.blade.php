@@ -276,13 +276,29 @@
         });
     }
 
+    function serversForGroup(groupId) {
+        return meta.servers.filter(server =>
+            (server.group_ids || []).map(Number).includes(Number(groupId))
+        );
+    }
+
     function renderNodes(filter = '') {
         const list = $('nodeList');
         const keyword = filter.trim().toLowerCase();
+        const groupId = Number($('groupSelect').value || current?.target_group_id);
+        const servers = serversForGroup(groupId).filter(server =>
+            `${server.name} ${server.type}`.toLowerCase().includes(keyword)
+        );
         list.textContent = '';
-        meta.servers
-            .filter(server => `${server.name} ${server.type}`.toLowerCase().includes(keyword))
-            .forEach(server => {
+        if (!servers.length) {
+            const hint = document.createElement('div');
+            hint.className = 'hint';
+            hint.style.padding = '12px';
+            hint.textContent = keyword ? '没有匹配的节点' : '该用户组暂无可用节点';
+            list.appendChild(hint);
+            return;
+        }
+        servers.forEach(server => {
                 const row = document.createElement('label');
                 row.className = 'node';
                 const input = document.createElement('input');
@@ -374,7 +390,12 @@
 
     function renderCurrent() {
         current ||= blankCampaign();
-        selectedNodeIds = new Set((current.target_server_ids || []).map(Number));
+        const allowedIds = new Set(
+            serversForGroup(current.target_group_id).map(server => Number(server.id))
+        );
+        selectedNodeIds = new Set(
+            (current.target_server_ids || []).map(Number).filter(id => allowedIds.has(id))
+        );
         $('campaignName').value = current.name || '';
         $('domains').value = (current.domains || []).join('\n');
         $('domainHint').textContent = current.bucket_count
@@ -429,6 +450,14 @@
     });
     $('nodeSearch').addEventListener('input', event => renderNodes(event.target.value));
     $('clearNodes').addEventListener('click', () => { selectedNodeIds.clear(); renderNodes($('nodeSearch').value); });
+    $('groupSelect').addEventListener('change', () => {
+        const groupId = Number($('groupSelect').value);
+        const allowedIds = new Set(
+            serversForGroup(groupId).map(server => Number(server.id))
+        );
+        selectedNodeIds = new Set([...selectedNodeIds].filter(id => allowedIds.has(id)));
+        renderNodes($('nodeSearch').value);
+    });
 
     $('saveCampaign').addEventListener('click', async () => {
         try {

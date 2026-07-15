@@ -1,7 +1,7 @@
 {
     "name": "订阅诱饵分组",
     "code": "bait_split",
-    "version": "2.1.0",
+    "version": "2.1.1",
     "description": "为多个用户组分别执行多域名稳定分组，用于定位订阅泄露账号",
     "author": "XBoard Custom",
     "type": "feature",
