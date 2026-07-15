@@ -8,6 +8,7 @@ use App\Models\ServerGroup;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use InvalidArgumentException;
 use Plugin\BaitSplit\Services\BaitSplitService;
 
 class AdminController extends PluginController
@@ -65,7 +66,7 @@ class AdminController extends PluginController
             ],
         ]);
 
-        return $this->success(BaitSplitService::fromDatabase()->saveCampaign(
+        return $this->execute(fn() => BaitSplitService::fromDatabase()->saveCampaign(
             $data['campaign_id'] ?? null,
             $data['name'],
             $data['target_group_id'],
@@ -79,8 +80,8 @@ class AdminController extends PluginController
             return $response;
         }
 
-        return $this->success(
-            BaitSplitService::fromDatabase()->deleteCampaign($campaignId)
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()->deleteCampaign($campaignId)
         );
     }
 
@@ -95,8 +96,8 @@ class AdminController extends PluginController
             'domains.*' => ['required', 'string', 'max:253', 'distinct'],
         ]);
 
-        return $this->success(
-            BaitSplitService::fromDatabase()->startCampaign(
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()->startCampaign(
                 $campaignId,
                 $data['domains']
             )
@@ -114,8 +115,8 @@ class AdminController extends PluginController
             'positive_buckets.*' => ['integer', 'min:0', 'max:9', 'distinct'],
         ]);
 
-        return $this->success(
-            BaitSplitService::fromDatabase()->recordResult(
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()->recordResult(
                 $campaignId,
                 $data['positive_buckets']
             )
@@ -128,8 +129,8 @@ class AdminController extends PluginController
             return $response;
         }
 
-        return $this->success(
-            BaitSplitService::fromDatabase()->disableCampaign($campaignId)
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()->disableCampaign($campaignId)
         );
     }
 
@@ -139,8 +140,8 @@ class AdminController extends PluginController
             return $response;
         }
 
-        return $this->success(
-            BaitSplitService::fromDatabase()->resetCampaign($campaignId)
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()->resetCampaign($campaignId)
         );
     }
 
@@ -148,5 +149,14 @@ class AdminController extends PluginController
     {
         $error = $this->beforePluginAction();
         return $error ? $this->fail($error) : null;
+    }
+
+    private function execute(callable $callback): JsonResponse
+    {
+        try {
+            return $this->success($callback());
+        } catch (InvalidArgumentException $exception) {
+            return $this->fail([422, $exception->getMessage()]);
+        }
     }
 }

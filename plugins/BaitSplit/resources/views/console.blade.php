@@ -101,6 +101,7 @@
             <div class="field">
                 <label for="groupSelect">用户主权限组</label>
                 <select id="groupSelect"></select>
+                <div id="groupHint" class="hint"></div>
             </div>
             <div class="field">
                 <label for="nodeSearch">替换节点</label>
@@ -342,6 +343,10 @@
         $('activePath').textContent = current.active_path_label || '根分支';
         $('statusPill').textContent = current.enabled ? '运行中' : (current.id ? '已暂停' : '未创建');
         $('statusPill').className = `pill ${current.enabled ? 'on' : 'off'}`;
+        $('groupSelect').disabled = current.round > 0;
+        $('groupHint').textContent = current.round > 0
+            ? '任务已有轮次；如需修改用户组，请先重置任务。'
+            : '';
         $('domains').value = (current.domains || []).join('\n');
         $('domainHint').textContent = current.bucket_count
             ? `该任务固定为 ${current.bucket_count} 组；重置后才能修改组数。`
@@ -395,7 +400,10 @@
             });
             upsertCampaign(campaign);
             showNotice('排查任务已保存');
-        } catch (error) { showNotice(error.message, 'error'); }
+        } catch (error) {
+            await refresh().catch(() => {});
+            showNotice(error.message, 'error');
+        }
     });
 
     $('deleteCampaign').addEventListener('click', async () => {
