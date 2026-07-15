@@ -206,12 +206,30 @@
 
 <script>
     const API_BASE = @json($apiBase);
-    const token = sessionStorage.getItem('access_token') || localStorage.getItem('access_token');
+    const token = readAdminToken();
     let meta = { groups: [], servers: [], config: {} };
     let status = null;
     let selectedNodeIds = new Set();
 
     const $ = (id) => document.getElementById(id);
+
+    function readAdminToken() {
+        const keys = ['XBOARD_ACCESS_TOKEN', 'Xboard_access_token', 'access_token'];
+        for (const storage of [localStorage, sessionStorage]) {
+            for (const key of keys) {
+                const raw = storage.getItem(key);
+                if (!raw) continue;
+                try {
+                    const parsed = JSON.parse(raw);
+                    if (typeof parsed === 'string') return parsed;
+                    if (parsed && typeof parsed.value === 'string') return parsed.value;
+                } catch {
+                    return raw;
+                }
+            }
+        }
+        return '';
+    }
 
     function authHeader() {
         if (!token) return {};

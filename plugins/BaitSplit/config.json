@@ -1,7 +1,7 @@
 {
     "name": "订阅诱饵分组",
     "code": "bait_split",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "description": "按用户稳定分组并替换指定节点域名，用于定位订阅泄露账号",
     "author": "XBoard Custom",
     "type": "feature",
@@ -18,6 +18,12 @@
         }
     ],
     "config": {
+        "console_path": {
+            "type": "string",
+            "default": "/webadmin/plugins/bait-split/console",
+            "label": "可视化控制台路径",
+            "description": "登录管理后台后，在当前标签页打开或复制该路径"
+        },
         "target_group_id": {
             "type": "number",
             "default": 0,
