@@ -120,6 +120,7 @@
                     <button id="clearNodes" type="button" class="secondary">清空</button>
                 </div>
                 <div id="nodeList" class="node-list"></div>
+                <div class="hint">任务运行中也可增删节点，保存后立即生效。</div>
             </div>
             <button id="saveCampaign" type="button">保存任务</button>
         </section>
@@ -139,7 +140,7 @@
         </section>
 
         <section class="card wide">
-            <h2>本轮分组与封锁结果</h2>
+            <h2>本轮分组与封锁结果 <span class="hint">（每 5 秒自动刷新）</span></h2>
             <div id="buckets" class="buckets"><span class="hint">启动任务后显示各组</span></div>
             <div class="actions">
                 <button id="recordResult" type="button">记录勾选的被墙分组</button>
@@ -172,6 +173,7 @@
     let current = null;
     let selectedNodeIds = new Set();
     let noticeTimer = null;
+    let liveRefreshPending = false;
 
     const $ = id => document.getElementById(id);
 
@@ -344,10 +346,7 @@
         });
     }
 
-    function renderCurrent() {
-        current ||= blankCampaign();
-        selectedNodeIds = new Set((current.target_server_ids || []).map(Number));
-        $('campaignName').value = current.name || '';
+    function renderLiveStatus() {
         $('eligibleCount').textContent = current.eligible_count || 0;
         $('candidateCount').textContent = current.candidate_count || 0;
         $('bucketCount').textContent = current.bucket_count || 0;
@@ -359,22 +358,31 @@
         $('groupHint').textContent = current.round > 0
             ? '任务已有轮次；如需修改用户组，请先重置任务。'
             : '';
-        $('domains').value = (current.domains || []).join('\n');
-        $('domainHint').textContent = current.bucket_count
-            ? `该任务固定为 ${current.bucket_count} 组；重置后才能修改组数。`
-            : '最少 2 个，最多 10 个；首次启动后组数固定。';
         $('positiveQueue').textContent = current.positive_queue.join(', ') || '无';
         $('deferredQueue').textContent = current.deferred_queue.join(', ') || '无';
         $('deleteCampaign').disabled = !current.id || current.enabled;
-        $('saveCampaign').disabled = current.enabled;
+        $('saveCampaign').disabled = false;
+        $('domains').disabled = current.enabled;
+        $('startRound').disabled = !current.id || current.enabled;
         $('disableRound').disabled = !current.enabled;
         $('recordResult').disabled = !current.enabled;
         $('recordNone').disabled = !current.enabled;
         $('resetCampaign').disabled = !current.id || current.enabled;
-        renderGroups();
-        renderNodes($('nodeSearch').value);
         renderBuckets();
         renderFindings();
+    }
+
+    function renderCurrent() {
+        current ||= blankCampaign();
+        selectedNodeIds = new Set((current.target_server_ids || []).map(Number));
+        $('campaignName').value = current.name || '';
+        $('domains').value = (current.domains || []).join('\n');
+        $('domainHint').textContent = current.bucket_count
+            ? `该任务固定为 ${current.bucket_count} 组；重置后才能修改组数。`
+            : '最少 2 个，最多 10 个；首次启动后组数固定。';
+        renderGroups();
+        renderNodes($('nodeSearch').value);
+        renderLiveStatus();
     }
 
     async function refresh() {
@@ -387,9 +395,32 @@
         renderCurrent();
     }
 
-    $('campaignSelect').addEventListener('change', event => {
-        current = campaigns.find(item => item.id === event.target.value) || blankCampaign();
-        renderCurrent();
+    async function refreshLive() {
+        if (liveRefreshPending || !current?.id) return;
+        liveRefreshPending = true;
+        try {
+            const selectedId = current.id;
+            campaigns = await request('/campaigns');
+            const latest = campaigns.find(item => item.id === selectedId);
+            if (!latest || current?.id !== selectedId) return;
+            current = latest;
+            renderCampaignSelect();
+            renderLiveStatus();
+        } finally {
+            liveRefreshPending = false;
+        }
+    }
+
+    $('campaignSelect').addEventListener('change', async event => {
+        const selectedId = event.target.value;
+        try {
+            campaigns = await request('/campaigns');
+            current = campaigns.find(item => item.id === selectedId) || blankCampaign();
+            renderCampaignSelect();
+            renderCurrent();
+        } catch (error) {
+            showNotice(error.message, 'error');
+        }
     });
     $('newCampaign').addEventListener('click', () => {
         current = blankCampaign();
@@ -479,7 +510,12 @@
     });
 
     if (!token) $('authWarning').style.display = 'block';
-    else refresh().catch(error => showNotice(error.message, 'error'));
+    else {
+        refresh().catch(error => showNotice(error.message, 'error'));
+        setInterval(() => {
+            if (!document.hidden) refreshLive().catch(() => {});
+        }, 5000);
+    }
 </script>
 </body>
 </html>

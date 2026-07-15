@@ -97,8 +97,12 @@ class BaitSplitService
         $state = $this->state();
         $campaignId = $campaignId ?: (string) Str::uuid();
         $existing = $state['campaigns'][$campaignId] ?? null;
-        if ($existing && $existing['enabled']) {
-            throw new InvalidArgumentException('运行中的任务不能修改，请先停止');
+        if (
+            $existing
+            && $existing['enabled']
+            && (int) $existing['target_group_id'] !== $targetGroupId
+        ) {
+            throw new InvalidArgumentException('运行中的任务不能修改用户组，请先停止并重置');
         }
 
         $campaign = $existing ?: $this->newCampaign($campaignId);
