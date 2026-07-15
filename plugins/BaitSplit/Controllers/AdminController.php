@@ -3,9 +3,9 @@
 namespace Plugin\BaitSplit\Controllers;
 
 use App\Http\Controllers\PluginController;
+use App\Models\Plugin as PluginModel;
 use App\Models\Server;
 use App\Models\ServerGroup;
-use App\Services\Plugin\PluginConfigService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -30,7 +30,7 @@ class AdminController extends PluginController
                 ->where('show', 1)
                 ->orderBy('sort')
                 ->get(['id', 'name', 'type']),
-            'config' => app(PluginConfigService::class)->getDbConfig('bait_split'),
+            'config' => $this->pluginConfig(),
         ]);
     }
 
@@ -56,7 +56,12 @@ class AdminController extends PluginController
             ],
         ]);
 
-        app(PluginConfigService::class)->updateConfig('bait_split', $data);
+        $plugin = PluginModel::query()->where('code', 'bait_split')->firstOrFail();
+        $config = $this->pluginConfig();
+        $config['target_group_id'] = $data['target_group_id'];
+        $config['target_server_ids'] = $data['target_server_ids'];
+        $plugin->config = json_encode($config);
+        $plugin->save();
         Cache::forget('plugin_config_bait_split');
 
         return $this->success([
@@ -121,5 +126,18 @@ class AdminController extends PluginController
     {
         $error = $this->beforePluginAction();
         return $error ? $this->fail($error) : null;
+    }
+
+    private function pluginConfig(): array
+    {
+        $config = PluginModel::query()
+            ->where('code', 'bait_split')
+            ->value('config');
+
+        if (is_array($config)) {
+            return $config;
+        }
+
+        return is_string($config) ? (json_decode($config, true) ?: []) : [];
     }
 }

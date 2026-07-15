@@ -1,7 +1,7 @@
 {
     "name": "订阅诱饵分组",
     "code": "bait_split",
-    "version": "1.1.1",
+    "version": "1.1.2",
     "description": "按用户稳定分组并替换指定节点域名，用于定位订阅泄露账号",
     "author": "XBoard Custom",
     "type": "feature",
@@ -23,18 +23,6 @@
             "default": "/webadmin/plugins/bait-split/console",
             "label": "可视化控制台路径",
             "description": "登录管理后台后，在当前标签页打开或复制该路径"
-        },
-        "target_group_id": {
-            "type": "number",
-            "default": 0,
-            "label": "目标权限组 ID",
-            "description": "仅处理该主权限组用户，建议填写白银组 ID"
-        },
-        "target_server_ids": {
-            "type": "json",
-            "default": [],
-            "label": "替换节点 ID",
-            "description": "需要替换域名的节点 ID 数组，例如 [1]"
         }
     }
 }
