@@ -121,6 +121,25 @@ class AdminController extends PluginController
         );
     }
 
+    public function replaceDomains(Request $request, string $campaignId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+
+        $data = $request->validate([
+            'domains' => ['required', 'array', 'min:2', 'max:10'],
+            'domains.*' => ['required', 'string', 'max:253', 'distinct'],
+        ]);
+
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()->replaceDomains(
+                $campaignId,
+                $data['domains']
+            )
+        );
+    }
+
     public function result(Request $request, string $campaignId): JsonResponse
     {
         if ($response = $this->ensureEnabled()) {

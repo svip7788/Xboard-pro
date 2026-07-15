@@ -501,8 +501,9 @@
         $('deferredQueue').textContent = current.deferred_queue.join(', ') || '无';
         $('deleteCampaign').disabled = !current.id || current.serving;
         $('saveCampaign').disabled = false;
-        $('domains').disabled = current.enabled;
-        $('startRound').disabled = !current.id || current.enabled;
+        $('domains').disabled = false;
+        $('startRound').disabled = !current.id;
+        $('startRound').textContent = current.enabled ? '实时更换本轮 IP' : '启动本轮';
         $('disableRound').disabled = !current.serving;
         $('recordResult').disabled = !current.enabled;
         $('recordNone').disabled = !current.enabled;
@@ -523,7 +524,7 @@
         $('campaignName').value = current.name || '';
         $('domains').value = (current.domains || []).join('\n');
         $('domainHint').textContent = current.bucket_count
-            ? `该任务固定为 ${current.bucket_count} 组；重置后才能修改组数。`
+            ? `该任务固定为 ${current.bucket_count} 组；运行中可实时更换，不影响分组拉取统计。`
             : '最少 2 个，最多 10 个；首次启动后组数固定。';
         renderGroups();
         renderNodes($('nodeSearch').value);
@@ -619,11 +620,16 @@
         try {
             if (!current.id) throw new Error('请先保存排查任务');
             const domains = $('domains').value.split(/\n+/).map(value => value.trim()).filter(Boolean);
-            if (!confirm(`确认使用 ${domains.length} 个域名启动新一轮？`)) return;
-            upsertCampaign(await request(`/campaigns/${encodeURIComponent(current.id)}/start`, {
+            const replacing = current.enabled;
+            const message = replacing
+                ? `确认实时更换 ${domains.length} 个域名/IP？用户分组和已拉取名单保持不变。`
+                : `确认使用 ${domains.length} 个域名启动新一轮？`;
+            if (!confirm(message)) return;
+            const action = replacing ? 'replace-domains' : 'start';
+            upsertCampaign(await request(`/campaigns/${encodeURIComponent(current.id)}/${action}`, {
                 method: 'POST', body: JSON.stringify({ domains })
             }));
-            showNotice(`第 ${current.round} 轮已启动`);
+            showNotice(replacing ? '本轮域名/IP 已实时更新' : `第 ${current.round} 轮已启动`);
         } catch (error) { showNotice(error.message, 'error'); }
     });
 

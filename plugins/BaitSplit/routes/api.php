@@ -17,6 +17,7 @@ Route::prefix("api/v2/{$securePath}/plugin/bait-split")
         Route::post('/campaigns', [AdminController::class, 'saveCampaign']);
         Route::delete('/campaigns/{campaignId}', [AdminController::class, 'deleteCampaign']);
         Route::post('/campaigns/{campaignId}/start', [AdminController::class, 'start']);
+        Route::post('/campaigns/{campaignId}/replace-domains', [AdminController::class, 'replaceDomains']);
         Route::post('/campaigns/{campaignId}/result', [AdminController::class, 'result']);
         Route::post('/campaigns/{campaignId}/disable', [AdminController::class, 'disable']);
         Route::post('/campaigns/{campaignId}/reset', [AdminController::class, 'reset']);

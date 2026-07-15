@@ -54,12 +54,7 @@ class BaitSplitService
             }
             unset($server);
 
-            $this->recordExposure(
-                $campaign,
-                $assignment['bucket'],
-                (int) $user->id,
-                $assignment['round']
-            );
+            $this->recordExposure($campaign, $assignment, (int) $user->id);
             break;
         }
 
@@ -81,17 +76,10 @@ class BaitSplitService
         $assignmentUserIds = [];
 
         foreach ($campaign['branch_hosts'] as $index => $assignment) {
-            try {
-                $key = $this->exposureKey(
-                    $campaign,
-                    $assignment['round'],
-                    $assignment['bucket']
-                );
-                $assignmentUserIds[$index] = $this->normalizeIds(Redis::smembers($key));
-                sort($assignmentUserIds[$index]);
-            } catch (\Throwable) {
-                $assignmentUserIds[$index] = [];
-            }
+            $assignmentUserIds[$index] = $this->branchExposureUserIds(
+                $campaign,
+                $assignment
+            );
         }
 
         $users = User::query()
@@ -234,6 +222,32 @@ class BaitSplitService
         return $this->campaignStatus($campaign);
     }
 
+    public function replaceDomains(string $campaignId, array $domains): array
+    {
+        $state = $this->state();
+        $campaign = $this->requireCampaign($state, $campaignId);
+        if (!$campaign['enabled']) {
+            throw new InvalidArgumentException('当前没有运行中的轮次');
+        }
+
+        $domains = $this->normalizeDomains($domains);
+        if (count($domains) !== $campaign['bucket_count']) {
+            throw new InvalidArgumentException(
+                "该任务固定为 {$campaign['bucket_count']} 组；实时更换时域名数量不能改变"
+            );
+        }
+        if ($domains === $campaign['domains']) {
+            throw new InvalidArgumentException('新域名与当前域名相同');
+        }
+
+        $campaign['domains'] = $domains;
+        $campaign['branch_hosts'] = $this->replaceActiveBranchHosts($campaign, $domains);
+        $state['campaigns'][$campaignId] = $campaign;
+        $this->saveState($state);
+
+        return $this->campaignStatus($campaign);
+    }
+
     public function recordResult(string $campaignId, array $positiveBuckets): array
     {
         $state = $this->state();
@@ -358,11 +372,14 @@ class BaitSplitService
         $exposedCounts = array_fill(0, $campaign['bucket_count'], 0);
         if ($campaign['enabled'] && $campaign['round'] > 0) {
             foreach ($exposedCounts as $bucket => $_) {
-                try {
-                    $key = $this->exposureKey($campaign, $campaign['round'], $bucket);
-                    $exposedCounts[$bucket] = (int) Redis::scard($key);
-                } catch (\Throwable) {
-                    break;
+                $path = [...$campaign['active_path'], $bucket];
+                foreach ($campaign['branch_hosts'] as $assignment) {
+                    if ($assignment['path'] === $path) {
+                        $exposedCounts[$bucket] = count(
+                            $this->branchExposureUserIds($campaign, $assignment)
+                        );
+                        break;
+                    }
                 }
             }
         }
@@ -782,14 +799,12 @@ class BaitSplitService
 
     private function recordExposure(
         array $campaign,
-        int $bucket,
-        int $userId,
-        ?int $round = null
+        array $assignment,
+        int $userId
     ): void
     {
         try {
-            $round ??= $campaign['round'];
-            $key = $this->exposureKey($campaign, $round, $bucket);
+            $key = $this->branchExposureKey($campaign, $assignment['path']);
             Redis::sadd($key, (string) $userId);
             Redis::expire($key, 86400 * 30);
         } catch (\Throwable) {
@@ -797,14 +812,45 @@ class BaitSplitService
         }
     }
 
-    private function exposureKey(array $campaign, int $round, int $bucket): string
+    private function branchExposureUserIds(array $campaign, array $assignment): array
     {
-        if ($campaign['generation'] === '' && $campaign['hash_algo'] === 'bit') {
+        try {
+            $keys = [$this->branchExposureKey($campaign, $assignment['path'])];
+            if ($campaign['generation'] === '') {
+                $keys[] = $this->legacyExposureKey(
+                    $campaign,
+                    $assignment['round'],
+                    $assignment['bucket']
+                );
+            }
+            $userIds = [];
+            foreach ($keys as $key) {
+                $userIds = array_merge($userIds, Redis::smembers($key));
+            }
+            $userIds = $this->normalizeIds($userIds);
+            sort($userIds);
+            return $userIds;
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    private function branchExposureKey(array $campaign, array $path): string
+    {
+        $generation = $campaign['generation'] !== '' ? $campaign['generation'] : 'legacy';
+        return sprintf(
+            'bait_split:exposure:%s:%s:branch:%s',
+            $campaign['id'],
+            $generation,
+            implode('.', $path)
+        );
+    }
+
+    private function legacyExposureKey(array $campaign, int $round, int $bucket): string
+    {
+        if ($campaign['hash_algo'] === 'bit') {
             return "bait_split:exposure:{$round}:{$this->bucketLabel($bucket)}";
         }
-        if ($campaign['generation'] === '') {
-            return "bait_split:exposure:{$campaign['id']}:{$round}:{$bucket}";
-        }
-        return "bait_split:exposure:{$campaign['id']}:{$campaign['generation']}:{$round}:{$bucket}";
+        return "bait_split:exposure:{$campaign['id']}:{$round}:{$bucket}";
     }
 }
