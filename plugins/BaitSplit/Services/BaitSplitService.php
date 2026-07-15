@@ -5,6 +5,7 @@ namespace Plugin\BaitSplit\Services;
 use App\Models\Plugin as PluginModel;
 use App\Models\User;
 use App\Support\Setting;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Redis;
 use InvalidArgumentException;
 
@@ -195,6 +196,7 @@ class BaitSplitService
     public function status(): array
     {
         $state = $this->state();
+        $eligibleCount = $this->eligibleUsersQuery()->count();
         $candidateIds = $state['secret'] === ''
             ? []
             : $this->candidateIds($state['active_prefix'], $state['secret']);
@@ -218,7 +220,8 @@ class BaitSplitService
             'enabled' => $state['enabled'],
             'round' => $state['round'],
             'active_prefix' => $state['active_prefix'],
-            'candidate_count' => count($candidateIds),
+            'eligible_count' => $eligibleCount,
+            'candidate_count' => $state['secret'] === '' ? $eligibleCount : count($candidateIds),
             'group_counts' => $counts,
             'exposed_counts' => $exposed,
             'positive_queue' => $state['positive_queue'],
@@ -286,6 +289,16 @@ class BaitSplitService
             return [];
         }
 
+        return $this->eligibleUsersQuery()
+            ->pluck('id')
+            ->map(fn($id): int => (int) $id)
+            ->filter(fn(int $id): bool => $this->matchesPrefix($id, $prefix, $secret))
+            ->values()
+            ->all();
+    }
+
+    private function eligibleUsersQuery(): Builder
+    {
         return User::query()
             ->where('group_id', $this->targetGroupId())
             ->where('is_admin', 0)
@@ -294,12 +307,7 @@ class BaitSplitService
             ->where(function ($query) {
                 $query->whereNull('expired_at')
                     ->orWhere('expired_at', '>', time());
-            })
-            ->pluck('id')
-            ->map(fn($id): int => (int) $id)
-            ->filter(fn(int $id): bool => $this->matchesPrefix($id, $prefix, $secret))
-            ->values()
-            ->all();
+            });
     }
 
     private function matchesPrefix(int $userId, string $prefix, string $secret): bool
