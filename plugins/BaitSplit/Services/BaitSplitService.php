@@ -578,7 +578,7 @@ class BaitSplitService
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $router = &$campaign['router'];
         $root = $router['investigation_nodes'][$nodeId] ?? null;
-        if (!$root || $root['parent_id'] !== '') {
+        if (!$root || (string) ($root['parent_id'] ?? '') !== '') {
             throw new InvalidArgumentException('只能从根节点删除整棵排查树');
         }
 
