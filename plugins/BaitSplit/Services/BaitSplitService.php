@@ -260,9 +260,10 @@ class BaitSplitService
                     throw new InvalidArgumentException('同一用户组已有运行中的域名任务');
                 }
             }
-            $campaign['target_server_ids'] = $this->managedServerIds(
-                $campaign['target_group_ids']
-            );
+            $campaign['target_server_ids'] = array_values(array_diff(
+                $this->managedServerIds($campaign['target_group_ids']),
+                $campaign['excluded_server_ids']
+            ));
             if ($campaign['target_server_ids'] === []) {
                 throw new InvalidArgumentException('目标权限组暂无可用节点');
             }
@@ -282,9 +283,10 @@ class BaitSplitService
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $this->syncRouterPopulation($campaign);
         if ($campaign['router']['enabled']) {
-            $campaign['target_server_ids'] = $this->managedServerIds(
-                $campaign['target_group_ids']
-            );
+            $campaign['target_server_ids'] = array_values(array_diff(
+                $this->managedServerIds($campaign['target_group_ids']),
+                $campaign['excluded_server_ids']
+            ));
         }
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
@@ -1373,7 +1375,6 @@ class BaitSplitService
         $groupIds = $this->normalizeIds(is_array($groupIds) ? $groupIds : [$groupIds]);
         return User::query()
             ->whereIn('group_id', $groupIds)
-            ->where('is_admin', 0)
             ->where('banned', 0)
             ->where('transfer_enable', '>', 0)
             ->where(function ($query) {
@@ -2225,8 +2226,7 @@ class BaitSplitService
     {
         $userId = (int) $user->id;
         if (
-            (bool) $user->is_admin
-            || (bool) $user->banned
+            (bool) $user->banned
             || (int) $user->transfer_enable <= 0
             || ((int) $user->expired_at > 0 && (int) $user->expired_at <= time())
             || isset($campaign['router']['assignments'][(string) $userId])

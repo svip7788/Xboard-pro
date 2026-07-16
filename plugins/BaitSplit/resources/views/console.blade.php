@@ -231,7 +231,22 @@ function renderInvestigationTree(){
     list.textContent='';
     if(!nodes.length){list.innerHTML='<div class="empty">暂无树形排查</div>';return}
     const byId=new Map(nodes.map(node=>[node.id,node]));
-    [...nodes].sort((a,b)=>a.depth-b.depth||a.created_at-b.created_at).forEach(node=>{
+    const childrenByParent=new Map(),ordered=[],visited=new Set();
+    nodes.forEach(node=>{
+        const parentId=node.parent_id&&byId.has(node.parent_id)?node.parent_id:'';
+        if(!childrenByParent.has(parentId))childrenByParent.set(parentId,[]);
+        childrenByParent.get(parentId).push(node)
+    });
+    childrenByParent.forEach(children=>children.sort((a,b)=>a.created_at-b.created_at));
+    const appendBranch=node=>{
+        if(visited.has(node.id))return;
+        visited.add(node.id);
+        ordered.push(node);
+        (childrenByParent.get(node.id)||[]).forEach(appendBranch)
+    };
+    (childrenByParent.get('')||[]).forEach(appendBranch);
+    nodes.forEach(appendBranch);
+    ordered.forEach(node=>{
         const card=document.createElement('div');
         card.className='tree-node';
         card.style.marginLeft=`${Math.min(node.depth,8)*24}px`;
