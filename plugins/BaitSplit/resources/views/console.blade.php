@@ -260,7 +260,7 @@ async function pingTarget(host){
     try{
         const task=await request('/ping',{method:'POST',body:JSON.stringify({host})});
         for(let count=0;count<24;count++){
-            pingStates.set(host,{phase:'running',buttonText:`检测中 ${count+1}/24`,text:'等待国内节点返回…',kind:''});
+            pingStates.set(host,{phase:'running',buttonText:'检测中…',text:`等待国内节点返回… ${count*4} 秒`,kind:''});
             refreshPingState(host);
             if(count>0)await new Promise(resolve=>setTimeout(resolve,4000));
             const data=await request(`/ping/${encodeURIComponent(task.id)}`);

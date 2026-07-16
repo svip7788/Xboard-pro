@@ -1708,7 +1708,7 @@ class BaitSplitService
                 }
                 $selected[] = $nodeId;
                 $regions[(string) ($node['node_name'] ?? '')] = true;
-                if (count($regions) >= 3) {
+                if (count($regions) >= 2) {
                     break;
                 }
             }
@@ -1716,7 +1716,7 @@ class BaitSplitService
         if ($selected === []) {
             $selected = array_map(
                 fn(array $node): int => (int) ($node['id'] ?? 0),
-                array_slice(array_filter($nodes, 'is_array'), 0, 9)
+                array_slice(array_filter($nodes, 'is_array'), 0, 6)
             );
         }
         return $this->normalizeIds($selected);
