@@ -180,6 +180,16 @@ class BaitSplitService
         $router = &$campaign['router'];
         $poolId = trim((string) ($data['id'] ?? '')) ?: 'pool-' . Str::uuid();
         $existing = $router['pools'][$poolId] ?? [];
+        $reservedTypes = [
+            'default' => 'default',
+            'danger' => 'danger',
+            'probe' => 'probe',
+            'emergency' => 'emergency',
+            'blacklist' => 'blacklist',
+        ];
+        if (isset($reservedTypes[$poolId])) {
+            $data['type'] = $reservedTypes[$poolId];
+        }
         $this->snapshotRouterConfig($router);
         $router['pools'][$poolId] = $this->normalizePool(
             array_merge($existing, $data, ['id' => $poolId]),
