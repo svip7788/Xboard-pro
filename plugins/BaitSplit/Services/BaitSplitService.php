@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Support\Setting;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
@@ -119,6 +120,102 @@ class BaitSplitService
             fn(array $campaign): array => $this->campaignStatus($campaign),
             $this->state()['campaigns']
         ));
+    }
+
+    public function createPingTask(string $host): array
+    {
+        $host = $this->normalizePingHost($host);
+        $key = $this->boceApiKey();
+        $nodeIds = Cache::remember(
+            'bait_split:boce_ping_node_ids',
+            86400,
+            fn(): array => $this->fetchBocePingNodeIds($key)
+        );
+        if ($nodeIds === []) {
+            throw new InvalidArgumentException('未获取到可用的国内检测节点');
+        }
+        $response = Http::timeout(20)->retry(2, 500)->get(
+            'https://api.boce.com/v3/task/create/ping',
+            [
+                'key' => $key,
+                'node_ids' => implode(',', $nodeIds),
+                'host' => $host,
+                'node_type' => '1',
+            ]
+        );
+        $payload = $response->json();
+        $taskId = (string) ($payload['data']['id'] ?? '');
+        if (
+            !$response->successful()
+            || (int) ($payload['error_code'] ?? -1) !== 0
+            || $taskId === ''
+        ) {
+            throw new InvalidArgumentException(
+                '创建 Ping 任务失败：' . (
+                    (string) ($payload['error'] ?? '') ?: "HTTP {$response->status()}"
+                )
+            );
+        }
+        return [
+            'id' => $taskId,
+            'host' => $host,
+            'node_count' => count($nodeIds),
+        ];
+    }
+
+    public function pingTaskResult(string $taskId): array
+    {
+        if (!preg_match('/^[A-Za-z0-9_-]{8,128}$/', $taskId)) {
+            throw new InvalidArgumentException('Ping 任务 ID 无效');
+        }
+        $response = Http::timeout(20)->retry(2, 500)->get(
+            "https://api.boce.com/v3/task/ping/{$taskId}",
+            ['key' => $this->boceApiKey()]
+        );
+        $payload = $response->json();
+        if (!$response->successful() || !is_array($payload)) {
+            throw new InvalidArgumentException("获取 Ping 结果失败：HTTP {$response->status()}");
+        }
+        if (!(bool) ($payload['done'] ?? false)) {
+            return ['done' => false];
+        }
+
+        $items = [];
+        $successCount = 0;
+        foreach ((array) ($payload['list'] ?? []) as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $loss = (float) ($row['packet_loss'] ?? 100);
+            $ok = (int) ($row['error_code'] ?? -1) === 0 && $loss < 100;
+            if ($ok) {
+                $successCount++;
+            }
+            $items[] = [
+                'node_name' => (string) ($row['node_name'] ?? ''),
+                'isp' => (string) ($row['ip_isp'] ?? ''),
+                'ip' => (string) ($row['ip'] ?? ''),
+                'packet_loss' => $loss,
+                'latency' => (float) (
+                    $row['round_trip_avg']
+                    ?? $row['round_trip_time_avg']
+                    ?? 0
+                ),
+                'ok' => $ok,
+                'error' => (string) ($row['error'] ?? ''),
+            ];
+        }
+        $total = count($items);
+        $status = $successCount === 0
+            ? 'unreachable'
+            : ($successCount < $total ? 'partial' : 'reachable');
+        return [
+            'done' => true,
+            'status' => $status,
+            'success_count' => $successCount,
+            'total_count' => $total,
+            'items' => $items,
+        ];
     }
 
     public function exposureUsers(string $campaignId): array
@@ -1547,6 +1644,82 @@ class BaitSplitService
             }
         }
         return $domains;
+    }
+
+    private function normalizePingHost(string $host): string
+    {
+        $host = strtolower(trim($host));
+        if (str_contains($host, '://')) {
+            $host = (string) parse_url($host, PHP_URL_HOST);
+        }
+        $host = rtrim($host, '.');
+        if (
+            $host === ''
+            || strlen($host) > 253
+            || (
+                !filter_var($host, FILTER_VALIDATE_IP)
+                && !filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME)
+            )
+        ) {
+            throw new InvalidArgumentException('请输入有效的域名或 IP');
+        }
+        return $host;
+    }
+
+    private function boceApiKey(): string
+    {
+        $key = trim((string) admin_setting('bait_split_boce_api_key', ''));
+        if (!preg_match('/^[A-Za-z0-9]{16,128}$/', $key)) {
+            throw new InvalidArgumentException('未配置有效的拨测 API Key');
+        }
+        return $key;
+    }
+
+    private function fetchBocePingNodeIds(string $key): array
+    {
+        $response = Http::timeout(20)->retry(2, 500)->get(
+            'https://api.boce.com/v3/node/list',
+            ['key' => $key]
+        );
+        $payload = $response->json();
+        $nodes = (array) ($payload['data']['list'] ?? []);
+        if (
+            !$response->successful()
+            || (int) ($payload['error_code'] ?? -1) !== 0
+            || $nodes === []
+        ) {
+            return [];
+        }
+
+        $selected = [];
+        foreach (['电信', '联通', '移动'] as $isp) {
+            $regions = [];
+            foreach ($nodes as $node) {
+                if (
+                    !is_array($node)
+                    || !str_contains((string) ($node['isp_name'] ?? ''), $isp)
+                    || isset($regions[(string) ($node['node_name'] ?? '')])
+                ) {
+                    continue;
+                }
+                $nodeId = (int) ($node['id'] ?? 0);
+                if ($nodeId <= 0) {
+                    continue;
+                }
+                $selected[] = $nodeId;
+                $regions[(string) ($node['node_name'] ?? '')] = true;
+                if (count($regions) >= 3) {
+                    break;
+                }
+            }
+        }
+        if ($selected === []) {
+            $selected = array_map(
+                fn(array $node): int => (int) ($node['id'] ?? 0),
+                array_slice(array_filter($nodes, 'is_array'), 0, 9)
+            );
+        }
+        return $this->normalizeIds($selected);
     }
 
     private function normalizeIds(array|string $ids): array

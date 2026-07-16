@@ -18,7 +18,7 @@
         .group-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}.group-option{display:flex!important;align-items:center;gap:8px;padding:9px 11px;margin:0!important;background:#f7f9fc;border:1px solid var(--line);border-radius:9px;cursor:pointer}.group-option input{width:16px;height:16px;margin:0}
         .stats{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.stat{padding:12px;background:#f7f9fc;border-radius:10px}.stat strong{display:block;margin-top:3px;font-size:21px}
         .pill{display:inline-block;padding:4px 10px;border-radius:999px;font-weight:700}.pill.on{color:var(--success);background:#dcf6eb}.pill.off{color:var(--muted);background:#e9edf3}.pill.warn{color:#8b5910;background:#fff0cf}.pill.bad{color:#8b1f34;background:#fde8ed}
-        .pool-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:11px}.pool{padding:14px;background:#f7f9fc;border:1px solid var(--line);border-radius:11px}.pool-head{display:flex;justify-content:space-between;gap:8px}.pool .host{margin:7px 0;word-break:break-all}.pool .meta{font-size:12px;color:var(--muted)}
+        .pool-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:11px}.pool{padding:14px;background:#f7f9fc;border:1px solid var(--line);border-radius:11px}.pool-head{display:flex;justify-content:space-between;gap:8px}.pool .host{margin:7px 0;word-break:break-all}.pool .meta{font-size:12px;color:var(--muted)}.host-tools{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.ping-result{font-size:12px;font-weight:700}.ping-result.ok{color:var(--success)}.ping-result.warn{color:var(--warning)}.ping-result.bad{color:var(--danger)}
         .node-list{max-height:275px;overflow:auto;border:1px solid var(--line);border-radius:10px}.node{display:flex;align-items:center;gap:9px;padding:9px 11px;border-bottom:1px solid #edf0f5;cursor:pointer}.node:last-child{border:0}.node input{width:16px;height:16px}.node small{margin-left:auto;color:var(--muted)}
         table{width:100%;border-collapse:collapse}th,td{padding:8px;text-align:left;border-bottom:1px solid var(--line)}.scroll{max-height:350px;overflow:auto}
         .empty{padding:18px;text-align:center;color:var(--muted);background:#f7f9fc;border-radius:10px}.notice{display:none;padding:12px;border-radius:9px}.notice.error{color:#8b1f34;background:#fde8ed}
@@ -219,8 +219,42 @@ function renderGroups(){const container=$('groupSelect');container.textContent='
 function groupServers(){const ids=new Set(selectedGroupIds().map(String));return (meta.servers||[]).filter(server=>{let groups=server.group_ids;if(typeof groups==='string'){try{groups=JSON.parse(groups)}catch{groups=[]}}return (groups||[]).some(id=>ids.has(String(id)))})}
 function renderNodes(){const box=$('nodeSelect'),list=groupServers();box.textContent='';if(!list.length){box.innerHTML='<div class="empty">请选择用户组后显示节点</div>';return}const excluded=new Set((current?.excluded_server_ids||[]).map(Number));list.forEach(server=>{const label=document.createElement('label');label.className='node';const input=document.createElement('input');input.type='checkbox';input.className='nodeReplace';input.value=server.id;input.checked=!excluded.has(Number(server.id));const name=document.createElement('span');name.textContent=server.name;const tag=document.createElement('small');tag.textContent=server.type;label.append(input,name,tag);box.appendChild(label)})}
 function excludedServerIds(){return [...document.querySelectorAll('.nodeReplace')].filter(item=>!item.checked).map(item=>Number(item.value))}
+function renderPingTarget(container,host,fallback='未配置域名'){
+    container.className='host host-tools';
+    const text=document.createElement('span');
+    text.textContent=host||fallback;
+    container.appendChild(text);
+    if(!host)return;
+    const button=document.createElement('button'),result=document.createElement('span');
+    button.className='secondary small';
+    button.textContent='一键 Ping';
+    result.className='ping-result';
+    button.onclick=()=>pingTarget(host,button,result);
+    container.append(button,result)
+}
+async function pingTarget(host,button,result){
+    button.disabled=true;button.textContent='创建检测…';result.textContent='';
+    try{
+        const task=await request('/ping',{method:'POST',body:JSON.stringify({host})});
+        for(let count=0;count<24;count++){
+            button.textContent=`检测中 ${count+1}/24`;
+            if(count>0)await new Promise(resolve=>setTimeout(resolve,4000));
+            const data=await request(`/ping/${encodeURIComponent(task.id)}`);
+            if(!data.done)continue;
+            const latency=data.items.filter(item=>item.ok&&item.latency>0);
+            const avg=latency.length?Math.round(latency.reduce((sum,item)=>sum+item.latency,0)/latency.length):0;
+            const labels={reachable:'多数节点可达',partial:'部分节点可达',unreachable:'疑似不可达'};
+            result.textContent=`${labels[data.status]||'检测完成'} ${data.success_count}/${data.total_count}${avg?` · ${avg}ms`:''}`;
+            result.className=`ping-result ${data.status==='reachable'?'ok':data.status==='partial'?'warn':'bad'}`;
+            result.title=data.items.map(item=>`${item.node_name}${item.isp?` ${item.isp}`:''}：${item.ok?'可达':item.error||'失败'}${item.packet_loss>=0?`，丢包 ${item.packet_loss}%`:''}`).join('\n');
+            toast(`${host}：${result.textContent}`,data.status==='unreachable'?'error':'success');
+            button.textContent='重新 Ping';button.disabled=false;return
+        }
+        throw new Error('检测超时，请稍后重试')
+    }catch(error){result.textContent='检测失败';result.className='ping-result bad';result.title=error.message;toast(error.message,'error');button.textContent='重新 Ping';button.disabled=false}
+}
 function renderStatus(){const r=router();$('eligibleCount').textContent=current?.eligible_count||0;$('pulledUserCount').textContent=r?.pulled_user_count||0;$('groupedUserCount').textContent=r?.grouped_user_count||0;$('unpulledUngroupedCount').textContent=r?.unpulled_ungrouped_count||0;$('poolCount').textContent=r?.pools.length||0;$('untestedCount').textContent=r?.untested_count||0;$('configVersion').textContent=`v${r?.config_version||0}`;$('routerStatus').textContent=!r?'未初始化':r.enabled?'全量接管中':'未启用';$('routerStatus').className=`pill ${r?.enabled?'on':'off'}`;$('routerMissing').style.display=r?'none':'block';$('routerControls').style.display=r?'block':'none';if(r){$('toggleRouter').textContent=r.enabled?'危险：恢复系统原域名':'启用全量接管';$('toggleRouter').className=r.enabled?'danger':'success'}}
-function renderPools(){const grid=$('poolGrid');grid.textContent='';const list=pools();if(!list.length){grid.innerHTML='<div class="empty">初始化后配置用户池</div>';return}list.forEach(pool=>{const card=document.createElement('div');card.className='pool';const head=document.createElement('div');head.className='pool-head';const title=document.createElement('strong');title.textContent=pool.name;const state=document.createElement('span');state.className=`pill ${pool.status==='blocked'?'bad':pool.enabled?'on':'off'}`;state.textContent=pool.status;head.append(title,state);const host=document.createElement('div');host.className='host';host.textContent=pool.host||`${Object.keys(pool.node_hosts||{}).length} 个节点独立地址`;const overflowName=pools().find(item=>item.id===pool.overflow_pool_id)?.name;const metaLine=document.createElement('div');metaLine.className='meta';metaLine.textContent=`${pool.type} · ${pool.member_count} 人 · ${pool.pulled_count} 已拉取 · 容量 ${pool.capacity||'不限'}${overflowName?` · 满后→${overflowName}`:''}`;const actions=document.createElement('div');actions.className='actions';const actionItems=[['编辑','edit'],['用户','users']];if(pool.member_count>0&&pool.type!=='blacklist')actionItems.push(['进入树形排查','tree']);if(!['danger','blacklist'].includes(pool.type))actionItems.push(['转移已拉取','transfer']);actionItems.push(['删除','delete']);actionItems.forEach(([label,action])=>{const button=document.createElement('button');button.className='secondary small';button.textContent=label;button.onclick=()=>poolAction(action,pool);if(action==='transfer'&&pool.pulled_count<1)button.disabled=true;if(action==='delete'&&['default','danger','probe','emergency','blacklist'].includes(pool.id))button.disabled=true;actions.appendChild(button)});card.append(head,host,metaLine,actions);grid.appendChild(card)})}
+function renderPools(){const grid=$('poolGrid');grid.textContent='';const list=pools();if(!list.length){grid.innerHTML='<div class="empty">初始化后配置用户池</div>';return}list.forEach(pool=>{const card=document.createElement('div');card.className='pool';const head=document.createElement('div');head.className='pool-head';const title=document.createElement('strong');title.textContent=pool.name;const state=document.createElement('span');state.className=`pill ${pool.status==='blocked'?'bad':pool.enabled?'on':'off'}`;state.textContent=pool.status;head.append(title,state);const host=document.createElement('div');renderPingTarget(host,pool.host,`${Object.keys(pool.node_hosts||{}).length} 个节点独立地址`);const overflowName=pools().find(item=>item.id===pool.overflow_pool_id)?.name;const metaLine=document.createElement('div');metaLine.className='meta';metaLine.textContent=`${pool.type} · ${pool.member_count} 人 · ${pool.pulled_count} 已拉取 · 容量 ${pool.capacity||'不限'}${overflowName?` · 满后→${overflowName}`:''}`;const actions=document.createElement('div');actions.className='actions';const actionItems=[['编辑','edit'],['用户','users']];if(pool.member_count>0&&pool.type!=='blacklist')actionItems.push(['进入树形排查','tree']);if(!['danger','blacklist'].includes(pool.type))actionItems.push(['转移已拉取','transfer']);actionItems.push(['删除','delete']);actionItems.forEach(([label,action])=>{const button=document.createElement('button');button.className='secondary small';button.textContent=label;button.onclick=()=>poolAction(action,pool);if(action==='transfer'&&pool.pulled_count<1)button.disabled=true;if(action==='delete'&&['default','danger','probe','emergency','blacklist'].includes(pool.id))button.disabled=true;actions.appendChild(button)});card.append(head,host,metaLine,actions);grid.appendChild(card)})}
 function renderPoolOverflowOptions(currentId='',value=''){const type=$('poolType').value;fillSelect('poolOverflow',pools().filter(item=>item.id!==currentId&&!['danger','blacklist'].includes(type)&&!['danger','blacklist'].includes(item.type)),value,'不自动转入')}
 function editPool(pool=null){$('poolId').value=pool?.id||'';$('poolName').value=pool?.name||'';$('poolType').value=pool?.type||'safe';$('poolType').disabled=['default','danger','probe','emergency','blacklist'].includes(pool?.id||'');$('poolHost').value=pool?.host||'';$('poolStatus').value=pool?.status||'available';$('poolCapacity').value=pool?.capacity||0;renderPoolOverflowOptions(pool?.id||'',pool?.overflow_pool_id||'');$('poolEnabled').checked=pool?.enabled??true;$('poolNote').value=pool?.note||'';window.scrollTo({top:$('poolName').getBoundingClientRect().top+window.scrollY-100,behavior:'smooth'})}
 function openPoolTransfer(pool){const targets=pools().filter(item=>item.id!==pool.id&&!['danger','blacklist'].includes(item.type)&&item.enabled&&item.status!=='blocked');if(!targets.length)return toast('暂无可用的转入用户池','error');transferSource=pool;fillSelect('transferTarget',targets,'');$('transferHint').textContent=`“${pool.name}”当前有 ${pool.pulled_count} 名已拉取用户；手动锁定用户不会移动。`;$('transferModal').classList.add('show')}
@@ -257,8 +291,7 @@ function renderInvestigationTree(){
         state.textContent={active:'观察中',safe:'安全',blocked:'被墙',split:'已拆分',archived:'已归档'}[node.status]||node.status;
         head.append(title,state);
         const host=document.createElement('div'),metaLine=document.createElement('div'),actions=document.createElement('div');
-        host.className='host';
-        host.textContent=node.host||'未配置域名';
+        renderPingTarget(host,node.host);
         metaLine.className='meta';
         metaLine.textContent=`${node.user_count} 人 · ${node.pulled_count} 已拉取${node.parent_id&&byId.get(node.parent_id)?` · 上级：${byId.get(node.parent_id).name}`:''}`;
         actions.className='actions';

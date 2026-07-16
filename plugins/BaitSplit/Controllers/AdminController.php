@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Validation\Rule;
 use InvalidArgumentException;
 use Plugin\BaitSplit\Services\BaitSplitService;
+use Throwable;
 
 class AdminController extends PluginController
 {
@@ -42,6 +43,29 @@ class AdminController extends PluginController
         }
 
         return $this->success(BaitSplitService::fromDatabase()->campaigns());
+    }
+
+    public function createPing(Request $request): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        $data = $request->validate([
+            'host' => ['required', 'string', 'max:253'],
+        ]);
+        return $this->executePing(
+            fn() => BaitSplitService::fromDatabase()->createPingTask($data['host'])
+        );
+    }
+
+    public function pingResult(string $taskId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        return $this->executePing(
+            fn() => BaitSplitService::fromDatabase()->pingTaskResult($taskId)
+        );
     }
 
     public function exposures(string $campaignId): JsonResponse
@@ -503,6 +527,17 @@ class AdminController extends PluginController
             return $this->fail([422, $exception->getMessage()]);
         } catch (LockTimeoutException) {
             return $this->fail([423, '其他管理操作正在执行，请稍后重试']);
+        }
+    }
+
+    private function executePing(callable $callback): JsonResponse
+    {
+        try {
+            return $this->success($callback());
+        } catch (InvalidArgumentException $exception) {
+            return $this->fail([422, $exception->getMessage()]);
+        } catch (Throwable) {
+            return $this->fail([502, '拨测服务暂时不可用，请稍后重试']);
         }
     }
 }

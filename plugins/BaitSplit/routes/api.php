@@ -12,6 +12,8 @@ Route::prefix("api/v2/{$securePath}/plugin/bait-split")
     ->middleware('admin')
     ->group(function (): void {
         Route::get('/meta', [AdminController::class, 'meta']);
+        Route::post('/ping', [AdminController::class, 'createPing']);
+        Route::get('/ping/{taskId}', [AdminController::class, 'pingResult']);
         Route::get('/campaigns', [AdminController::class, 'campaigns']);
         Route::get('/campaigns/{campaignId}/exposures', [AdminController::class, 'exposures']);
         Route::post('/campaigns', [AdminController::class, 'saveCampaign']);
