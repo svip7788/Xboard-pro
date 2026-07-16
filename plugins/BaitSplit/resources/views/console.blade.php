@@ -205,7 +205,7 @@ function readTokens(){
 async function request(path,options={}){const response=await fetch(`${API_BASE}${path}`,{...options,headers:{Accept:'application/json','Content-Type':'application/json',Authorization:token.startsWith('Bearer ')?token:`Bearer ${token}`,...(options.headers||{})}});const payload=await response.json().catch(()=>({}));if(!response.ok||payload.status==='fail'){const errors=payload.errors?Object.values(payload.errors).flat().join('；'):'';throw new Error(errors||payload.message||`请求失败（${response.status}）`)}return payload.data}
 function toast(message,type='success'){clearTimeout(noticeTimer);$('toast').textContent=message;$('toast').className=`toast show ${type}`;noticeTimer=setTimeout(()=>$('toast').className='toast',4500)}
 function loading(show,text='正在加载…'){$('loadingText').textContent=text;$('loading').classList.toggle('show',show)}
-function api(path){return `/campaigns/${encodeURIComponent(current.id)}${path}`}
+function api(path){if(!current?.id)throw new Error('请先保存调度任务');return `/campaigns/${encodeURIComponent(current.id)}${path}`}
 function blankCampaign(){const first=meta.groups[0]?.id||0;return{id:'',name:'',target_group_id:first,target_group_ids:first?[first]:[],target_server_ids:[],eligible_count:0,router:null}}
 function router(){return current?.router||null}
 function pools(types=null){const order={default:0,probe:1,observation:2,safe:3,emergency:4,custom:5,danger:6,blacklist:7},list=[...(router()?.pools||[])].filter(pool=>!pool.tree_node_id).sort((left,right)=>(order[left.type]??5)-(order[right.type]??5));return types?list.filter(pool=>types.includes(pool.type)&&pool.enabled):list}
