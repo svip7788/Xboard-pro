@@ -33,7 +33,12 @@ class Plugin extends AbstractPlugin
                 'user_id' => $user->id,
                 'error' => $exception->getMessage(),
             ]);
-            return $servers;
+            try {
+                return (new BaitSplitService($this->getConfig()))
+                    ->failClosedServers($servers, $user);
+            } catch (\Throwable) {
+                return [];
+            }
         }
     }
 }

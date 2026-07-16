@@ -1,8 +1,8 @@
 {
-    "name": "订阅诱饵分组",
+    "name": "节点域名调度",
     "code": "bait_split",
-    "version": "2.4.0",
-    "description": "为多个用户组分别执行多域名稳定分组，用于定位订阅泄露账号",
+    "version": "3.0.0",
+    "description": "全量接管节点域名，支持用户池、分批筛查和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
     "require": {
@@ -11,10 +11,10 @@
     "admin_menus": [
         {
             "id": "console",
-            "title": "排查控制台",
+            "title": "域名调度中心",
             "path": "console",
             "icon": "shield",
-            "description": "可视化配置分组、节点、域名和封锁结果"
+            "description": "可视化管理用户池、节点域名、筛查批次和用户规则"
         }
     ],
     "config": {
