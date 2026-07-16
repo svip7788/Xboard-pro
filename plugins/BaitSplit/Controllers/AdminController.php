@@ -70,12 +70,15 @@ class AdminController extends PluginController
                 'distinct',
                 Rule::exists('v2_server_group', 'id'),
             ],
+            'excluded_server_ids' => ['nullable', 'array'],
+            'excluded_server_ids.*' => ['integer'],
         ]);
 
         return $this->execute(fn() => BaitSplitService::fromDatabase()->saveCampaign(
             $data['campaign_id'] ?? null,
             $data['name'],
-            $data['target_group_ids']
+            $data['target_group_ids'],
+            $data['excluded_server_ids'] ?? []
         ));
     }
 

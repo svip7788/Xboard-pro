@@ -101,7 +101,13 @@ class BaitSplitService
                 ($campaign['router']['enabled'] ?? false)
                 && $this->campaignMatchesGroup($campaign, (int) $user->group_id)
             ) {
-                return [];
+                $managedServerIds = array_flip($campaign['target_server_ids']);
+                return array_values(array_filter(
+                    $servers,
+                    fn(array $server): bool => !isset(
+                        $managedServerIds[(int) ($server['id'] ?? 0)]
+                    )
+                ));
             }
         }
         return $servers;
@@ -847,15 +853,26 @@ class BaitSplitService
     public function saveCampaign(
         ?string $campaignId,
         string $name,
-        array $targetGroupIds
+        array $targetGroupIds,
+        array $excludedServerIds = []
     ): array {
         $targetGroupIds = $this->normalizeIds($targetGroupIds);
         if ($targetGroupIds === []) {
             throw new InvalidArgumentException('必须选择至少一个用户组');
         }
-        $targetServerIds = $this->managedServerIds($targetGroupIds);
-        if ($targetServerIds === []) {
+        $candidateServerIds = $this->managedServerIds($targetGroupIds);
+        if ($candidateServerIds === []) {
             throw new InvalidArgumentException('所选用户组暂无可用节点');
+        }
+        $excludedServerIds = array_values(array_intersect(
+            $this->normalizeIds($excludedServerIds),
+            $candidateServerIds
+        ));
+        $targetServerIds = array_values(
+            array_diff($candidateServerIds, $excludedServerIds)
+        );
+        if ($targetServerIds === []) {
+            throw new InvalidArgumentException('至少保留一个需要替换域名的节点');
         }
 
         $state = $this->state();
@@ -900,6 +917,7 @@ class BaitSplitService
         $campaign['target_group_ids'] = $targetGroupIds;
         $campaign['target_group_id'] = $targetGroupIds[0];
         $campaign['target_server_ids'] = $targetServerIds;
+        $campaign['excluded_server_ids'] = $excludedServerIds;
         if ($campaign['router'] && $groupsChanged) {
             $this->syncRouterPopulation($campaign);
         }
@@ -1105,6 +1123,7 @@ class BaitSplitService
             'target_group_id' => $campaign['target_group_id'],
             'target_group_ids' => $campaign['target_group_ids'],
             'target_server_ids' => $campaign['target_server_ids'],
+            'excluded_server_ids' => $campaign['excluded_server_ids'],
             'generation' => bin2hex(random_bytes(8)),
         ]);
         $state['campaigns'][$campaignId] = $campaign;
@@ -1151,6 +1170,7 @@ class BaitSplitService
             'target_group_id' => $campaign['target_group_id'],
             'target_group_ids' => $campaign['target_group_ids'],
             'target_server_ids' => $campaign['target_server_ids'],
+            'excluded_server_ids' => $campaign['excluded_server_ids'],
             'round' => $campaign['round'],
             'bucket_count' => $campaign['bucket_count'],
             'domains' => $campaign['domains'],
@@ -1254,6 +1274,7 @@ class BaitSplitService
             'target_group_id' => 0,
             'target_group_ids' => [],
             'target_server_ids' => [],
+            'excluded_server_ids' => [],
             'enabled' => false,
             'serving' => false,
             'generation' => '',
@@ -1285,6 +1306,7 @@ class BaitSplitService
         );
         $campaign['target_group_id'] = $campaign['target_group_ids'][0] ?? 0;
         $campaign['target_server_ids'] = $this->normalizeIds($campaign['target_server_ids']);
+        $campaign['excluded_server_ids'] = $this->normalizeIds($campaign['excluded_server_ids']);
         $campaign['bucket_count'] = (int) $campaign['bucket_count'];
         $campaign['generation'] = (string) $campaign['generation'];
         $campaign['hash_algo'] = $id === 'legacy' && !$hasHashAlgorithm
@@ -1593,9 +1615,14 @@ class BaitSplitService
         $poolIds = $this->routingPoolIds($campaign, $userId, $override);
         $result = [];
         $deliveredPoolIds = [];
+        $managedServerIds = array_flip($campaign['target_server_ids']);
 
         foreach ($servers as $server) {
             $serverId = (int) ($server['id'] ?? 0);
+            if (!isset($managedServerIds[$serverId])) {
+                $result[] = $server;
+                continue;
+            }
             $host = $override
                 ? $this->hostFromRule($override, $serverId)
                 : '';
