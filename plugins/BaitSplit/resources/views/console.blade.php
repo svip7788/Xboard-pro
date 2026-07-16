@@ -169,6 +169,7 @@ let meta={groups:[],servers:[]},campaigns=[],current=null,noticeTimer=null,refre
 let poolModal={poolId:'',poolName:'',page:1,lastPage:1,total:0,q:''};
 let transferSource=null;
 let splitTreeNodeId='';
+const pingStates=new Map();
 const $=id=>document.getElementById(id);
 function readTokens(){
     const candidates=[];
@@ -227,31 +228,54 @@ function renderPingTarget(container,host,fallback='未配置域名'){
     if(!host)return;
     const button=document.createElement('button'),result=document.createElement('span');
     button.className='secondary small';
-    button.textContent='一键 Ping';
+    button.dataset.pingHost=host;
     result.className='ping-result';
-    button.onclick=()=>pingTarget(host,button,result);
-    container.append(button,result)
+    result.dataset.pingHost=host;
+    button.onclick=()=>pingTarget(host);
+    container.append(button,result);
+    applyPingState(host,button,result)
 }
-async function pingTarget(host,button,result){
-    button.disabled=true;button.textContent='创建检测…';result.textContent='';
+function applyPingState(host,button,result){
+    const state=pingStates.get(host);
+    button.disabled=state?.phase==='running';
+    button.textContent=state?.buttonText||(state?.phase?'重新 Ping':'一键 Ping');
+    result.textContent=state?.text||'';
+    result.className=`ping-result ${state?.kind||''}`;
+    result.title=state?.title||''
+}
+function refreshPingState(host){
+    document.querySelectorAll('[data-ping-host]').forEach(element=>{
+        if(element.dataset.pingHost!==host)return;
+        const container=element.closest('.host-tools');
+        if(container)applyPingState(
+            host,
+            container.querySelector('button[data-ping-host]'),
+            container.querySelector('.ping-result[data-ping-host]')
+        )
+    })
+}
+async function pingTarget(host){
+    pingStates.set(host,{phase:'running',buttonText:'创建检测…',text:'正在创建检测任务…',kind:''});
+    refreshPingState(host);
     try{
         const task=await request('/ping',{method:'POST',body:JSON.stringify({host})});
         for(let count=0;count<24;count++){
-            button.textContent=`检测中 ${count+1}/24`;
+            pingStates.set(host,{phase:'running',buttonText:`检测中 ${count+1}/24`,text:'等待国内节点返回…',kind:''});
+            refreshPingState(host);
             if(count>0)await new Promise(resolve=>setTimeout(resolve,4000));
             const data=await request(`/ping/${encodeURIComponent(task.id)}`);
             if(!data.done)continue;
             const latency=data.items.filter(item=>item.ok&&item.latency>0);
             const avg=latency.length?Math.round(latency.reduce((sum,item)=>sum+item.latency,0)/latency.length):0;
             const labels={reachable:'多数节点可达',partial:'部分节点可达',unreachable:'疑似不可达'};
-            result.textContent=`${labels[data.status]||'检测完成'} ${data.success_count}/${data.total_count}${avg?` · ${avg}ms`:''}`;
-            result.className=`ping-result ${data.status==='reachable'?'ok':data.status==='partial'?'warn':'bad'}`;
-            result.title=data.items.map(item=>`${item.node_name}${item.isp?` ${item.isp}`:''}：${item.ok?'可达':item.error||'失败'}${item.packet_loss>=0?`，丢包 ${item.packet_loss}%`:''}`).join('\n');
-            toast(`${host}：${result.textContent}`,data.status==='unreachable'?'error':'success');
-            button.textContent='重新 Ping';button.disabled=false;return
+            const text=`${labels[data.status]||'检测完成'} ${data.success_count}/${data.total_count}${avg?` · ${avg}ms`:''}`;
+            pingStates.set(host,{phase:'done',buttonText:'重新 Ping',text,kind:data.status==='reachable'?'ok':data.status==='partial'?'warn':'bad',title:data.items.map(item=>`${item.node_name}${item.isp?` ${item.isp}`:''}：${item.ok?'可达':item.error||'失败'}${item.packet_loss>=0?`，丢包 ${item.packet_loss}%`:''}`).join('\n')});
+            refreshPingState(host);
+            toast(`${host}：${text}`,data.status==='unreachable'?'error':'success');
+            return
         }
         throw new Error('检测超时，请稍后重试')
-    }catch(error){result.textContent='检测失败';result.className='ping-result bad';result.title=error.message;toast(error.message,'error');button.textContent='重新 Ping';button.disabled=false}
+    }catch(error){pingStates.set(host,{phase:'error',buttonText:'重新 Ping',text:`检测失败：${error.message}`,kind:'bad',title:error.message});refreshPingState(host);toast(error.message,'error')}
 }
 function renderStatus(){const r=router();$('eligibleCount').textContent=current?.eligible_count||0;$('pulledUserCount').textContent=r?.pulled_user_count||0;$('groupedUserCount').textContent=r?.grouped_user_count||0;$('unpulledUngroupedCount').textContent=r?.unpulled_ungrouped_count||0;$('poolCount').textContent=r?.pools.length||0;$('untestedCount').textContent=r?.untested_count||0;$('configVersion').textContent=`v${r?.config_version||0}`;$('routerStatus').textContent=!r?'未初始化':r.enabled?'全量接管中':'未启用';$('routerStatus').className=`pill ${r?.enabled?'on':'off'}`;$('routerMissing').style.display=r?'none':'block';$('routerControls').style.display=r?'block':'none';if(r){$('toggleRouter').textContent=r.enabled?'危险：恢复系统原域名':'启用全量接管';$('toggleRouter').className=r.enabled?'danger':'success'}}
 function renderPools(){const grid=$('poolGrid');grid.textContent='';const list=pools();if(!list.length){grid.innerHTML='<div class="empty">初始化后配置用户池</div>';return}list.forEach(pool=>{const card=document.createElement('div');card.className='pool';const head=document.createElement('div');head.className='pool-head';const title=document.createElement('strong');title.textContent=pool.name;const state=document.createElement('span');state.className=`pill ${pool.status==='blocked'?'bad':pool.enabled?'on':'off'}`;state.textContent=pool.status;head.append(title,state);const host=document.createElement('div');renderPingTarget(host,pool.host,`${Object.keys(pool.node_hosts||{}).length} 个节点独立地址`);const overflowName=pools().find(item=>item.id===pool.overflow_pool_id)?.name;const metaLine=document.createElement('div');metaLine.className='meta';metaLine.textContent=`${pool.type} · ${pool.member_count} 人 · ${pool.pulled_count} 已拉取 · 容量 ${pool.capacity||'不限'}${overflowName?` · 满后→${overflowName}`:''}`;const actions=document.createElement('div');actions.className='actions';const actionItems=[['编辑','edit'],['用户','users']];if(pool.member_count>0&&pool.type!=='blacklist')actionItems.push(['进入树形排查','tree']);if(!['danger','blacklist'].includes(pool.type))actionItems.push(['转移已拉取','transfer']);actionItems.push(['删除','delete']);actionItems.forEach(([label,action])=>{const button=document.createElement('button');button.className='secondary small';button.textContent=label;button.onclick=()=>poolAction(action,pool);if(action==='transfer'&&pool.pulled_count<1)button.disabled=true;if(action==='delete'&&['default','danger','probe','emergency','blacklist'].includes(pool.id))button.disabled=true;actions.appendChild(button)});card.append(head,host,metaLine,actions);grid.appendChild(card)})}
