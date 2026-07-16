@@ -570,6 +570,66 @@ class BaitSplitService
         return $this->campaignStatus($campaign);
     }
 
+    public function deleteInvestigationTree(
+        string $campaignId,
+        string $nodeId
+    ): array {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $router = &$campaign['router'];
+        $root = $router['investigation_nodes'][$nodeId] ?? null;
+        if (!$root || $root['parent_id'] !== '') {
+            throw new InvalidArgumentException('只能从根节点删除整棵排查树');
+        }
+
+        $nodeIds = [];
+        $poolIds = [];
+        foreach ($router['investigation_nodes'] as $id => $node) {
+            if ($id === $nodeId || $node['root_id'] === $nodeId) {
+                $nodeIds[] = $id;
+                $poolIds[] = $node['pool_id'];
+            }
+        }
+        $poolMap = array_flip(array_values(array_unique($poolIds)));
+        $releasedUserIds = [];
+        foreach ($router['assignments'] as $userId => $poolId) {
+            if (isset($poolMap[$poolId])) {
+                unset($router['assignments'][$userId]);
+                $releasedUserIds[] = (int) $userId;
+            }
+        }
+        $router['untested_ids'] = $this->normalizeIds(array_merge(
+            $router['untested_ids'],
+            $releasedUserIds
+        ));
+        foreach ($router['pools'] as &$pool) {
+            if (isset($poolMap[$pool['overflow_pool_id']])) {
+                $pool['overflow_pool_id'] = '';
+            }
+        }
+        unset($pool);
+        foreach (array_keys($poolMap) as $poolId) {
+            unset($router['pools'][$poolId]);
+            try {
+                Redis::del($this->routerPoolExposureKey($campaign, $poolId));
+                Redis::del($this->routerPoolExposureCountKey($campaign, $poolId));
+                Redis::del($this->routerPoolExposureLastKey($campaign, $poolId));
+            } catch (\Throwable) {
+                // 清理统计失败不能阻止删除排查树。
+            }
+        }
+        foreach ($nodeIds as $id) {
+            unset($router['investigation_nodes'][$id]);
+        }
+        $state['campaigns'][$campaignId] = $campaign;
+        $this->saveState($state);
+
+        return [
+            'campaign' => $this->campaignStatus($campaign),
+            'released_count' => count(array_unique($releasedUserIds)),
+        ];
+    }
+
     public function splitInvestigationNode(
         string $campaignId,
         string $nodeId,

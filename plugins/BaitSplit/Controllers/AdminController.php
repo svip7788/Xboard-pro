@@ -354,6 +354,19 @@ class AdminController extends PluginController
         );
     }
 
+    public function deleteInvestigationTree(
+        string $campaignId,
+        string $nodeId
+    ): JsonResponse {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()
+                ->deleteInvestigationTree($campaignId, $nodeId)
+        );
+    }
+
     public function moveInvestigationNodeUsers(
         Request $request,
         string $campaignId,

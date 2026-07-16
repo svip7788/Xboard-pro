@@ -270,11 +270,13 @@ function renderInvestigationTree(){
             if(['active','blocked'].includes(node.status))add('继续细分',()=>openSplitTree(node));
             if(node.status==='safe')add('转入观察/安全组',()=>openTreeTransfer(node),'success');
         }
+        if(node.depth===0)add('删除排查树',()=>deleteInvestigationTree(node),'danger');
         card.append(head,host,metaLine,actions);
         list.appendChild(card);
     })
 }
 async function changeTreeStatus(node,status){const label=status==='safe'?'安全':'被墙';if(!confirm(`确认把“${node.name}”标记为${label}？`))return;try{updateCurrent(await request(api(`/investigations/${encodeURIComponent(node.id)}/status`),{method:'POST',body:JSON.stringify({status})}));toast(`节点已标记为${label}`)}catch(error){toast(error.message,'error')}}
+async function deleteInvestigationTree(node){if(!confirm(`删除“${node.name}”整棵排查树及全部下级分支？\n仍在树内的用户会解除固定分组，下次拉订阅时重新分配。手动锁定规则不受影响。`))return;try{const result=await request(api(`/investigations/${encodeURIComponent(node.id)}`),{method:'DELETE'});updateCurrent(result.campaign);toast(`排查树已删除，${result.released_count} 名用户等待重新分组`)}catch(error){toast(error.message,'error')}}
 function openSplitTree(node){splitTreeNodeId=node.id;$('splitTreeTitle').textContent=`拆分：${node.name}（${node.user_count} 人）`;$('splitTreeCount').value=2;renderSplitTreeFields();$('splitTreeModal').classList.add('show')}
 function renderSplitTreeFields(){const count=Math.max(2,Math.min(10,Number($('splitTreeCount').value)||2)),container=$('splitTreeBranches'),old=[...container.querySelectorAll('.branch-row')].map(row=>[row.children[0].value,row.children[1].value]);container.textContent='';for(let index=0;index<count;index++){const row=document.createElement('div');row.className='branch-row';const name=document.createElement('input');name.placeholder=`分支 ${String.fromCharCode(65+index)}`;name.value=old[index]?.[0]||`分支 ${String.fromCharCode(65+index)}`;const host=document.createElement('input');host.placeholder='全新域名或 IP';host.value=old[index]?.[1]||'';row.append(name,host);container.appendChild(row)}}
 function renderOverridePoolOptions(){fillSelect('overridePool',pools(),$('overridePool').value,'仅使用单独域名')}
