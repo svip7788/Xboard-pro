@@ -543,14 +543,37 @@ class BaitSplitService
         return $query->limit(50)->get(['id', 'email', 'group_id'])
             ->map(function (User $user) use ($campaign): array {
                 $override = $campaign['router']['overrides'][(string) $user->id] ?? null;
+                $override = $override && $this->overrideIsActive($override)
+                    ? $override
+                    : null;
+                $poolId = $this->effectivePoolId(
+                    $campaign,
+                    (int) $user->id
+                );
+                $pool = $campaign['router']['pools'][$poolId] ?? null;
+                $overrideHosts = $override ? array_values(array_unique(
+                    array_filter(array_merge(
+                        [(string) ($override['host'] ?? '')],
+                        array_values((array) ($override['node_hosts'] ?? []))
+                    ))
+                )) : [];
+                $poolHosts = $pool ? array_values(array_unique(array_filter(
+                    array_merge(
+                        [(string) ($pool['host'] ?? '')],
+                        array_values((array) ($pool['node_hosts'] ?? []))
+                    )
+                ))) : [];
+                $hosts = $overrideHosts ?: $poolHosts;
                 return [
                     'id' => (int) $user->id,
                     'email' => $user->email,
                     'group_id' => (int) $user->group_id,
-                    'pool_id' => $this->effectivePoolId($campaign, (int) $user->id),
-                    'override' => $override && $this->overrideIsActive($override)
-                        ? $override
-                        : null,
+                    'pool_id' => $poolId,
+                    'pool_name' => (string) ($pool['name'] ?? '未分组'),
+                    'pool_type' => (string) ($pool['type'] ?? ''),
+                    'pool_status' => (string) ($pool['status'] ?? ''),
+                    'pool_hosts' => $hosts,
+                    'override' => $override,
                 ];
             })->values()->all();
     }
@@ -634,12 +657,15 @@ class BaitSplitService
 
         $nodeId = 'tree-' . Str::uuid();
         $rootPoolId = 'tree-pool-' . Str::uuid();
-        $nodeName = trim($name) ?: $sourcePool['name'] . ' 排查树';
+        $sourceHost = (string) ($sourcePool['host'] ?? '');
+        $nodeName = trim($name) ?: $sourcePool['name']
+            . ($sourceHost !== '' ? " · {$sourceHost}" : '')
+            . ' 排查树';
         $router['pools'][$rootPoolId] = $this->normalizePool(array_merge(
             $sourcePool,
             [
                 'id' => $rootPoolId,
-                'name' => $nodeName . ' / 根节点',
+                'name' => $nodeName . ' / 根组',
                 'type' => 'probe',
                 'status' => 'blocked',
                 'capacity' => count($userIds),
@@ -903,10 +929,10 @@ class BaitSplitService
 
         $rootId = 'tree-' . Str::uuid();
         $rootPoolId = 'tree-pool-' . Str::uuid();
-        $rootName = trim($name) ?: '合并排查树';
+        $rootName = trim($name) ?: '合并排查树 · ' . date('m-d H:i');
         $router['pools'][$rootPoolId] = $this->normalizePool([
             'id' => $rootPoolId,
-            'name' => $rootName . ' / 合并根节点',
+            'name' => $rootName . ' / 合并根组',
             'type' => 'probe',
             'enabled' => false,
             'status' => 'blocked',
