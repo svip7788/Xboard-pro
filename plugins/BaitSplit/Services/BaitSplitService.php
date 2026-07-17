@@ -1094,7 +1094,13 @@ class BaitSplitService
             ]
         );
         foreach ($allocations as $userId => $allocatedPoolId) {
-            unset($router['overrides'][(string) $userId]);
+            $router['overrides'][(string) $userId] =
+                $this->normalizeOverride([
+                    'pool_id' => $allocatedPoolId,
+                    'locked' => true,
+                    'note' => '排查树安全用户迁移自动锁定',
+                    'updated_at' => time(),
+                ]);
             $router['assignments'][(string) $userId] = $allocatedPoolId;
         }
         $router['untested_ids'] = array_values(array_diff(
