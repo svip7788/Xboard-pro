@@ -404,6 +404,27 @@ class AdminController extends PluginController
         );
     }
 
+    public function updateInvestigationNodeHost(
+        Request $request,
+        string $campaignId,
+        string $nodeId
+    ): JsonResponse {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        $data = $request->validate([
+            'host' => ['required', 'string', 'max:253'],
+        ]);
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()
+                ->updateInvestigationNodeHost(
+                    $campaignId,
+                    $nodeId,
+                    $data['host']
+                )
+        );
+    }
+
     public function deleteInvestigationTree(
         string $campaignId,
         string $nodeId

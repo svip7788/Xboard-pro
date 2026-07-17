@@ -882,6 +882,39 @@ class BaitSplitService
         ];
     }
 
+    public function updateInvestigationNodeHost(
+        string $campaignId,
+        string $nodeId,
+        string $host
+    ): array {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $router = &$campaign['router'];
+        $node = $router['investigation_nodes'][$nodeId] ?? null;
+        if (!$node || $node['children'] !== [] || $node['status'] === 'archived') {
+            throw new InvalidArgumentException('只能修改当前末级分支的域名');
+        }
+        $pool = $router['pools'][$node['pool_id']] ?? null;
+        if (!$pool || $pool['tree_node_id'] !== $nodeId) {
+            throw new InvalidArgumentException('分支对应用户池不存在');
+        }
+        $host = $this->normalizeOptionalHost($host);
+        if ($host === '') {
+            throw new InvalidArgumentException('域名或IP不能为空');
+        }
+        $this->assertInvestigationHostAvailable(
+            $router,
+            $host,
+            $node['pool_id']
+        );
+        $this->snapshotRouterConfig($router);
+        $router['pools'][$node['pool_id']]['host'] = $host;
+        $router['config_version']++;
+        $state['campaigns'][$campaignId] = $campaign;
+        $this->saveState($state);
+        return $this->campaignStatus($campaign);
+    }
+
     public function mergeInvestigationNodes(
         string $campaignId,
         array $nodeIds,
@@ -1872,20 +1905,31 @@ class BaitSplitService
                 ?: '分支 ' . $this->branchLabel($index);
         }
         unset($branch);
-        foreach ($router['pools'] as $pool) {
+        foreach (array_keys($hosts) as $host) {
+            $this->assertInvestigationHostAvailable($router, $host);
+        }
+        return $branches;
+    }
+
+    private function assertInvestigationHostAvailable(
+        array $router,
+        string $host,
+        string $ignoredPoolId = ''
+    ): void {
+        foreach ($router['pools'] as $poolId => $pool) {
+            if ($poolId === $ignoredPoolId) {
+                continue;
+            }
             $poolHosts = array_merge(
                 [(string) ($pool['host'] ?? '')],
                 array_values((array) ($pool['node_hosts'] ?? []))
             );
-            foreach ($poolHosts as $host) {
-                if ($host !== '' && isset($hosts[$host])) {
-                    throw new InvalidArgumentException(
-                        "域名 {$host} 已被其他用户池使用"
-                    );
-                }
+            if (in_array($host, $poolHosts, true)) {
+                throw new InvalidArgumentException(
+                    "域名 {$host} 已被其他用户池使用"
+                );
             }
         }
-        return $branches;
     }
 
     private function createInvestigationChildren(
