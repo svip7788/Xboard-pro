@@ -356,6 +356,32 @@ class AdminController extends PluginController
         );
     }
 
+    public function mergeInvestigationNodes(
+        Request $request,
+        string $campaignId
+    ): JsonResponse {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        $data = $request->validate([
+            'node_ids' => ['required', 'array', 'min:2'],
+            'node_ids.*' => ['required', 'string', 'max:80', 'distinct'],
+            'name' => ['nullable', 'string', 'max:80'],
+            'branches' => ['required', 'array', 'min:2', 'max:10'],
+            'branches.*.name' => ['nullable', 'string', 'max:50'],
+            'branches.*.host' => ['required', 'string', 'max:253'],
+        ]);
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()
+                ->mergeInvestigationNodes(
+                    $campaignId,
+                    $data['node_ids'],
+                    (string) ($data['name'] ?? ''),
+                    $data['branches']
+                )
+        );
+    }
+
     public function setInvestigationNodeStatus(
         Request $request,
         string $campaignId,

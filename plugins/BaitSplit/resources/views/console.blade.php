@@ -56,6 +56,14 @@
         <div id="splitTreeBranches" class="branch-fields"></div>
         <button id="confirmSplitTree" style="margin-top:14px">确认创建独立下级池</button>
     </div></div>
+    <div id="mergeTreeModal" class="modal"><div class="modal-card" style="width:min(680px,100%)">
+        <div class="modal-head"><h2>合并被墙分支并重新打乱</h2><button id="closeMergeTree" class="secondary">关闭</button></div>
+        <p id="mergeTreeHint" class="hint"></p>
+        <div class="field"><label>新排查树名称</label><input id="mergeTreeName" placeholder="例如：第 2 轮合并排查"></div>
+        <div class="field"><label>重新拆分组数（2–10）</label><input id="mergeTreeCount" type="number" min="2" max="10" value="2"></div>
+        <div id="mergeTreeBranches" class="branch-fields"></div>
+        <button id="confirmMergeTree" style="margin-top:14px">确认合并、打乱并重新分组</button>
+    </div></div>
 
     <div class="grid">
         <section class="card wide">
@@ -133,7 +141,7 @@
         </section>
 
         <section class="card wide">
-            <h2>树形分支排查</h2>
+            <div class="topbar"><h2>树形分支排查</h2><button id="openMergeTree" class="warning" disabled>合并被墙分支（0）</button></div>
             <div class="hint">从上方用户池点击“进入树形排查”，再为每个下级分支配置全新域名。兄弟分支互不影响。</div>
             <div id="investigationTree" class="tree-list" style="margin-top:12px"></div>
         </section>
@@ -169,6 +177,7 @@ let meta={groups:[],servers:[]},campaigns=[],current=null,noticeTimer=null,refre
 let poolModal={poolId:'',poolName:'',page:1,lastPage:1,total:0,q:''};
 let transferSource=null;
 let splitTreeNodeId='';
+const mergeTreeNodeIds=new Set();
 const pingStates=new Map();
 const $=id=>document.getElementById(id);
 function readTokens(){
@@ -287,8 +296,10 @@ async function poolAction(action,pool){try{if(action==='edit')return editPool(po
 function renderInvestigationTree(){
     const list=$('investigationTree'),nodes=router()?.investigation_nodes||[];
     list.textContent='';
-    if(!nodes.length){list.innerHTML='<div class="empty">暂无树形排查</div>';return}
+    if(!nodes.length){mergeTreeNodeIds.clear();updateMergeTreeButton();list.innerHTML='<div class="empty">暂无树形排查</div>';return}
     const byId=new Map(nodes.map(node=>[node.id,node]));
+    const mergeableIds=new Set(nodes.filter(node=>node.status==='blocked'&&!node.children.length&&node.mergeable_count>0).map(node=>node.id));
+    [...mergeTreeNodeIds].forEach(id=>{if(!mergeableIds.has(id))mergeTreeNodeIds.delete(id)});
     const childrenByParent=new Map(),ordered=[],visited=new Set();
     nodes.forEach(node=>{
         const parentId=node.parent_id&&byId.has(node.parent_id)?node.parent_id:'';
@@ -317,27 +328,43 @@ function renderInvestigationTree(){
         const host=document.createElement('div'),metaLine=document.createElement('div'),actions=document.createElement('div');
         renderPingTarget(host,node.host);
         metaLine.className='meta';
-        metaLine.textContent=`${node.user_count} 人 · ${node.pulled_count} 已拉取${node.parent_id&&byId.get(node.parent_id)?` · 上级：${byId.get(node.parent_id).name}`:''}`;
+        metaLine.textContent=`${node.user_count} 人 · ${node.pulled_count} 已拉取${node.status==='blocked'?` · ${node.mergeable_count} 可合并`:''}${node.released_count?` · ${node.released_count} 已回流`:''}${node.source_node_ids?.length?` · 合并 ${node.source_node_ids.length} 个来源`:''}${node.parent_id&&byId.get(node.parent_id)?` · 上级：${byId.get(node.parent_id).name}`:''}`;
         actions.className='actions';
         const add=(label,fn,kind='secondary')=>{const button=document.createElement('button');button.className=`${kind} small`;button.textContent=label;button.onclick=fn;actions.appendChild(button)};
         add('查看用户',()=>showTreeUsers(node));
-        if(!node.children.length){
+        if(mergeableIds.has(node.id)){
+            const label=document.createElement('label'),checkbox=document.createElement('input'),text=document.createElement('span');
+            label.className='group-option';
+            label.style.padding='5px 9px';
+            checkbox.type='checkbox';checkbox.style.width='auto';checkbox.style.height='auto';
+            checkbox.checked=mergeTreeNodeIds.has(node.id);
+            checkbox.onchange=()=>{checkbox.checked?mergeTreeNodeIds.add(node.id):mergeTreeNodeIds.delete(node.id);updateMergeTreeButton()};
+            text.textContent='选择合并';
+            label.append(checkbox,text);actions.appendChild(label)
+        }
+        if(node.status!=='archived'&&!node.children.length){
             if(node.status!=='safe')add('确认安全',()=>changeTreeStatus(node,'safe'),'success');
             if(node.status!=='blocked')add('标记被墙',()=>changeTreeStatus(node,'blocked'),'danger');
             if(['active','blocked'].includes(node.status))add('继续细分',()=>openSplitTree(node));
             if(node.status==='safe')add('转入观察/安全组',()=>openTreeTransfer(node),'success');
         }
-        if(node.depth===0)add('删除排查树',()=>deleteInvestigationTree(node),'danger');
+        if(node.depth===0&&node.status!=='archived')add('删除排查树',()=>deleteInvestigationTree(node),'danger');
         card.append(head,host,metaLine,actions);
         list.appendChild(card);
-    })
+    });
+    updateMergeTreeButton()
 }
-async function changeTreeStatus(node,status){const label=status==='safe'?'安全':'被墙';if(!confirm(`确认把“${node.name}”标记为${label}？`))return;try{updateCurrent(await request(api(`/investigations/${encodeURIComponent(node.id)}/status`),{method:'POST',body:JSON.stringify({status})}));toast(`节点已标记为${label}`)}catch(error){toast(error.message,'error')}}
+async function changeTreeStatus(node,status){const label=status==='safe'?'安全':'被墙';if(!confirm(`确认把“${node.name}”标记为${label}？${status==='blocked'?'\n只有已拉取该分支域名的用户会留下排查；未拉取用户下次订阅时重新分组。':''}`))return;try{const result=await request(api(`/investigations/${encodeURIComponent(node.id)}/status`),{method:'POST',body:JSON.stringify({status})});updateCurrent(result.campaign);toast(status==='blocked'?`已保留 ${result.suspect_count} 名嫌疑用户，${result.released_count} 名未拉取用户已回流`:`节点已标记为${label}`)}catch(error){toast(error.message,'error')}}
 async function deleteInvestigationTree(node){if(!confirm(`删除“${node.name}”整棵排查树及全部下级分支？\n仍在树内的用户会解除固定分组，下次拉订阅时重新分配。手动锁定规则不受影响。`))return;try{const result=await request(api(`/investigations/${encodeURIComponent(node.id)}`),{method:'DELETE'});updateCurrent(result.campaign);toast(`排查树已删除，${result.released_count} 名用户等待重新分组`)}catch(error){toast(error.message,'error')}}
 function openSplitTree(node){splitTreeNodeId=node.id;$('splitTreeTitle').textContent=`拆分：${node.name}（${node.user_count} 人）`;$('splitTreeCount').value=2;renderSplitTreeFields();$('splitTreeModal').classList.add('show')}
-function renderSplitTreeFields(){const count=Math.max(2,Math.min(10,Number($('splitTreeCount').value)||2)),container=$('splitTreeBranches'),old=[...container.querySelectorAll('.branch-row')].map(row=>[row.children[0].value,row.children[1].value]);container.textContent='';for(let index=0;index<count;index++){const row=document.createElement('div');row.className='branch-row';const name=document.createElement('input');name.placeholder=`分支 ${String.fromCharCode(65+index)}`;name.value=old[index]?.[0]||`分支 ${String.fromCharCode(65+index)}`;const host=document.createElement('input');host.placeholder='全新域名或 IP';host.value=old[index]?.[1]||'';row.append(name,host);container.appendChild(row)}}
+function renderBranchFields(countId,containerId){const count=Math.max(2,Math.min(10,Number($(countId).value)||2)),container=$(containerId),old=[...container.querySelectorAll('.branch-row')].map(row=>[row.children[0].value,row.children[1].value]);container.textContent='';for(let index=0;index<count;index++){const row=document.createElement('div');row.className='branch-row';const name=document.createElement('input');name.placeholder=`分支 ${String.fromCharCode(65+index)}`;name.value=old[index]?.[0]||`分支 ${String.fromCharCode(65+index)}`;const host=document.createElement('input');host.placeholder='全新域名或 IP';host.value=old[index]?.[1]||'';row.append(name,host);container.appendChild(row)}}
+function branchValues(containerId){return [...$(containerId).querySelectorAll('.branch-row')].map(row=>({name:row.children[0].value.trim(),host:row.children[1].value.trim()}))}
+function renderSplitTreeFields(){renderBranchFields('splitTreeCount','splitTreeBranches')}
+function renderMergeTreeFields(){renderBranchFields('mergeTreeCount','mergeTreeBranches')}
+function updateMergeTreeButton(){const button=$('openMergeTree');button.textContent=`合并被墙分支（${mergeTreeNodeIds.size}）`;button.disabled=mergeTreeNodeIds.size<2}
+function openMergeTree(){const nodes=router()?.investigation_nodes||[],selected=nodes.filter(node=>mergeTreeNodeIds.has(node.id));if(selected.length<2)return toast('请至少选择两个被墙叶子分支','error');$('mergeTreeHint').textContent=`已选择 ${selected.length} 个被墙分支，共 ${selected.reduce((sum,node)=>sum+node.mergeable_count,0)} 名已拉取嫌疑用户。合并后会重新打乱并均分。`;$('mergeTreeName').value='合并排查树';$('mergeTreeCount').value=2;renderMergeTreeFields();$('mergeTreeModal').classList.add('show')}
 function renderOverridePoolOptions(){fillSelect('overridePool',pools(),$('overridePool').value,'仅使用单独域名')}
-function resetTaskEditors(){$('poolId').value='';$('poolName').value='';$('poolHost').value='';$('poolCapacity').value=0;$('poolNote').value='';$('userSearch').value='';$('searchResults').textContent='';$('overrideUser').value='';delete $('overrideUser').dataset.id;$('overrideHost').value='';$('overrideNote').value='';$('overrideExpires').value='';$('overrideRows').textContent='';$('usersModal').classList.remove('show');$('transferModal').classList.remove('show');$('splitTreeModal').classList.remove('show');transferSource=null;splitTreeNodeId='';poolModal={poolId:'',poolName:'',page:1,lastPage:1,total:0,q:''}}
+function resetTaskEditors(){$('poolId').value='';$('poolName').value='';$('poolHost').value='';$('poolCapacity').value=0;$('poolNote').value='';$('userSearch').value='';$('searchResults').textContent='';$('overrideUser').value='';delete $('overrideUser').dataset.id;$('overrideHost').value='';$('overrideNote').value='';$('overrideExpires').value='';$('overrideRows').textContent='';$('usersModal').classList.remove('show');$('transferModal').classList.remove('show');$('splitTreeModal').classList.remove('show');$('mergeTreeModal').classList.remove('show');transferSource=null;splitTreeNodeId='';mergeTreeNodeIds.clear();updateMergeTreeButton();poolModal={poolId:'',poolName:'',page:1,lastPage:1,total:0,q:''}}
 function renderCurrent(){current||=blankCampaign();$('campaignName').value=current.name||'';renderGroups();renderNodes();renderStatus();renderPools();renderInvestigationTree();renderOverridePoolOptions();$('deleteCampaign').disabled=!current.id||router()?.enabled}
 function updateCurrent(campaign){const index=campaigns.findIndex(item=>item.id===campaign.id);if(index>=0)campaigns[index]=campaign;else campaigns.push(campaign);current=campaign;renderCampaigns();renderCurrent()}
 async function refresh(full=true){const id=current?.id,isDraft=current&&current.id==='';if(full){const data=await request('/meta');meta={groups:data.groups,servers:data.servers};campaigns=data.campaigns}else campaigns=await request('/campaigns');if(isDraft&&!full){renderCampaigns();return}current=campaigns.find(item=>item.id===id)||campaigns[0]||blankCampaign();renderCampaigns();if(full)renderCurrent();else{renderStatus();renderPools();renderInvestigationTree()}}
@@ -358,7 +385,8 @@ $('searchUser').onclick=async()=>{try{const rows=await request(api(`/users/searc
 $('saveOverride').onclick=async()=>{try{const userId=Number($('overrideUser').dataset.id);if(!userId)throw new Error('请先搜索并选择用户');const expires=$('overrideExpires').value?Math.floor(new Date($('overrideExpires').value).getTime()/1000):0;updateCurrent(await request(api(`/overrides/${userId}`),{method:'POST',body:JSON.stringify({pool_id:$('overridePool').value||null,host:$('overrideHost').value.trim(),node_hosts:{},server_name:'',transport_host:'',locked:$('overrideLocked').checked,note:$('overrideNote').value.trim(),expires_at:expires})}));await loadOverrides();toast('用户规则已保存')}catch(error){toast(error.message,'error')}};
 $('searchPoolUsers').onclick=()=>{poolModal.q=$('poolUserSearch').value.trim();reloadPagedUsers(1)};$('poolUserSearch').onkeydown=event=>{if(event.key==='Enter')$('searchPoolUsers').click()};$('prevPoolUsers').onclick=()=>reloadPagedUsers(poolModal.page-1);$('nextPoolUsers').onclick=()=>reloadPagedUsers(poolModal.page+1);
 $('closeTransfer').onclick=()=>{$('transferModal').classList.remove('show');transferSource=null};$('transferModal').onclick=event=>{if(event.target===$('transferModal'))$('closeTransfer').click()};$('confirmTransfer').onclick=async()=>{if(!transferSource)return;const source=transferSource,targetId=$('transferTarget').value,targetName=$('transferTarget').options[$('transferTarget').selectedIndex]?.textContent,isTree=source.mode==='tree';if(!confirm(`把“${source.name}”${isTree?'全部固定':'已拉取'}用户转入“${targetName}”？`))return;try{const path=isTree?`/investigations/${encodeURIComponent(source.id)}/move`:`/pools/${encodeURIComponent(source.id)}/move-pulled`;const result=await request(api(path),{method:'POST',body:JSON.stringify({target_pool_id:targetId})});updateCurrent(result.campaign);$('closeTransfer').click();toast(`已移动 ${result.moved_count} 人`)}catch(error){toast(error.message,'error')}};
-$('splitTreeCount').oninput=renderSplitTreeFields;$('closeSplitTree').onclick=()=>{$('splitTreeModal').classList.remove('show');splitTreeNodeId=''};$('splitTreeModal').onclick=event=>{if(event.target===$('splitTreeModal'))$('closeSplitTree').click()};$('confirmSplitTree').onclick=async()=>{if(!splitTreeNodeId)return;const branches=[...$('splitTreeBranches').querySelectorAll('.branch-row')].map(row=>({name:row.children[0].value.trim(),host:row.children[1].value.trim()}));if(branches.some(branch=>!branch.host))return toast('请填写每个分支的全新域名','error');if(!confirm(`确认把该节点固定均分为 ${branches.length} 个独立分支？`))return;try{updateCurrent(await request(api(`/investigations/${encodeURIComponent(splitTreeNodeId)}/split`),{method:'POST',body:JSON.stringify({branches})}));$('closeSplitTree').click();toast('下级分支已创建，用户分配已固定')}catch(error){toast(error.message,'error')}};
+$('splitTreeCount').oninput=renderSplitTreeFields;$('closeSplitTree').onclick=()=>{$('splitTreeModal').classList.remove('show');splitTreeNodeId=''};$('splitTreeModal').onclick=event=>{if(event.target===$('splitTreeModal'))$('closeSplitTree').click()};$('confirmSplitTree').onclick=async()=>{if(!splitTreeNodeId)return;const branches=branchValues('splitTreeBranches');if(branches.some(branch=>!branch.host))return toast('请填写每个分支的全新域名','error');if(!confirm(`确认把该节点固定均分为 ${branches.length} 个独立分支？`))return;try{updateCurrent(await request(api(`/investigations/${encodeURIComponent(splitTreeNodeId)}/split`),{method:'POST',body:JSON.stringify({branches})}));$('closeSplitTree').click();toast('下级分支已创建，用户分配已固定')}catch(error){toast(error.message,'error')}};
+$('openMergeTree').onclick=openMergeTree;$('mergeTreeCount').oninput=renderMergeTreeFields;$('closeMergeTree').onclick=()=> $('mergeTreeModal').classList.remove('show');$('mergeTreeModal').onclick=event=>{if(event.target===$('mergeTreeModal'))$('closeMergeTree').click()};$('confirmMergeTree').onclick=async()=>{const nodeIds=[...mergeTreeNodeIds],branches=branchValues('mergeTreeBranches');if(nodeIds.length<2)return toast('请至少选择两个被墙叶子分支','error');if(branches.some(branch=>!branch.host))return toast('请填写每个新分支的全新域名','error');if(!confirm(`把 ${nodeIds.length} 个被墙分支的嫌疑用户重新打乱并分为 ${branches.length} 组？`))return;try{const result=await request(api('/investigations/merge'),{method:'POST',body:JSON.stringify({node_ids:nodeIds,name:$('mergeTreeName').value.trim(),branches})});mergeTreeNodeIds.clear();updateCurrent(result.campaign);$('closeMergeTree').click();toast(`已合并 ${result.source_count} 个分支，重新分配 ${result.merged_count} 名嫌疑用户`)}catch(error){toast(error.message,'error')}};
 $('refreshOverrides').onclick=()=>loadOverrides().catch(error=>toast(error.message,'error'));$('closeUsers').onclick=()=> $('usersModal').classList.remove('show');$('usersModal').onclick=event=>{if(event.target===$('usersModal'))$('usersModal').classList.remove('show')};
 async function boot(){
     loading(true,'正在验证管理后台登录状态…');
