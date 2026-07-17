@@ -854,39 +854,6 @@ class BaitSplitService
         ];
     }
 
-    public function releaseUnpulledInvestigationUsers(
-        string $campaignId,
-        string $nodeId
-    ): array {
-        $state = $this->state();
-        $campaign = $this->requireRouterCampaign($state, $campaignId);
-        $node = $campaign['router']['investigation_nodes'][$nodeId] ?? null;
-        if (
-            !$node
-            || $node['children'] !== []
-            || !in_array($node['status'], ['active', 'safe'], true)
-        ) {
-            throw new InvalidArgumentException(
-                '只能回流观察中或安全的末级分支'
-            );
-        }
-        $releasedUserIds = $this->releaseUnexposedNodeUsers(
-            $campaign,
-            $nodeId
-        );
-        $campaign['router']['investigation_nodes'][$nodeId]['updated_at'] =
-            time();
-        $state['campaigns'][$campaignId] = $campaign;
-        $this->saveState($state);
-        return [
-            'campaign' => $this->campaignStatus($campaign),
-            'released_count' => count($releasedUserIds),
-            'remaining_count' => count(
-                $campaign['router']['investigation_nodes'][$nodeId]['user_ids']
-            ),
-        ];
-    }
-
     public function updateInvestigationNodeHost(
         string $campaignId,
         string $nodeId,
@@ -1078,6 +1045,7 @@ class BaitSplitService
         $targetPool = $router['pools'][$targetPoolId] ?? null;
         if (
             !$targetPool
+            || $targetPoolId === $node['pool_id']
             || !$this->poolIsUsable($targetPool)
             || !in_array(
                 $targetPool['type'],
@@ -1094,15 +1062,21 @@ class BaitSplitService
         ) {
             throw new InvalidArgumentException('请选择可用的普通用户池');
         }
+        $exposedMap = array_flip(
+            $this->poolExposureIds($campaign, $node['pool_id'])
+        );
         $userIds = array_values(array_filter(
             $node['user_ids'],
-            function (int $userId) use ($router): bool {
+            function (int $userId) use ($router, $node, $exposedMap): bool {
                 $override = $router['overrides'][(string) $userId] ?? null;
-                return !$this->overrideBlocksAutomation($override);
+                return isset($exposedMap[$userId])
+                    && ($router['assignments'][(string) $userId] ?? '')
+                        === $node['pool_id']
+                    && !$this->overrideBlocksAutomation($override);
             }
         ));
         if ($userIds === []) {
-            throw new InvalidArgumentException('该节点没有可自动转移的用户');
+            throw new InvalidArgumentException('该节点没有可转移的已拉取用户');
         }
         $allocations = $this->allocateUsersToPoolChain(
             $campaign,
@@ -1125,19 +1099,26 @@ class BaitSplitService
             $router['untested_ids'],
             $userIds
         ));
-        $router['investigation_nodes'][$nodeId]['status'] = 'archived';
+        $remainingUserIds = array_values(array_diff(
+            $node['user_ids'],
+            array_map('intval', array_keys($allocations))
+        ));
+        $router['investigation_nodes'][$nodeId]['user_ids'] =
+            $remainingUserIds;
         $router['investigation_nodes'][$nodeId]['updated_at'] = time();
         if (
             isset($router['pools'][$node['pool_id']])
             && $router['pools'][$node['pool_id']]['tree_node_id'] === $nodeId
         ) {
-            $router['pools'][$node['pool_id']]['enabled'] = false;
+            $router['pools'][$node['pool_id']]['capacity'] =
+                count($remainingUserIds);
         }
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
         return [
             'campaign' => $this->campaignStatus($campaign),
             'moved_count' => count($allocations),
+            'remaining_count' => count($remainingUserIds),
         ];
     }
 
