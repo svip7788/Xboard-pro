@@ -882,50 +882,75 @@ class BaitSplitService
             $nodeIds
         ))));
         if (count($nodeIds) < 2) {
-            throw new InvalidArgumentException('至少选择两个被墙叶子分支');
+            throw new InvalidArgumentException('至少选择两棵旧排查树');
         }
 
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $router = &$campaign['router'];
         $branches = $this->normalizeInvestigationBranches($router, $branches);
+        $sourceRoots = [];
         $sourceNodes = [];
         $userMap = [];
+        $releasedUserMap = [];
+        $protectedPoolIds = [];
         foreach ($nodeIds as $nodeId) {
-            $node = $router['investigation_nodes'][$nodeId] ?? null;
+            $root = $router['investigation_nodes'][$nodeId] ?? null;
             if (
-                !$node
-                || $node['status'] !== 'blocked'
-                || $node['children'] !== []
+                !$root
+                || (string) ($root['parent_id'] ?? '') !== ''
+                || $root['status'] === 'archived'
             ) {
-                throw new InvalidArgumentException(
-                    '只能合并被墙且未继续拆分的叶子分支'
+                throw new InvalidArgumentException('只能合并未归档的根树');
+            }
+            $sourceRoots[$nodeId] = $root;
+        }
+        foreach ($sourceRoots as $rootId => $root) {
+            foreach ($router['investigation_nodes'] as $sourceNodeId => $node) {
+                if ($node['root_id'] !== $rootId) {
+                    continue;
+                }
+                $sourceNodes[$sourceNodeId] = $node;
+                if ($node['children'] !== []) {
+                    continue;
+                }
+                $pool = $router['pools'][$node['pool_id']] ?? null;
+                if (!$pool || $pool['tree_node_id'] !== $sourceNodeId) {
+                    throw new InvalidArgumentException('旧树末级用户池不存在');
+                }
+                $exposedMap = array_flip(
+                    $this->poolExposureIds($campaign, $node['pool_id'])
                 );
-            }
-            $pool = $router['pools'][$node['pool_id']] ?? null;
-            if (!$pool || $pool['tree_node_id'] !== $nodeId) {
-                throw new InvalidArgumentException('被墙分支对应用户池不存在');
-            }
-            $exposedMap = array_flip(
-                $this->poolExposureIds($campaign, $node['pool_id'])
-            );
-            foreach ($node['user_ids'] as $userId) {
-                $override = $router['overrides'][(string) $userId] ?? null;
-                if (
-                    !$this->overrideBlocksAutomation($override)
-                    && isset($exposedMap[$userId])
-                    && ($router['assignments'][(string) $userId] ?? '')
-                        === $node['pool_id']
-                ) {
-                    $userMap[$userId] = true;
+                foreach ($node['user_ids'] as $userId) {
+                    if (
+                        ($router['assignments'][(string) $userId] ?? '')
+                        !== $node['pool_id']
+                    ) {
+                        continue;
+                    }
+                    $override = $router['overrides'][(string) $userId] ?? null;
+                    if ($this->overrideBlocksAutomation($override)) {
+                        $protectedPoolIds[$node['pool_id']] = true;
+                        continue;
+                    }
+                    if (isset($exposedMap[$userId])) {
+                        $userMap[$userId] = true;
+                        continue;
+                    }
+                    unset($router['assignments'][(string) $userId]);
+                    $releasedUserMap[$userId] = true;
                 }
             }
-            $sourceNodes[$nodeId] = $node;
         }
         $userIds = array_map('intval', array_keys($userMap));
         if (count($userIds) < count($branches)) {
-            throw new InvalidArgumentException('嫌疑用户人数少于新分组数');
+            throw new InvalidArgumentException('已拉取用户人数少于新分组数');
         }
+        $releasedUserIds = array_map('intval', array_keys($releasedUserMap));
+        $router['untested_ids'] = $this->normalizeIds(array_merge(
+            $router['untested_ids'],
+            $releasedUserIds
+        ));
 
         $rootId = 'tree-' . Str::uuid();
         $rootPoolId = 'tree-pool-' . Str::uuid();
@@ -941,7 +966,7 @@ class BaitSplitService
             'tree_node_id' => $rootId,
             'note' => '合并来源：' . implode('、', array_map(
                 fn(array $node): string => $node['name'],
-                $sourceNodes
+                $sourceRoots
             )),
         ], $rootPoolId);
         $root = $this->normalizeInvestigationNode([
@@ -968,7 +993,10 @@ class BaitSplitService
         foreach ($sourceNodes as $sourceNodeId => $sourceNode) {
             $router['investigation_nodes'][$sourceNodeId]['status'] = 'archived';
             $router['investigation_nodes'][$sourceNodeId]['updated_at'] = time();
-            if (isset($router['pools'][$sourceNode['pool_id']])) {
+            if (
+                isset($router['pools'][$sourceNode['pool_id']])
+                && !isset($protectedPoolIds[$sourceNode['pool_id']])
+            ) {
                 $router['pools'][$sourceNode['pool_id']]['enabled'] = false;
                 $router['pools'][$sourceNode['pool_id']]['status'] = 'blocked';
             }
@@ -979,7 +1007,8 @@ class BaitSplitService
         return [
             'campaign' => $this->campaignStatus($campaign),
             'merged_count' => count($userIds),
-            'source_count' => count($sourceNodes),
+            'released_count' => count($releasedUserIds),
+            'source_count' => count($sourceRoots),
         ];
     }
 
