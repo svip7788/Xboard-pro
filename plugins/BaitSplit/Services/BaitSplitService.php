@@ -937,6 +937,7 @@ class BaitSplitService
                 $exposedMap = array_flip(
                     $this->investigationNodeExposureIds($campaign, $node)
                 );
+                $mergeAllUsers = $node['status'] === 'blocked';
                 foreach ($node['user_ids'] as $userId) {
                     if (
                         ($router['assignments'][(string) $userId] ?? '')
@@ -953,7 +954,7 @@ class BaitSplitService
                         );
                         continue;
                     }
-                    if (isset($exposedMap[$userId])) {
+                    if ($mergeAllUsers || isset($exposedMap[$userId])) {
                         $userMap[$userId] = true;
                         continue;
                     }
@@ -964,7 +965,7 @@ class BaitSplitService
         }
         $userIds = array_map('intval', array_keys($userMap));
         if (count($userIds) < count($branches)) {
-            throw new InvalidArgumentException('已拉取用户人数少于新分组数');
+            throw new InvalidArgumentException('可合并用户人数少于新分组数');
         }
         $releasedUserIds = array_map('intval', array_keys($releasedUserMap));
         $router['untested_ids'] = $this->normalizeIds(array_merge(
@@ -2679,7 +2680,10 @@ class BaitSplitService
                 ): bool {
                     $override = $router['overrides'][(string) $userId] ?? null;
                     return !$this->overrideBlocksAutomation($override)
-                        && isset($exposedMap[$userId])
+                        && (
+                            $node['status'] === 'blocked'
+                            || isset($exposedMap[$userId])
+                        )
                         && ($router['assignments'][(string) $userId] ?? '')
                             === $node['pool_id'];
                 }
