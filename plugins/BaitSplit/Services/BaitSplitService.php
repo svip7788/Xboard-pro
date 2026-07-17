@@ -1037,10 +1037,12 @@ class BaitSplitService
         $node = $router['investigation_nodes'][$nodeId] ?? null;
         if (
             !$node
-            || $node['status'] !== 'safe'
+            || !in_array($node['status'], ['active', 'safe'], true)
             || $node['children'] !== []
         ) {
-            throw new InvalidArgumentException('只能转移已确认安全的叶子节点');
+            throw new InvalidArgumentException(
+                '只能转移观察中或已确认安全的叶子节点'
+            );
         }
         $targetPool = $router['pools'][$targetPoolId] ?? null;
         if (

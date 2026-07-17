@@ -360,7 +360,7 @@ function renderInvestigationTree(){
             if(node.status!=='safe')add('确认安全',()=>changeTreeStatus(node,'safe'),'success');
             if(node.status!=='blocked')add('标记被墙',()=>changeTreeStatus(node,'blocked'),'danger');
             if(['active','blocked'].includes(node.status))add('继续细分',()=>openSplitTree(node));
-            if(node.status==='safe'&&node.pulled_count>0)add('迁移已拉取用户',()=>openTreeTransfer(node),'success');
+            if(['active','safe'].includes(node.status)&&node.pulled_count>0)add('迁移已拉取用户',()=>openTreeTransfer(node),'success');
         }
         if(node.depth===0&&node.status!=='archived')add('删除排查树',()=>deleteInvestigationTree(node),'danger');
         card.append(head,host,metaLine,actions);
