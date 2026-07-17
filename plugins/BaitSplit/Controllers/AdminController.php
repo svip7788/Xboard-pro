@@ -425,6 +425,19 @@ class AdminController extends PluginController
         );
     }
 
+    public function releaseUnpulledInvestigationUsers(
+        string $campaignId,
+        string $nodeId
+    ): JsonResponse {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()
+                ->releaseUnpulledInvestigationUsers($campaignId, $nodeId)
+        );
+    }
+
     public function deleteInvestigationTree(
         string $campaignId,
         string $nodeId

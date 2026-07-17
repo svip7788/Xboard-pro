@@ -829,38 +829,10 @@ class BaitSplitService
         }
         $releasedUserIds = [];
         if ($status === 'blocked') {
-            $exposedMap = array_flip(
-                $this->poolExposureIds($campaign, $node['pool_id'])
+            $releasedUserIds = $this->releaseUnexposedNodeUsers(
+                $campaign,
+                $nodeId
             );
-            $suspectUserIds = [];
-            foreach ($node['user_ids'] as $userId) {
-                $override = $router['overrides'][(string) $userId] ?? null;
-                if ($this->overrideBlocksAutomation($override)) {
-                    $suspectUserIds[] = $userId;
-                    continue;
-                }
-                if (
-                    ($router['assignments'][(string) $userId] ?? '')
-                    !== $node['pool_id']
-                ) {
-                    continue;
-                }
-                if (isset($exposedMap[$userId])) {
-                    $suspectUserIds[] = $userId;
-                    continue;
-                }
-                unset($router['assignments'][(string) $userId]);
-                $releasedUserIds[] = $userId;
-            }
-            $router['investigation_nodes'][$nodeId]['user_ids'] =
-                array_values(array_unique($suspectUserIds));
-            $router['investigation_nodes'][$nodeId]['released_count'] =
-                (int) ($node['released_count'] ?? 0)
-                + count($releasedUserIds);
-            $router['untested_ids'] = $this->normalizeIds(array_merge(
-                $router['untested_ids'],
-                $releasedUserIds
-            ));
         }
         $router['investigation_nodes'][$nodeId]['status'] = $status;
         $router['investigation_nodes'][$nodeId]['updated_at'] = time();
@@ -878,6 +850,39 @@ class BaitSplitService
             'released_count' => count($releasedUserIds),
             'suspect_count' => count(
                 $router['investigation_nodes'][$nodeId]['user_ids']
+            ),
+        ];
+    }
+
+    public function releaseUnpulledInvestigationUsers(
+        string $campaignId,
+        string $nodeId
+    ): array {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $node = $campaign['router']['investigation_nodes'][$nodeId] ?? null;
+        if (
+            !$node
+            || $node['children'] !== []
+            || !in_array($node['status'], ['active', 'safe'], true)
+        ) {
+            throw new InvalidArgumentException(
+                '只能回流观察中或安全的末级分支'
+            );
+        }
+        $releasedUserIds = $this->releaseUnexposedNodeUsers(
+            $campaign,
+            $nodeId
+        );
+        $campaign['router']['investigation_nodes'][$nodeId]['updated_at'] =
+            time();
+        $state['campaigns'][$campaignId] = $campaign;
+        $this->saveState($state);
+        return [
+            'campaign' => $this->campaignStatus($campaign),
+            'released_count' => count($releasedUserIds),
+            'remaining_count' => count(
+                $campaign['router']['investigation_nodes'][$nodeId]['user_ids']
             ),
         ];
     }
@@ -1817,6 +1822,52 @@ class BaitSplitService
             }
         }
         return [];
+    }
+
+    private function releaseUnexposedNodeUsers(
+        array &$campaign,
+        string $nodeId
+    ): array {
+        $router = &$campaign['router'];
+        $node = $router['investigation_nodes'][$nodeId];
+        $exposedMap = array_flip(
+            $this->poolExposureIds($campaign, $node['pool_id'])
+        );
+        $retainedUserIds = [];
+        $releasedUserIds = [];
+        foreach ($node['user_ids'] as $userId) {
+            $override = $router['overrides'][(string) $userId] ?? null;
+            if ($this->overrideBlocksAutomation($override)) {
+                $retainedUserIds[] = $userId;
+                continue;
+            }
+            if (
+                ($router['assignments'][(string) $userId] ?? '')
+                !== $node['pool_id']
+            ) {
+                continue;
+            }
+            if (isset($exposedMap[$userId])) {
+                $retainedUserIds[] = $userId;
+                continue;
+            }
+            unset($router['assignments'][(string) $userId]);
+            $releasedUserIds[] = $userId;
+        }
+        $retainedUserIds = $this->normalizeIds($retainedUserIds);
+        $router['investigation_nodes'][$nodeId]['user_ids'] = $retainedUserIds;
+        $router['investigation_nodes'][$nodeId]['released_count'] =
+            (int) ($node['released_count'] ?? 0)
+            + count($releasedUserIds);
+        if (isset($router['pools'][$node['pool_id']])) {
+            $router['pools'][$node['pool_id']]['capacity'] =
+                count($retainedUserIds);
+        }
+        $router['untested_ids'] = $this->normalizeIds(array_merge(
+            $router['untested_ids'],
+            $releasedUserIds
+        ));
+        return $releasedUserIds;
     }
 
     private function pruneMergedSourceTrees(array &$campaign): int
