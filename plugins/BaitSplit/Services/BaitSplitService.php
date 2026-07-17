@@ -696,6 +696,7 @@ class BaitSplitService
             'name' => $nodeName,
             'status' => 'blocked',
             'pool_id' => $rootPoolId,
+            'source_pool_id' => $poolId,
             'user_ids' => $userIds,
             'children' => [],
         ], $nodeId);
@@ -934,7 +935,7 @@ class BaitSplitService
                     throw new InvalidArgumentException('旧树末级用户池不存在');
                 }
                 $exposedMap = array_flip(
-                    $this->poolExposureIds($campaign, $node['pool_id'])
+                    $this->investigationNodeExposureIds($campaign, $node)
                 );
                 foreach ($node['user_ids'] as $userId) {
                     if (
@@ -1065,7 +1066,7 @@ class BaitSplitService
             throw new InvalidArgumentException('请选择可用的普通用户池');
         }
         $exposedMap = array_flip(
-            $this->poolExposureIds($campaign, $node['pool_id'])
+            $this->investigationNodeExposureIds($campaign, $node)
         );
         $userIds = array_values(array_filter(
             $node['user_ids'],
@@ -1160,10 +1161,9 @@ class BaitSplitService
         $lastPage = max(1, (int) ceil($total / $perPage));
         $page = max(1, min($lastPage, $page));
         $pageIds = array_slice($matchedIds, ($page - 1) * $perPage, $perPage);
-        $exposed = array_flip($this->poolExposureIds(
-            $campaign,
-            $node['pool_id']
-        ));
+        $exposed = array_flip(
+            $this->investigationNodeExposureIds($campaign, $node)
+        );
         return [
             'items' => array_map(
                 fn(array $user): array => $user + [
@@ -1820,7 +1820,7 @@ class BaitSplitService
         $router = &$campaign['router'];
         $node = $router['investigation_nodes'][$nodeId];
         $exposedMap = array_flip(
-            $this->poolExposureIds($campaign, $node['pool_id'])
+            $this->investigationNodeExposureIds($campaign, $node)
         );
         $retainedUserIds = [];
         $releasedUserIds = [];
@@ -2464,10 +2464,32 @@ class BaitSplitService
                 && !str_starts_with((string) ($node['id'] ?? $id), 'legacy-')
             ) {
                 $nodeId = (string) ($node['id'] ?? $id);
-                $investigationNodes[$nodeId] = $this->normalizeInvestigationNode(
+                $normalizedNode = $this->normalizeInvestigationNode(
                     $node,
                     $nodeId
                 );
+                if (
+                    $normalizedNode['source_pool_id'] === ''
+                    && $normalizedNode['depth'] === 0
+                ) {
+                    $treePool = $router['pools'][$normalizedNode['pool_id']]
+                        ?? null;
+                    $note = (string) ($treePool['note'] ?? '');
+                    if (str_starts_with($note, '来源：')) {
+                        $sourceName = mb_substr($note, 3);
+                        foreach ($router['pools'] as $sourcePoolId => $sourcePool) {
+                            if (
+                                $sourcePool['tree_node_id'] === ''
+                                && $sourcePool['name'] === $sourceName
+                            ) {
+                                $normalizedNode['source_pool_id'] =
+                                    $sourcePoolId;
+                                break;
+                            }
+                        }
+                    }
+                }
+                $investigationNodes[$nodeId] = $normalizedNode;
             }
         }
         $router['investigation_nodes'] = $investigationNodes;
@@ -2581,6 +2603,7 @@ class BaitSplitService
                 true
             ) ? $status : 'active',
             'pool_id' => (string) ($node['pool_id'] ?? ''),
+            'source_pool_id' => (string) ($node['source_pool_id'] ?? ''),
             'user_ids' => $this->normalizeIds($node['user_ids'] ?? []),
             'released_count' => max(0, (int) ($node['released_count'] ?? 0)),
             'source_node_ids' => array_values(array_unique(array_filter(
@@ -2644,7 +2667,7 @@ class BaitSplitService
         foreach ($router['investigation_nodes'] as $node) {
             $pool = $router['pools'][$node['pool_id']] ?? null;
             $exposedIds = $pool
-                ? $this->poolExposureIds($campaign, $node['pool_id'])
+                ? $this->investigationNodeExposureIds($campaign, $node)
                 : [];
             $exposedMap = array_flip($exposedIds);
             $mergeableCount = count(array_filter(
@@ -3286,6 +3309,27 @@ class BaitSplitService
         } catch (\Throwable) {
             return [];
         }
+    }
+
+    private function investigationNodeExposureIds(
+        array $campaign,
+        array $node
+    ): array {
+        $exposedIds = $this->poolExposureIds(
+            $campaign,
+            (string) $node['pool_id']
+        );
+        $sourcePoolId = (string) ($node['source_pool_id'] ?? '');
+        if ($sourcePoolId !== '') {
+            $exposedIds = array_merge(
+                $exposedIds,
+                $this->poolExposureIds($campaign, $sourcePoolId)
+            );
+        }
+        return $this->normalizeIds(array_intersect(
+            $node['user_ids'],
+            $exposedIds
+        ));
     }
 
     private function poolExposureStats(
