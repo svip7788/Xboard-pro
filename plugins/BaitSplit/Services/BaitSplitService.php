@@ -116,9 +116,20 @@ class BaitSplitService
 
     public function campaigns(): array
     {
+        $state = $this->state();
+        $changed = false;
+        foreach ($state['campaigns'] as &$campaign) {
+            if ($this->pruneMergedSourceTrees($campaign) > 0) {
+                $changed = true;
+            }
+        }
+        unset($campaign);
+        if ($changed) {
+            $this->saveState($state);
+        }
         return array_values(array_map(
             fn(array $campaign): array => $this->campaignStatus($campaign),
-            $this->state()['campaigns']
+            $state['campaigns']
         ));
     }
 
@@ -929,27 +940,11 @@ class BaitSplitService
                     }
                     $override = $router['overrides'][(string) $userId] ?? null;
                     if ($this->overrideBlocksAutomation($override)) {
-                        if (
-                            $override
-                            && $override['pool_id'] === $node['pool_id']
-                        ) {
-                            $override['pool_id'] = '';
-                            foreach ([
-                                'host',
-                                'node_hosts',
-                                'server_name',
-                                'transport_host',
-                            ] as $field) {
-                                if (empty($override[$field])) {
-                                    $override[$field] = $pool[$field] ?? (
-                                        $field === 'node_hosts' ? [] : ''
-                                    );
-                                }
-                            }
-                            $router['overrides'][(string) $userId] =
-                                $this->normalizeOverride($override);
-                        }
-                        unset($router['assignments'][(string) $userId]);
+                        $this->detachLockedOverrideFromPool(
+                            $router,
+                            $userId,
+                            $pool
+                        );
                         continue;
                     }
                     if (isset($exposedMap[$userId])) {
@@ -1011,22 +1006,7 @@ class BaitSplitService
 
         foreach ($sourceNodes as $sourceNodeId => $sourceNode) {
             $sourcePoolId = $sourceNode['pool_id'];
-            try {
-                Redis::del($this->routerPoolExposureKey(
-                    $campaign,
-                    $sourcePoolId
-                ));
-                Redis::del($this->routerPoolExposureCountKey(
-                    $campaign,
-                    $sourcePoolId
-                ));
-                Redis::del($this->routerPoolExposureLastKey(
-                    $campaign,
-                    $sourcePoolId
-                ));
-            } catch (\Throwable) {
-                // 删除旧树不能因临时统计清理失败而中断。
-            }
+            $this->deletePoolExposureStats($campaign, $sourcePoolId);
             unset($router['pools'][$sourcePoolId]);
             unset($router['investigation_nodes'][$sourceNodeId]);
         }
@@ -1790,6 +1770,84 @@ class BaitSplitService
             }
         }
         return [];
+    }
+
+    private function pruneMergedSourceTrees(array &$campaign): int
+    {
+        if (!is_array($campaign['router'] ?? null)) {
+            return 0;
+        }
+        $router = &$campaign['router'];
+        $sourceRootIds = [];
+        foreach ($router['investigation_nodes'] as $node) {
+            foreach ($node['source_node_ids'] as $sourceNodeId) {
+                $sourceNode = $router['investigation_nodes'][$sourceNodeId]
+                    ?? null;
+                if ($sourceNode && $sourceNode['root_id'] !== $node['root_id']) {
+                    $sourceRootIds[$sourceNode['root_id']] = true;
+                }
+            }
+        }
+        if ($sourceRootIds === []) {
+            return 0;
+        }
+
+        $nodeIds = [];
+        $poolIds = [];
+        foreach ($router['investigation_nodes'] as $nodeId => $node) {
+            if (isset($sourceRootIds[$node['root_id']])) {
+                $nodeIds[] = $nodeId;
+                if ($node['pool_id'] !== '') {
+                    $poolIds[$node['pool_id']] = true;
+                }
+            }
+        }
+        foreach ($router['assignments'] as $userId => $poolId) {
+            if (!isset($poolIds[$poolId])) {
+                continue;
+            }
+            $userId = (int) $userId;
+            $override = $router['overrides'][(string) $userId] ?? null;
+            if ($this->overrideBlocksAutomation($override)) {
+                $pool = $router['pools'][$poolId] ?? null;
+                if ($pool) {
+                    $this->detachLockedOverrideFromPool(
+                        $router,
+                        $userId,
+                        $pool
+                    );
+                } else {
+                    unset($router['assignments'][(string) $userId]);
+                }
+                continue;
+            }
+            unset($router['assignments'][(string) $userId]);
+            $router['untested_ids'][] = $userId;
+        }
+        $router['untested_ids'] = $this->normalizeIds(
+            $router['untested_ids']
+        );
+        foreach (array_keys($poolIds) as $poolId) {
+            $this->deletePoolExposureStats($campaign, $poolId);
+            unset($router['pools'][$poolId]);
+        }
+        foreach ($nodeIds as $nodeId) {
+            unset($router['investigation_nodes'][$nodeId]);
+        }
+        return count($sourceRootIds);
+    }
+
+    private function deletePoolExposureStats(
+        array $campaign,
+        string $poolId
+    ): void {
+        try {
+            Redis::del($this->routerPoolExposureKey($campaign, $poolId));
+            Redis::del($this->routerPoolExposureCountKey($campaign, $poolId));
+            Redis::del($this->routerPoolExposureLastKey($campaign, $poolId));
+        } catch (\Throwable) {
+            // 统计清理失败不能阻止主状态更新。
+        }
     }
 
     private function normalizeInvestigationBranches(
@@ -2573,6 +2631,32 @@ class BaitSplitService
         return $override !== null
             && $this->overrideIsActive($override)
             && (bool) $override['locked'];
+    }
+
+    private function detachLockedOverrideFromPool(
+        array &$router,
+        int $userId,
+        array $pool
+    ): void {
+        $override = $router['overrides'][(string) $userId] ?? null;
+        if ($override && $override['pool_id'] === $pool['id']) {
+            $override['pool_id'] = '';
+            foreach ([
+                'host',
+                'node_hosts',
+                'server_name',
+                'transport_host',
+            ] as $field) {
+                if (empty($override[$field])) {
+                    $override[$field] = $pool[$field] ?? (
+                        $field === 'node_hosts' ? [] : ''
+                    );
+                }
+            }
+            $router['overrides'][(string) $userId] =
+                $this->normalizeOverride($override);
+        }
+        unset($router['assignments'][(string) $userId]);
     }
 
     private function poolIdByType(array $router, string $type): string
