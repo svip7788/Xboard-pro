@@ -893,7 +893,6 @@ class BaitSplitService
         $sourceNodes = [];
         $userMap = [];
         $releasedUserMap = [];
-        $protectedPoolIds = [];
         foreach ($nodeIds as $nodeId) {
             $root = $router['investigation_nodes'][$nodeId] ?? null;
             if (
@@ -930,7 +929,27 @@ class BaitSplitService
                     }
                     $override = $router['overrides'][(string) $userId] ?? null;
                     if ($this->overrideBlocksAutomation($override)) {
-                        $protectedPoolIds[$node['pool_id']] = true;
+                        if (
+                            $override
+                            && $override['pool_id'] === $node['pool_id']
+                        ) {
+                            $override['pool_id'] = '';
+                            foreach ([
+                                'host',
+                                'node_hosts',
+                                'server_name',
+                                'transport_host',
+                            ] as $field) {
+                                if (empty($override[$field])) {
+                                    $override[$field] = $pool[$field] ?? (
+                                        $field === 'node_hosts' ? [] : ''
+                                    );
+                                }
+                            }
+                            $router['overrides'][(string) $userId] =
+                                $this->normalizeOverride($override);
+                        }
+                        unset($router['assignments'][(string) $userId]);
                         continue;
                     }
                     if (isset($exposedMap[$userId])) {
@@ -991,15 +1010,25 @@ class BaitSplitService
         $router['investigation_nodes'][$rootId]['children'] = $children;
 
         foreach ($sourceNodes as $sourceNodeId => $sourceNode) {
-            $router['investigation_nodes'][$sourceNodeId]['status'] = 'archived';
-            $router['investigation_nodes'][$sourceNodeId]['updated_at'] = time();
-            if (
-                isset($router['pools'][$sourceNode['pool_id']])
-                && !isset($protectedPoolIds[$sourceNode['pool_id']])
-            ) {
-                $router['pools'][$sourceNode['pool_id']]['enabled'] = false;
-                $router['pools'][$sourceNode['pool_id']]['status'] = 'blocked';
+            $sourcePoolId = $sourceNode['pool_id'];
+            try {
+                Redis::del($this->routerPoolExposureKey(
+                    $campaign,
+                    $sourcePoolId
+                ));
+                Redis::del($this->routerPoolExposureCountKey(
+                    $campaign,
+                    $sourcePoolId
+                ));
+                Redis::del($this->routerPoolExposureLastKey(
+                    $campaign,
+                    $sourcePoolId
+                ));
+            } catch (\Throwable) {
+                // 删除旧树不能因临时统计清理失败而中断。
             }
+            unset($router['pools'][$sourcePoolId]);
+            unset($router['investigation_nodes'][$sourceNodeId]);
         }
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
