@@ -881,8 +881,8 @@ class BaitSplitService
             'strval',
             $nodeIds
         ))));
-        if (count($nodeIds) < 2) {
-            throw new InvalidArgumentException('至少选择两棵旧排查树');
+        if ($nodeIds === []) {
+            throw new InvalidArgumentException('请至少选择一棵旧排查树');
         }
 
         $state = $this->state();

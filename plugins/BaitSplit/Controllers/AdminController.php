@@ -364,7 +364,7 @@ class AdminController extends PluginController
             return $response;
         }
         $data = $request->validate([
-            'node_ids' => ['required', 'array', 'min:2'],
+            'node_ids' => ['required', 'array', 'min:1'],
             'node_ids.*' => ['required', 'string', 'max:80', 'distinct'],
             'name' => ['nullable', 'string', 'max:80'],
             'branches' => ['required', 'array', 'min:2', 'max:10'],
