@@ -1076,11 +1076,18 @@ class BaitSplitService
             || !$this->poolIsUsable($targetPool)
             || !in_array(
                 $targetPool['type'],
-                ['observation', 'safe', 'custom'],
+                [
+                    'default',
+                    'probe',
+                    'observation',
+                    'safe',
+                    'custom',
+                    'emergency',
+                ],
                 true
             )
         ) {
-            throw new InvalidArgumentException('请选择可用的观察组、安全组或自定义组');
+            throw new InvalidArgumentException('请选择可用的普通用户池');
         }
         $userIds = array_values(array_filter(
             $node['user_ids'],
@@ -1096,7 +1103,14 @@ class BaitSplitService
             $campaign,
             $userIds,
             $targetPoolId,
-            ['observation', 'safe', 'custom']
+            [
+                'default',
+                'probe',
+                'observation',
+                'safe',
+                'custom',
+                'emergency',
+            ]
         );
         foreach ($allocations as $userId => $allocatedPoolId) {
             unset($router['overrides'][(string) $userId]);
