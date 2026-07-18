@@ -941,10 +941,16 @@ class BaitSplitService
         string $newIp,
         string $targetId = ''
     ): array {
-        $oldIp = $this->normalizePublicIp($oldIp);
+        $oldIp = trim($oldIp);
         $newIp = $this->normalizePublicIp($newIp);
         $targetId = trim($targetId);
-        if ($oldIp === $newIp) {
+        if ($oldIp !== '') {
+            $oldIp = $this->normalizePublicIp($oldIp);
+        }
+        if ($targetId === '') {
+            throw new InvalidArgumentException('必须提供目标唯一标识 target_id');
+        }
+        if ($oldIp !== '' && $oldIp === $newIp) {
             throw new InvalidArgumentException('新旧 IP 不能相同');
         }
 
@@ -952,39 +958,48 @@ class BaitSplitService
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $router = &$campaign['router'];
         $this->snapshotRouterConfig($router);
-        $targetPoolIds = array_keys($router['pools']);
-        if ($targetId !== '') {
-            if (isset($router['pools'][$targetId])) {
-                $targetPoolIds = [$targetId];
-            } elseif (isset($router['investigation_nodes'][$targetId])) {
-                $targetPoolIds = [
-                    $router['investigation_nodes'][$targetId]['pool_id'],
-                ];
-            } else {
-                $matchedPoolId = '';
-                foreach ($router['pools'] as $poolId => $pool) {
-                    if (($pool['webhook_id'] ?? '') === $targetId) {
-                        $matchedPoolId = $poolId;
-                        break;
-                    }
+        if (isset($router['pools'][$targetId])) {
+            $targetPoolIds = [$targetId];
+        } elseif (isset($router['investigation_nodes'][$targetId])) {
+            $targetPoolIds = [
+                $router['investigation_nodes'][$targetId]['pool_id'],
+            ];
+        } else {
+            $matchedPoolId = '';
+            foreach ($router['pools'] as $poolId => $pool) {
+                if (($pool['webhook_id'] ?? '') === $targetId) {
+                    $matchedPoolId = $poolId;
+                    break;
                 }
-                if ($matchedPoolId === '') {
-                    throw new InvalidArgumentException('目标唯一标识不存在');
-                }
-                $targetPoolIds = [$matchedPoolId];
             }
+            if ($matchedPoolId === '') {
+                throw new InvalidArgumentException('目标唯一标识不存在');
+            }
+            $targetPoolIds = [$matchedPoolId];
         }
+
         $updatedPoolIds = [];
         $updatedNodeHostCount = 0;
         foreach ($targetPoolIds as $poolId) {
             $pool = &$router['pools'][$poolId];
             $changed = false;
-            if (($pool['host'] ?? '') === $oldIp) {
+            if ($oldIp === '') {
+                if (($pool['host'] ?? '') !== $newIp) {
+                    $pool['host'] = $newIp;
+                    $changed = true;
+                }
+            } elseif (($pool['host'] ?? '') === $oldIp) {
                 $pool['host'] = $newIp;
                 $changed = true;
             }
             foreach ($pool['node_hosts'] as &$host) {
-                if ($host === $oldIp) {
+                if ($oldIp === '') {
+                    if ($host !== $newIp) {
+                        $host = $newIp;
+                        $updatedNodeHostCount++;
+                        $changed = true;
+                    }
+                } elseif ($host === $oldIp) {
                     $host = $newIp;
                     $updatedNodeHostCount++;
                     $changed = true;
@@ -999,23 +1014,29 @@ class BaitSplitService
 
         $updatedOverrideCount = 0;
         foreach ($router['overrides'] as &$override) {
-            if (
-                $targetId !== ''
-                && !in_array(
-                    $override['pool_id'] ?? '',
-                    $targetPoolIds,
-                    true
-                )
-            ) {
+            if (!in_array($override['pool_id'] ?? '', $targetPoolIds, true)) {
                 continue;
             }
             $changed = false;
-            if (($override['host'] ?? '') === $oldIp) {
+            if ($oldIp === '') {
+                if (
+                    ($override['host'] ?? '') !== ''
+                    && ($override['host'] ?? '') !== $newIp
+                ) {
+                    $override['host'] = $newIp;
+                    $changed = true;
+                }
+            } elseif (($override['host'] ?? '') === $oldIp) {
                 $override['host'] = $newIp;
                 $changed = true;
             }
             foreach ($override['node_hosts'] as &$host) {
-                if ($host === $oldIp) {
+                if ($oldIp === '') {
+                    if ($host !== $newIp) {
+                        $host = $newIp;
+                        $changed = true;
+                    }
+                } elseif ($host === $oldIp) {
                     $host = $newIp;
                     $changed = true;
                 }
@@ -1030,7 +1051,9 @@ class BaitSplitService
 
         if ($updatedPoolIds === [] && $updatedOverrideCount === 0) {
             throw new InvalidArgumentException(
-                '当前任务中没有找到正在使用该旧 IP 的配置'
+                $oldIp === ''
+                    ? '目标分组已经是该新 IP，无需更新'
+                    : '目标分组中没有找到正在使用该旧 IP 的配置'
             );
         }
         $router['config_version']++;
