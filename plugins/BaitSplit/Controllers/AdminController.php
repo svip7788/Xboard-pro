@@ -85,18 +85,26 @@ class AdminController extends PluginController
             return $response;
         }
 
-        $data = $request->validate([
-            'campaign_id' => ['nullable', 'string', 'max:64'],
-            'name' => ['required', 'string', 'max:50'],
-            'target_group_ids' => ['required', 'array', 'min:1'],
-            'target_group_ids.*' => [
-                'integer',
-                'distinct',
-                Rule::exists('v2_server_group', 'id'),
+        $data = $request->validate(
+            [
+                'campaign_id' => ['nullable', 'string', 'max:64'],
+                'name' => ['required', 'string', 'max:50'],
+                'target_group_ids' => ['required', 'array', 'min:1'],
+                'target_group_ids.*' => [
+                    'integer',
+                    'distinct',
+                    Rule::exists('v2_server_group', 'id'),
+                ],
+                'excluded_server_ids' => ['nullable', 'array'],
+                'excluded_server_ids.*' => ['integer'],
             ],
-            'excluded_server_ids' => ['nullable', 'array'],
-            'excluded_server_ids.*' => ['integer'],
-        ]);
+            [
+                'name.required' => '请填写任务名称',
+                'target_group_ids.required' => '请至少选择一个用户组',
+                'target_group_ids.min' => '请至少选择一个用户组',
+                'target_group_ids.*.exists' => '所选用户组不存在',
+            ]
+        );
 
         return $this->execute(fn() => BaitSplitService::fromDatabase()->saveCampaign(
             $data['campaign_id'] ?? null,
