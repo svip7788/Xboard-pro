@@ -44,6 +44,7 @@ Route::prefix("api/v2/{$securePath}/plugin/bait-split")
         Route::post('/campaigns/{campaignId}/investigations/{nodeId}/host', [AdminController::class, 'updateInvestigationNodeHost']);
         Route::delete('/campaigns/{campaignId}/investigations/{nodeId}', [AdminController::class, 'deleteInvestigationTree']);
         Route::post('/campaigns/{campaignId}/investigations/{nodeId}/move', [AdminController::class, 'moveInvestigationNodeUsers']);
+        Route::post('/campaigns/{campaignId}/investigations/{nodeId}/move-unpulled', [AdminController::class, 'moveUnpulledInvestigationNodeUsers']);
         Route::get('/campaigns/{campaignId}/investigations/{nodeId}/users', [AdminController::class, 'investigationNodeUsers']);
         Route::get('/campaigns/{campaignId}/users/search', [AdminController::class, 'searchUsers']);
         Route::get('/campaigns/{campaignId}/overrides', [AdminController::class, 'overrides']);

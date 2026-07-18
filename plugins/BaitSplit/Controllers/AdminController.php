@@ -473,6 +473,27 @@ class AdminController extends PluginController
         );
     }
 
+    public function moveUnpulledInvestigationNodeUsers(
+        Request $request,
+        string $campaignId,
+        string $nodeId
+    ): JsonResponse {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        $data = $request->validate([
+            'target_pool_id' => ['required', 'string', 'max:80'],
+        ]);
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()
+                ->moveUnpulledInvestigationNodeUsers(
+                    $campaignId,
+                    $nodeId,
+                    $data['target_pool_id']
+                )
+        );
+    }
+
     public function investigationNodeUsers(
         Request $request,
         string $campaignId,

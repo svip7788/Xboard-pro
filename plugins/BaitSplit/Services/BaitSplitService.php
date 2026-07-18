@@ -1194,6 +1194,33 @@ class BaitSplitService
         string $nodeId,
         string $targetPoolId
     ): array {
+        return $this->moveInvestigationNodeUsersByExposure(
+            $campaignId,
+            $nodeId,
+            $targetPoolId,
+            true
+        );
+    }
+
+    public function moveUnpulledInvestigationNodeUsers(
+        string $campaignId,
+        string $nodeId,
+        string $targetPoolId
+    ): array {
+        return $this->moveInvestigationNodeUsersByExposure(
+            $campaignId,
+            $nodeId,
+            $targetPoolId,
+            false
+        );
+    }
+
+    private function moveInvestigationNodeUsersByExposure(
+        string $campaignId,
+        string $nodeId,
+        string $targetPoolId,
+        bool $moveExposed
+    ): array {
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $router = &$campaign['router'];
@@ -1232,16 +1259,25 @@ class BaitSplitService
         );
         $userIds = array_values(array_filter(
             $node['user_ids'],
-            function (int $userId) use ($router, $node, $exposedMap): bool {
+            function (int $userId) use (
+                $router,
+                $node,
+                $exposedMap,
+                $moveExposed
+            ): bool {
                 $override = $router['overrides'][(string) $userId] ?? null;
-                return isset($exposedMap[$userId])
+                return isset($exposedMap[$userId]) === $moveExposed
                     && ($router['assignments'][(string) $userId] ?? '')
                         === $node['pool_id']
                     && !$this->overrideBlocksAutomation($override);
             }
         ));
         if ($userIds === []) {
-            throw new InvalidArgumentException('该节点没有可转移的已拉取用户');
+            throw new InvalidArgumentException(
+                $moveExposed
+                    ? '该节点没有可转移的已拉取用户'
+                    : '该节点没有可转移的未拉取用户'
+            );
         }
         $allocations = $this->allocateUsersToPoolChain(
             $campaign,
@@ -1261,7 +1297,9 @@ class BaitSplitService
                 $this->normalizeOverride([
                     'pool_id' => $allocatedPoolId,
                     'locked' => true,
-                    'note' => '排查树安全用户迁移自动锁定',
+                    'note' => $moveExposed
+                        ? '排查树已拉取用户迁移自动锁定'
+                        : '排查树未拉取用户迁移自动锁定',
                     'updated_at' => time(),
                 ]);
             $router['assignments'][(string) $userId] = $allocatedPoolId;
