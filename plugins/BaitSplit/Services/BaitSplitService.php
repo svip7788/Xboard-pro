@@ -304,6 +304,11 @@ class BaitSplitService
             array_merge($existing, $data, ['id' => $poolId]),
             $poolId
         );
+        $this->assertWebhookIdAvailable(
+            $router,
+            $router['pools'][$poolId]['webhook_id'],
+            $poolId
+        );
         $this->validateAllPoolOverflowChains($router['pools']);
         $this->assertPoolTypeUniqueness($router['pools']);
         if ($campaign['router']['enabled']) {
@@ -682,6 +687,7 @@ class BaitSplitService
                 'id' => $rootPoolId,
                 'name' => $nodeName . ' / 根组',
                 'type' => 'probe',
+                'webhook_id' => '',
                 'status' => 'blocked',
                 'capacity' => count($userIds),
                 'overflow_pool_id' => '',
@@ -862,7 +868,8 @@ class BaitSplitService
     public function updateInvestigationNodeHost(
         string $campaignId,
         string $nodeId,
-        string $host
+        string $host,
+        string $webhookId = ''
     ): array {
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
@@ -879,6 +886,12 @@ class BaitSplitService
         if ($host === '') {
             throw new InvalidArgumentException('域名或IP不能为空');
         }
+        $webhookId = trim($webhookId);
+        $this->assertWebhookIdAvailable(
+            $router,
+            $webhookId,
+            $node['pool_id']
+        );
         $this->assertInvestigationHostAvailable(
             $router,
             $host,
@@ -886,6 +899,7 @@ class BaitSplitService
         );
         $this->snapshotRouterConfig($router);
         $router['pools'][$node['pool_id']]['host'] = $host;
+        $router['pools'][$node['pool_id']]['webhook_id'] = $webhookId;
         $router['config_version']++;
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
@@ -924,10 +938,12 @@ class BaitSplitService
     public function rotateCampaignIp(
         string $campaignId,
         string $oldIp,
-        string $newIp
+        string $newIp,
+        string $targetId = ''
     ): array {
         $oldIp = $this->normalizePublicIp($oldIp);
         $newIp = $this->normalizePublicIp($newIp);
+        $targetId = trim($targetId);
         if ($oldIp === $newIp) {
             throw new InvalidArgumentException('新旧 IP 不能相同');
         }
@@ -936,9 +952,32 @@ class BaitSplitService
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $router = &$campaign['router'];
         $this->snapshotRouterConfig($router);
+        $targetPoolIds = array_keys($router['pools']);
+        if ($targetId !== '') {
+            if (isset($router['pools'][$targetId])) {
+                $targetPoolIds = [$targetId];
+            } elseif (isset($router['investigation_nodes'][$targetId])) {
+                $targetPoolIds = [
+                    $router['investigation_nodes'][$targetId]['pool_id'],
+                ];
+            } else {
+                $matchedPoolId = '';
+                foreach ($router['pools'] as $poolId => $pool) {
+                    if (($pool['webhook_id'] ?? '') === $targetId) {
+                        $matchedPoolId = $poolId;
+                        break;
+                    }
+                }
+                if ($matchedPoolId === '') {
+                    throw new InvalidArgumentException('目标唯一标识不存在');
+                }
+                $targetPoolIds = [$matchedPoolId];
+            }
+        }
         $updatedPoolIds = [];
         $updatedNodeHostCount = 0;
-        foreach ($router['pools'] as $poolId => &$pool) {
+        foreach ($targetPoolIds as $poolId) {
+            $pool = &$router['pools'][$poolId];
             $changed = false;
             if (($pool['host'] ?? '') === $oldIp) {
                 $pool['host'] = $newIp;
@@ -955,11 +994,21 @@ class BaitSplitService
             if ($changed) {
                 $updatedPoolIds[] = $poolId;
             }
+            unset($pool);
         }
-        unset($pool);
 
         $updatedOverrideCount = 0;
         foreach ($router['overrides'] as &$override) {
+            if (
+                $targetId !== ''
+                && !in_array(
+                    $override['pool_id'] ?? '',
+                    $targetPoolIds,
+                    true
+                )
+            ) {
+                continue;
+            }
             $changed = false;
             if (($override['host'] ?? '') === $oldIp) {
                 $override['host'] = $newIp;
@@ -990,6 +1039,7 @@ class BaitSplitService
 
         return [
             'campaign_id' => $campaignId,
+            'target_id' => $targetId,
             'old_ip' => $oldIp,
             'new_ip' => $newIp,
             'updated_pool_ids' => array_values($updatedPoolIds),
@@ -2098,6 +2148,40 @@ class BaitSplitService
         }
     }
 
+    private function assertWebhookIdAvailable(
+        array $router,
+        string $webhookId,
+        string $ignoredPoolId = ''
+    ): void {
+        if ($webhookId === '') {
+            return;
+        }
+        if (!preg_match('/^[A-Za-z0-9._:-]{1,100}$/', $webhookId)) {
+            throw new InvalidArgumentException(
+                '接口标识只能包含字母、数字、点、横线、下划线和冒号'
+            );
+        }
+        foreach ($router['pools'] as $poolId => $pool) {
+            if ($poolId === $ignoredPoolId) {
+                continue;
+            }
+            if (
+                $poolId === $webhookId
+                || ($pool['webhook_id'] ?? '') === $webhookId
+            ) {
+                throw new InvalidArgumentException('接口标识已被其他用户池使用');
+            }
+        }
+        foreach ($router['investigation_nodes'] as $node) {
+            if (
+                $node['pool_id'] !== $ignoredPoolId
+                && ($node['id'] ?? '') === $webhookId
+            ) {
+                throw new InvalidArgumentException('接口标识已被其他排查分支使用');
+            }
+        }
+    }
+
     private function createInvestigationChildren(
         array &$campaign,
         array $parent,
@@ -2655,6 +2739,7 @@ class BaitSplitService
         }
         return [
             'id' => $poolId,
+            'webhook_id' => trim((string) ($pool['webhook_id'] ?? '')),
             'name' => trim((string) ($pool['name'] ?? $poolId)) ?: $poolId,
             'type' => $type,
             'host' => $host,
@@ -2807,6 +2892,7 @@ class BaitSplitService
                 'name' => $node['name'],
                 'status' => $node['status'],
                 'pool_id' => $node['pool_id'],
+                'webhook_id' => (string) ($pool['webhook_id'] ?? ''),
                 'host' => (string) ($pool['host'] ?? ''),
                 'user_count' => count($node['user_ids']),
                 'mergeable_count' => $mergeableCount,

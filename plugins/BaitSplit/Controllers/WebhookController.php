@@ -39,6 +39,12 @@ class WebhookController extends Controller
             ],
             'campaign_id' => ['required', 'string', 'max:64'],
             'instance_id' => ['nullable', 'string', 'max:100'],
+            'target_id' => [
+                'nullable',
+                'string',
+                'max:100',
+                'regex:/^[A-Za-z0-9._:-]+$/',
+            ],
             'old_ip' => ['required', 'ipv4'],
             'new_ip' => ['required', 'ipv4', 'different:old_ip'],
         ]);
@@ -57,7 +63,8 @@ class WebhookController extends Controller
                     $result = $service->rotateCampaignIp(
                         $data['campaign_id'],
                         $data['old_ip'],
-                        $data['new_ip']
+                        $data['new_ip'],
+                        $data['target_id'] ?? ''
                     );
                     $result['event_id'] = $data['event_id'];
                     $result['instance_id'] = $data['instance_id'] ?? '';

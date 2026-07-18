@@ -213,6 +213,12 @@ class AdminController extends PluginController
         }
         $data = $request->validate([
             'id' => ['nullable', 'string', 'max:80'],
+            'webhook_id' => [
+                'nullable',
+                'string',
+                'max:100',
+                'regex:/^[A-Za-z0-9._:-]+$/',
+            ],
             'name' => ['required', 'string', 'max:50'],
             'type' => ['required', Rule::in(['default', 'danger', 'blacklist', 'probe', 'observation', 'emergency', 'safe', 'custom'])],
             'host' => ['nullable', 'string', 'max:253'],
@@ -414,13 +420,20 @@ class AdminController extends PluginController
         }
         $data = $request->validate([
             'host' => ['required', 'string', 'max:253'],
+            'webhook_id' => [
+                'nullable',
+                'string',
+                'max:100',
+                'regex:/^[A-Za-z0-9._:-]+$/',
+            ],
         ]);
         return $this->execute(
             fn() => BaitSplitService::fromDatabase()
                 ->updateInvestigationNodeHost(
                     $campaignId,
                     $nodeId,
-                    $data['host']
+                    $data['host'],
+                    $data['webhook_id'] ?? ''
                 )
         );
     }
