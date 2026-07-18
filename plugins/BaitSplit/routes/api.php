@@ -2,11 +2,17 @@
 
 use Illuminate\Support\Facades\Route;
 use Plugin\BaitSplit\Controllers\AdminController;
+use Plugin\BaitSplit\Controllers\WebhookController;
 
 $securePath = admin_setting(
     'secure_path',
     admin_setting('frontend_admin_path', hash('crc32b', config('app.key')))
 );
+
+Route::post(
+    '/api/v2/plugin/bait-split/hooks/ip-rotate',
+    [WebhookController::class, 'rotateIp']
+)->middleware('throttle:60,1');
 
 Route::prefix("api/v2/{$securePath}/plugin/bait-split")
     ->middleware('admin')

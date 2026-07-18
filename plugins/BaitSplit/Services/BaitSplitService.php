@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use RuntimeException;
 
 class BaitSplitService
 {
@@ -625,6 +626,9 @@ class BaitSplitService
             throw new InvalidArgumentException('没有可回滚的配置版本');
         }
         $router['pools'] = $snapshot['pools'];
+        if (isset($snapshot['overrides']) && is_array($snapshot['overrides'])) {
+            $router['overrides'] = $snapshot['overrides'];
+        }
         $router['config_version']++;
         if ($router['enabled']) {
             $this->validateRouterCoverage($campaign);
@@ -886,6 +890,113 @@ class BaitSplitService
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
         return $this->campaignStatus($campaign);
+    }
+
+    public function assertIpWebhookSignature(
+        string $timestamp,
+        string $rawBody,
+        string $signature
+    ): void {
+        $secret = trim((string) ($this->config['ip_webhook_secret'] ?? ''));
+        if (strlen($secret) < 32) {
+            throw new RuntimeException('IP 轮换接口密钥未配置');
+        }
+        if (
+            !ctype_digit($timestamp)
+            || abs(time() - (int) $timestamp) > 300
+        ) {
+            throw new InvalidArgumentException('请求时间戳无效或已过期');
+        }
+        $signature = strtolower(trim($signature));
+        $expected = hash_hmac(
+            'sha256',
+            $timestamp . "\n" . $rawBody,
+            $secret
+        );
+        if (
+            !preg_match('/^[a-f0-9]{64}$/', $signature)
+            || !hash_equals($expected, $signature)
+        ) {
+            throw new InvalidArgumentException('接口签名无效');
+        }
+    }
+
+    public function rotateCampaignIp(
+        string $campaignId,
+        string $oldIp,
+        string $newIp
+    ): array {
+        $oldIp = $this->normalizePublicIp($oldIp);
+        $newIp = $this->normalizePublicIp($newIp);
+        if ($oldIp === $newIp) {
+            throw new InvalidArgumentException('新旧 IP 不能相同');
+        }
+
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $router = &$campaign['router'];
+        $this->snapshotRouterConfig($router);
+        $updatedPoolIds = [];
+        $updatedNodeHostCount = 0;
+        foreach ($router['pools'] as $poolId => &$pool) {
+            $changed = false;
+            if (($pool['host'] ?? '') === $oldIp) {
+                $pool['host'] = $newIp;
+                $changed = true;
+            }
+            foreach ($pool['node_hosts'] as &$host) {
+                if ($host === $oldIp) {
+                    $host = $newIp;
+                    $updatedNodeHostCount++;
+                    $changed = true;
+                }
+            }
+            unset($host);
+            if ($changed) {
+                $updatedPoolIds[] = $poolId;
+            }
+        }
+        unset($pool);
+
+        $updatedOverrideCount = 0;
+        foreach ($router['overrides'] as &$override) {
+            $changed = false;
+            if (($override['host'] ?? '') === $oldIp) {
+                $override['host'] = $newIp;
+                $changed = true;
+            }
+            foreach ($override['node_hosts'] as &$host) {
+                if ($host === $oldIp) {
+                    $host = $newIp;
+                    $changed = true;
+                }
+            }
+            unset($host);
+            if ($changed) {
+                $override['updated_at'] = time();
+                $updatedOverrideCount++;
+            }
+        }
+        unset($override);
+
+        if ($updatedPoolIds === [] && $updatedOverrideCount === 0) {
+            throw new InvalidArgumentException(
+                '当前任务中没有找到正在使用该旧 IP 的配置'
+            );
+        }
+        $router['config_version']++;
+        $state['campaigns'][$campaignId] = $campaign;
+        $this->saveState($state);
+
+        return [
+            'campaign_id' => $campaignId,
+            'old_ip' => $oldIp,
+            'new_ip' => $newIp,
+            'updated_pool_ids' => array_values($updatedPoolIds),
+            'updated_node_host_count' => $updatedNodeHostCount,
+            'updated_override_count' => $updatedOverrideCount,
+            'config_version' => $router['config_version'],
+        ];
     }
 
     public function mergeInvestigationNodes(
@@ -2872,6 +2983,21 @@ class BaitSplitService
         return $host;
     }
 
+    private function normalizePublicIp(mixed $ip): string
+    {
+        $ip = trim((string) $ip);
+        if (!filter_var(
+            $ip,
+            FILTER_VALIDATE_IP,
+            FILTER_FLAG_IPV4
+                | FILTER_FLAG_NO_PRIV_RANGE
+                | FILTER_FLAG_NO_RES_RANGE
+        )) {
+            throw new InvalidArgumentException("无效的公网 IPv4：{$ip}");
+        }
+        return $ip;
+    }
+
     private function validateRouterCoverage(array $campaign): void
     {
         $router = $campaign['router'];
@@ -3198,6 +3324,7 @@ class BaitSplitService
         $router['config_history'][] = [
             'version' => $router['config_version'],
             'pools' => $router['pools'],
+            'overrides' => $router['overrides'],
             'created_at' => time(),
         ];
         $router['config_history'] = array_slice($router['config_history'], -20);

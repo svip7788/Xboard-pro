@@ -1,7 +1,7 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "3.0.0",
+    "version": "3.1.0",
     "description": "全量接管节点域名，支持用户池、分批筛查和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
@@ -23,6 +23,12 @@
             "default": "/webadmin/plugins/bait-split/console",
             "label": "可视化控制台路径",
             "description": "登录管理后台后，在当前标签页打开或复制该路径"
+        },
+        "ip_webhook_secret": {
+            "type": "string",
+            "default": "",
+            "label": "AWS IP 轮换接口密钥",
+            "description": "至少 32 位随机字符串，用于校验 AWS 换 IP 脚本的 HMAC 签名"
         }
     }
 }
