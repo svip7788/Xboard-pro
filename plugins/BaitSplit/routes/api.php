@@ -37,6 +37,7 @@ Route::prefix("api/v2/{$securePath}/plugin/bait-split")
         Route::delete('/campaigns/{campaignId}/pools/{poolId}', [AdminController::class, 'deletePool']);
         Route::get('/campaigns/{campaignId}/pools/{poolId}/users', [AdminController::class, 'poolUsers']);
         Route::post('/campaigns/{campaignId}/pools/{poolId}/move-pulled', [AdminController::class, 'movePulledPoolUsers']);
+        Route::post('/campaigns/{campaignId}/pools/{poolId}/move-unpulled', [AdminController::class, 'moveUnpulledPoolUsers']);
         Route::post('/campaigns/{campaignId}/pools/{poolId}/investigation', [AdminController::class, 'createInvestigationRoot']);
         Route::post('/campaigns/{campaignId}/investigations/{nodeId}/split', [AdminController::class, 'splitInvestigationNode']);
         Route::post('/campaigns/{campaignId}/investigations/merge', [AdminController::class, 'mergeInvestigationNodes']);

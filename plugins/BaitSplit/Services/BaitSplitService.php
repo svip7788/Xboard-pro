@@ -526,20 +526,25 @@ class BaitSplitService
         string $sourcePoolId,
         string $targetPoolId
     ): array {
-        $state = $this->state();
-        $campaign = $this->requireRouterCampaign($state, $campaignId);
-        $movedCount = $this->movePulledUsersInCampaign(
-            $campaign,
+        return $this->movePoolUsersByExposure(
+            $campaignId,
             $sourcePoolId,
             $targetPoolId,
-            1
+            true
         );
-        $state['campaigns'][$campaignId] = $campaign;
-        $this->saveState($state);
-        return [
-            'campaign' => $this->campaignStatus($campaign),
-            'moved_count' => $movedCount,
-        ];
+    }
+
+    public function moveUnpulledPoolUsers(
+        string $campaignId,
+        string $sourcePoolId,
+        string $targetPoolId
+    ): array {
+        return $this->movePoolUsersByExposure(
+            $campaignId,
+            $sourcePoolId,
+            $targetPoolId,
+            false
+        );
     }
 
     public function searchUsers(string $campaignId, string $keyword): array
@@ -1288,11 +1293,9 @@ class BaitSplitService
                 $exposedMap,
                 $moveExposed
             ): bool {
-                $override = $router['overrides'][(string) $userId] ?? null;
                 return isset($exposedMap[$userId]) === $moveExposed
                     && ($router['assignments'][(string) $userId] ?? '')
-                        === $node['pool_id']
-                    && !$this->overrideBlocksAutomation($override);
+                        === $node['pool_id'];
             }
         ));
         if ($userIds === []) {
@@ -1321,8 +1324,8 @@ class BaitSplitService
                     'pool_id' => $allocatedPoolId,
                     'locked' => true,
                     'note' => $moveExposed
-                        ? '排查树已拉取用户迁移自动锁定'
-                        : '排查树未拉取用户迁移自动锁定',
+                        ? '排查树已拉取用户手动迁移锁定'
+                        : '排查树未拉取用户手动迁移锁定',
                     'updated_at' => time(),
                 ]);
             $router['assignments'][(string) $userId] = $allocatedPoolId;
@@ -3171,12 +3174,14 @@ class BaitSplitService
             && ($pool['status'] ?? 'blocked') !== 'blocked';
     }
 
-    private function movePulledUsersInCampaign(
-        array &$campaign,
+    private function movePoolUsersByExposure(
+        string $campaignId,
         string $sourcePoolId,
         string $targetPoolId,
-        int $minimumCount
-    ): int {
+        bool $moveExposed
+    ): array {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
         $router = &$campaign['router'];
         if ($sourcePoolId === $targetPoolId) {
             throw new InvalidArgumentException('来源组和目标组不能相同');
@@ -3198,17 +3203,19 @@ class BaitSplitService
             ->pluck('id')->map('intval')
             ->filter(function (int $userId) use (
                 $campaign,
-                $router,
                 $sourcePoolId,
-                $exposedMap
+                $exposedMap,
+                $moveExposed
             ): bool {
-                $override = $router['overrides'][(string) $userId] ?? null;
-                return isset($exposedMap[$userId])
-                    && $this->effectivePoolId($campaign, $userId) === $sourcePoolId
-                    && !$this->overrideBlocksAutomation($override);
+                return isset($exposedMap[$userId]) === $moveExposed
+                    && $this->effectivePoolId($campaign, $userId) === $sourcePoolId;
             })->values()->all();
-        if (count($userIds) < $minimumCount) {
-            throw new InvalidArgumentException('该用户池尚未达到自动分流容量');
+        if ($userIds === []) {
+            throw new InvalidArgumentException(
+                $moveExposed
+                    ? '该用户池没有可转移的已拉取用户'
+                    : '该用户池没有可转移的未拉取用户'
+            );
         }
 
         $allowedTypes = ['default', 'probe', 'observation', 'emergency', 'safe', 'custom'];
@@ -3218,15 +3225,28 @@ class BaitSplitService
             $targetPoolId,
             $allowedTypes
         );
+        $now = time();
         foreach ($allocations as $userId => $allocatedPoolId) {
-            unset($router['overrides'][(string) $userId]);
+            $router['overrides'][(string) $userId] = $this->normalizeOverride([
+                'pool_id' => $allocatedPoolId,
+                'locked' => true,
+                'note' => $moveExposed
+                    ? '用户池已拉取用户手动迁移锁定'
+                    : '用户池未拉取用户手动迁移锁定',
+                'updated_at' => $now,
+            ]);
             $router['assignments'][(string) $userId] = $allocatedPoolId;
         }
         $router['untested_ids'] = array_values(array_diff(
             $router['untested_ids'],
             $userIds
         ));
-        return count($allocations);
+        $state['campaigns'][$campaignId] = $campaign;
+        $this->saveState($state);
+        return [
+            'campaign' => $this->campaignStatus($campaign),
+            'moved_count' => count($allocations),
+        ];
     }
 
     private function assignPoolOnFirstPull(array $campaign, User $user): array
