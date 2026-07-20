@@ -4073,29 +4073,18 @@ class BaitSplitService
         return ['cur_ip' => '', 'dead_ip' => '', 'current' => null, 'queue' => $queue];
     }
 
-    private function ensureDecoyNight(
+    /** 换晚翻篇：日期变了就收回上一夜遗留覆盖并清空探测域。返回是否有变更。 */
+    private function decoyRolloverIfNeeded(
         array &$router,
-        array $campaign,
-        array $sourceIds,
         string $today,
         int $now
-    ): void {
+    ): bool {
         if (($router['decoy']['active_date'] ?? '') === $today) {
-            foreach ($sourceIds as $poolId) {
-                if (!isset($router['decoy']['domains'][$poolId])) {
-                    $router['decoy']['domains'][$poolId] =
-                        $this->seedDecoyDomain($campaign, $poolId);
-                }
-            }
-            return;
+            return false;
         }
-        // 换晚：先收回上一夜遗留覆盖，再按来源池重新播种
         $this->decoyRecallAll($router, $now);
-        $domains = [];
-        foreach ($sourceIds as $poolId) {
-            $domains[$poolId] = $this->seedDecoyDomain($campaign, $poolId);
-        }
-        $router['decoy'] = ['active_date' => $today, 'domains' => $domains];
+        $router['decoy'] = ['active_date' => $today, 'domains' => []];
+        return true;
     }
 
     /** 从队列抽下一批指向当前金丝雀 IP；current 非空或无 IP/无队列则不动。 */
@@ -4173,7 +4162,8 @@ class BaitSplitService
                 $router['wall_last'][$key] = $now;
             }
             $confirmPoolId = $this->resolveDecoyConfirmPoolId($router);
-            if ($batch <= $this->decoyMinBatch() && $confirmPoolId !== '') {
+            $minBatch = $this->decoyMinBatch();
+            if (($batch <= $minBatch || count($ids) <= $minBatch) && $confirmPoolId !== '') {
                 foreach ($ids as $uid) {
                     $key = (string) $uid;
                     $router['overrides'][$key] = $this->normalizeOverride([
@@ -4291,8 +4281,7 @@ class BaitSplitService
         int $now
     ): array {
         $today = now()->format('Y-m-d');
-        $sourceIds = $this->resolveDecoySourcePoolIds($router);
-        $this->ensureDecoyNight($router, $campaign, $sourceIds, $today, $now);
+        $this->decoyRolloverIfNeeded($router, $today, $now);
         if (!isset($router['decoy']['domains'][$poolId])) {
             $router['decoy']['domains'][$poolId] =
                 $this->seedDecoyDomain($campaign, $poolId);
@@ -4403,9 +4392,8 @@ class BaitSplitService
                 continue;
             }
 
-            // 窗口内：换晚重置/播种，逐个来源池推进（清白批到点换下一批）
-            $this->ensureDecoyNight($router, $campaign, $sourceIds, $today, $now);
-            $touched = false;
+            // 窗口内：换晚翻篇（不预播种，等被墙 webhook 才播种/抽批），逐个来源池推进
+            $touched = $this->decoyRolloverIfNeeded($router, $today, $now);
             foreach ($sourceIds as $poolId) {
                 $domain = $router['decoy']['domains'][$poolId] ?? null;
                 if (!is_array($domain) || ($domain['cur_ip'] ?? '') === '') {
