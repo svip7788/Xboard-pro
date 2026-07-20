@@ -1,7 +1,7 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "3.1.0",
+    "version": "3.2.0",
     "description": "全量接管节点域名，支持用户池、分批筛查和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
@@ -53,6 +53,42 @@
             "default": "",
             "label": "跟墙隔离目标池 ID",
             "description": "留空自动选择名称含“观察3”的观察组"
+        },
+        "decoy_enabled": {
+            "type": "boolean",
+            "default": false,
+            "label": "夜间分组诱捕",
+            "description": "夜间墙时段把嫌疑人随机分到多个独立 IP 组，被墙组成员记分，多晚交叉揪出内鬼"
+        },
+        "decoy_source_pool_id": {
+            "type": "string",
+            "default": "",
+            "label": "诱捕来源池 ID（嫌疑人群）",
+            "description": "每晚从该池抽人打散；留空自动用“观察3”"
+        },
+        "decoy_pool_ids": {
+            "type": "string",
+            "default": "",
+            "label": "诱捕分组池 ID（逗号分隔，需各自独立 IP）",
+            "description": "2 个及以上、各自独立 IP 的池，用于夜间分组；如 poolA,poolB,poolC"
+        },
+        "decoy_confirm_pool_id": {
+            "type": "string",
+            "default": "",
+            "label": "确认内鬼隔离池 ID",
+            "description": "跟墙分达阈值判定为内鬼后永久移入该池；留空自动用危险组"
+        },
+        "decoy_start": {
+            "type": "string",
+            "default": "01:00",
+            "label": "诱捕开始时间 HH:MM",
+            "description": "夜间墙开始时间，到点自动打散分组"
+        },
+        "decoy_end": {
+            "type": "string",
+            "default": "09:00",
+            "label": "诱捕收回时间 HH:MM",
+            "description": "白天到点自动把嫌疑人收回来源池，恢复正常使用"
         }
     }
 }

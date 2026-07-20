@@ -20,6 +20,14 @@ class Plugin extends AbstractPlugin
         (new BaitSplitService($this->getConfig()))->persistMigration();
     }
 
+    public function schedule(\Illuminate\Console\Scheduling\Schedule $schedule): void
+    {
+        $schedule->command('bait:decoy')
+            ->everyMinute()
+            ->withoutOverlapping()
+            ->runInBackground();
+    }
+
     public function replaceServerHosts(
         array $servers,
         User $user,
