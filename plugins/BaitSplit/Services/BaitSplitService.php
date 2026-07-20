@@ -944,11 +944,13 @@ class BaitSplitService
         string $campaignId,
         string $oldIp,
         string $newIp,
-        string $targetId = ''
+        string $targetId = '',
+        string $reason = 'blocked'
     ): array {
         $oldIp = trim($oldIp);
         $newIp = $this->normalizePublicIp($newIp);
         $targetId = trim($targetId);
+        $reason = $this->normalizeRotationReason($reason);
         if ($oldIp !== '') {
             $oldIp = $this->normalizePublicIp($oldIp);
         }
@@ -1061,6 +1063,14 @@ class BaitSplitService
                     : '目标分组中没有找到正在使用该旧 IP 的配置'
             );
         }
+        $wall = $this->processWallEvent(
+            $campaign,
+            $router,
+            $targetPoolIds,
+            $oldIp,
+            $newIp,
+            $reason
+        );
         $router['config_version']++;
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
@@ -1068,8 +1078,10 @@ class BaitSplitService
         return [
             'campaign_id' => $campaignId,
             'target_id' => $targetId,
+            'reason' => $reason,
             'old_ip' => $oldIp,
             'new_ip' => $newIp,
+            'wall' => $wall,
             'updated_pool_ids' => array_values($updatedPoolIds),
             'updated_node_host_count' => $updatedNodeHostCount,
             'updated_override_count' => $updatedOverrideCount,
@@ -2664,6 +2676,9 @@ class BaitSplitService
             'snapshot_user_ids' => array_values($userIds),
             'untested_ids' => array_values($userIds),
             'investigation_nodes' => [],
+            'wall_hits' => [],
+            'wall_last' => [],
+            'wall_log' => [],
         ];
     }
 
@@ -2716,6 +2731,29 @@ class BaitSplitService
         $router['overrides'] = $overrides;
         $router['snapshot_user_ids'] = $this->normalizeIds($router['snapshot_user_ids']);
         $router['untested_ids'] = $this->normalizeIds($router['untested_ids']);
+        $wallLast = [];
+        foreach ((array) ($router['wall_last'] ?? []) as $userId => $ts) {
+            if ((int) $userId > 0) {
+                $wallLast[(string) (int) $userId] = (int) $ts;
+            }
+        }
+        $wallRetain = time() - 14 * 86400;
+        $wallHits = [];
+        foreach ((array) ($router['wall_hits'] ?? []) as $userId => $count) {
+            $key = (string) (int) $userId;
+            if ((int) $userId <= 0 || (int) $count <= 0) {
+                continue;
+            }
+            if (($wallLast[$key] ?? 0) < $wallRetain) {
+                continue;
+            }
+            $wallHits[$key] = (int) $count;
+        }
+        $router['wall_hits'] = $wallHits;
+        $router['wall_last'] = array_intersect_key($wallLast, $wallHits);
+        $router['wall_log'] = is_array($router['wall_log'] ?? null)
+            ? array_slice(array_values($router['wall_log']), -200)
+            : [];
         $investigationNodes = [];
         foreach ((array) ($router['investigation_nodes'] ?? []) as $id => $node) {
             if (
@@ -2821,6 +2859,7 @@ class BaitSplitService
                 ? $strategy
                 : 'manual',
             'note' => trim((string) ($pool['note'] ?? '')),
+            'last_rotation_at' => max(0, (int) ($pool['last_rotation_at'] ?? 0)),
         ];
     }
 
@@ -3650,6 +3689,215 @@ class BaitSplitService
             // 统计不可用时返回空值，不能影响用户列表。
         }
         return $stats;
+    }
+
+    public function wallReport(string $campaignId, int $limit = 100): array
+    {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $router = $campaign['router'];
+        $limit = max(1, min(200, $limit));
+        $events = array_reverse(
+            array_slice($router['wall_log'] ?? [], -$limit)
+        );
+        $hits = $router['wall_hits'] ?? [];
+        arsort($hits);
+        $topIds = array_slice(array_keys($hits), 0, 50, true);
+        $emails = User::query()
+            ->whereIn('id', array_map('intval', array_values($topIds)))
+            ->pluck('email', 'id');
+        $topSuspects = [];
+        foreach ($topIds as $userId) {
+            $topSuspects[] = [
+                'user_id' => (int) $userId,
+                'email' => (string) ($emails[(int) $userId] ?? ''),
+                'hits' => (int) $hits[$userId],
+                'last_at' => (int) ($router['wall_last'][$userId] ?? 0),
+            ];
+        }
+        return [
+            'events' => $events,
+            'top_suspects' => $topSuspects,
+            'total_tracked' => count($router['wall_hits'] ?? []),
+            'settings' => [
+                'auto_isolate' => (bool) ($this->config['wall_auto_isolate'] ?? true),
+                'hit_threshold' => max(1, (int) ($this->config['wall_hit_threshold'] ?? 2)),
+                'lookback_seconds' => max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600)),
+                'observe_pool_id' => $this->resolveWallObservePoolId($router),
+            ],
+        ];
+    }
+
+    private function normalizeRotationReason(string $reason): string
+    {
+        $reason = strtolower(trim($reason));
+        $machineAliases = [
+            'machine', 'down', 'crash', 'offline', 'reboot', 'maintenance',
+            '挂壁', '机器', '机器挂壁', '宕机', '故障', '维护', '重启',
+        ];
+        return in_array($reason, $machineAliases, true) ? 'machine' : 'blocked';
+    }
+
+    private function poolExposureLastMap(array $campaign, string $poolId): array
+    {
+        try {
+            $raw = Redis::hgetall(
+                $this->routerPoolExposureLastKey($campaign, $poolId)
+            );
+            $map = [];
+            foreach ((array) $raw as $userId => $ts) {
+                if ((int) $userId > 0) {
+                    $map[(int) $userId] = (int) $ts;
+                }
+            }
+            return $map;
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    private function resolveWallObservePoolId(array $router): string
+    {
+        $configured = trim((string) ($this->config['wall_observe_pool_id'] ?? ''));
+        if ($configured !== '') {
+            if (isset($router['pools'][$configured])) {
+                return $configured;
+            }
+            foreach ($router['pools'] as $poolId => $pool) {
+                if (($pool['webhook_id'] ?? '') === $configured) {
+                    return $poolId;
+                }
+            }
+        }
+        foreach ($router['pools'] as $poolId => $pool) {
+            if (($pool['name'] ?? '') === '观察3') {
+                return $poolId;
+            }
+        }
+        return '';
+    }
+
+    /**
+     * 处理一次换 IP 事件：
+     * - reason=machine（机器挂壁）：只重置该池观察窗口，不记分、不隔离。
+     * - reason=blocked（被墙）：把"死 IP 存活期内拉过订阅"的用户记跟墙分，
+     *   达到阈值自动锁进观察3，并写入完整事件日志。
+     */
+    private function processWallEvent(
+        array $campaign,
+        array &$router,
+        array $poolIds,
+        string $oldIp,
+        string $newIp,
+        string $reason
+    ): array {
+        $now = time();
+        $lookback = max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600));
+        $eventPools = [];
+        $suspectIds = [];
+        foreach (array_unique($poolIds) as $poolId) {
+            $pool = $router['pools'][$poolId] ?? null;
+            if ($pool === null) {
+                continue;
+            }
+            $windowStart = (int) ($pool['last_rotation_at'] ?? 0);
+            if ($windowStart <= 0) {
+                $windowStart = $now - $lookback;
+            }
+            $exposed = $this->poolExposureLastMap($campaign, $poolId);
+            $poolSuspects = [];
+            foreach ($exposed as $userId => $lastAt) {
+                if ($lastAt > $windowStart && $lastAt <= $now) {
+                    $poolSuspects[] = (int) $userId;
+                }
+            }
+            $router['pools'][$poolId]['last_rotation_at'] = $now;
+            $eventPools[] = [
+                'pool_id' => $poolId,
+                'pool_name' => (string) ($pool['name'] ?? $poolId),
+                'window_start' => $windowStart,
+                'window_seconds' => $now - $windowStart,
+                'exposed_total' => count($exposed),
+                'suspect_count' => count($poolSuspects),
+            ];
+            if ($reason === 'blocked') {
+                $suspectIds = array_merge($suspectIds, $poolSuspects);
+            }
+        }
+        $suspectIds = array_values(array_unique($suspectIds));
+
+        $threshold = max(1, (int) ($this->config['wall_hit_threshold'] ?? 2));
+        $autoIsolate = (bool) ($this->config['wall_auto_isolate'] ?? true);
+        $obsPoolId = $this->resolveWallObservePoolId($router);
+        $movedIds = [];
+        $scoredCount = 0;
+        if ($reason === 'blocked' && $suspectIds !== []) {
+            foreach ($suspectIds as $userId) {
+                $key = (string) $userId;
+                $router['wall_hits'][$key] =
+                    (int) ($router['wall_hits'][$key] ?? 0) + 1;
+                $router['wall_last'][$key] = $now;
+                $scoredCount++;
+            }
+            if ($autoIsolate && $obsPoolId !== '') {
+                foreach ($suspectIds as $userId) {
+                    $key = (string) $userId;
+                    if ((int) $router['wall_hits'][$key] < $threshold) {
+                        continue;
+                    }
+                    $currentPoolId = $router['overrides'][$key]['pool_id']
+                        ?? ($router['assignments'][$key] ?? '');
+                    $currentType =
+                        $router['pools'][$currentPoolId]['type'] ?? '';
+                    if (in_array($currentType, ['danger', 'blacklist'], true)) {
+                        continue;
+                    }
+                    if (
+                        ($router['overrides'][$key]['pool_id'] ?? '') === $obsPoolId
+                        && !empty($router['overrides'][$key]['locked'])
+                    ) {
+                        continue;
+                    }
+                    $router['assignments'][$key] = $obsPoolId;
+                    $router['overrides'][$key] = $this->normalizeOverride([
+                        'pool_id' => $obsPoolId,
+                        'locked' => true,
+                        'note' => '自动跟墙隔离（跟墙 '
+                            . $router['wall_hits'][$key] . ' 次）',
+                        'updated_at' => $now,
+                    ]);
+                    $router['untested_ids'] = array_values(array_diff(
+                        $router['untested_ids'],
+                        [$userId]
+                    ));
+                    $movedIds[] = $userId;
+                }
+            }
+        }
+
+        $logEntry = [
+            'at' => $now,
+            'reason' => $reason,
+            'old_ip' => $oldIp,
+            'new_ip' => $newIp,
+            'pools' => $eventPools,
+            'suspect_count' => count($suspectIds),
+            'scored_count' => $scoredCount,
+            'threshold' => $threshold,
+            'moved_count' => count($movedIds),
+            'moved_ids' => array_slice($movedIds, 0, 200),
+            'observe_pool_id' => $obsPoolId,
+        ];
+        $router['wall_log'][] = $logEntry;
+        $router['wall_log'] = array_slice($router['wall_log'], -200);
+
+        return [
+            'reason' => $reason,
+            'suspect_count' => count($suspectIds),
+            'scored_count' => $scoredCount,
+            'moved_count' => count($movedIds),
+            'observe_pool_id' => $obsPoolId,
+        ];
     }
 
     private function routerPoolExposureKey(array $campaign, string $poolId): string

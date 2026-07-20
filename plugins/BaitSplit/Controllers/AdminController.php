@@ -45,6 +45,22 @@ class AdminController extends PluginController
         return $this->success(BaitSplitService::fromDatabase()->campaigns());
     }
 
+    public function wallLog(Request $request, string $campaignId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        $data = $request->validate([
+            'limit' => ['nullable', 'integer', 'min:1', 'max:200'],
+        ]);
+        return $this->success(
+            BaitSplitService::fromDatabase()->wallReport(
+                $campaignId,
+                (int) ($data['limit'] ?? 100)
+            )
+        );
+    }
+
     public function createPing(Request $request): JsonResponse
     {
         if ($response = $this->ensureEnabled()) {

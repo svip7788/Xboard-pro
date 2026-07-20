@@ -47,6 +47,7 @@ class WebhookController extends Controller
             ],
             'old_ip' => ['nullable', 'ipv4'],
             'new_ip' => ['required', 'ipv4'],
+            'reason' => ['nullable', 'string', 'max:20'],
         ]);
         $eventKey = 'bait_split:ip_rotate_event:'
             . hash('sha256', $data['campaign_id'] . ':' . $data['event_id']);
@@ -64,7 +65,8 @@ class WebhookController extends Controller
                         $data['campaign_id'],
                         $data['old_ip'] ?? '',
                         $data['new_ip'],
-                        $data['target_id'] ?? ''
+                        $data['target_id'] ?? '',
+                        $data['reason'] ?? 'blocked'
                     );
                     $result['event_id'] = $data['event_id'];
                     $result['instance_id'] = $data['instance_id'] ?? '';

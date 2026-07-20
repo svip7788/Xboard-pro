@@ -21,6 +21,7 @@ Route::prefix("api/v2/{$securePath}/plugin/bait-split")
         Route::post('/ping', [AdminController::class, 'createPing']);
         Route::get('/ping/{taskId}', [AdminController::class, 'pingResult']);
         Route::get('/campaigns', [AdminController::class, 'campaigns']);
+        Route::get('/campaigns/{campaignId}/wall-log', [AdminController::class, 'wallLog']);
         Route::get('/campaigns/{campaignId}/exposures', [AdminController::class, 'exposures']);
         Route::post('/campaigns', [AdminController::class, 'saveCampaign']);
         Route::delete('/campaigns/{campaignId}', [AdminController::class, 'deleteCampaign']);
