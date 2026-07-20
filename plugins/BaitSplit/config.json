@@ -60,11 +60,11 @@
             "label": "夜间分组诱捕",
             "description": "夜间墙时段把嫌疑人随机分到多个独立 IP 组，被墙组成员记分，多晚交叉揪出内鬼"
         },
-        "decoy_source_pool_id": {
+        "decoy_source_pool_ids": {
             "type": "string",
             "default": "",
-            "label": "诱捕来源池 ID（嫌疑人群）",
-            "description": "每晚从该池抽人打散；留空自动用“观察3”"
+            "label": "诱捕来源池 ID（可多个，逗号分隔）",
+            "description": "每晚从这些被墙/嫌疑池抽人打散；留空自动用跟墙隔离目标池"
         },
         "decoy_pool_ids": {
             "type": "string",

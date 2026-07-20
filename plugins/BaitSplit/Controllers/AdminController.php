@@ -72,7 +72,7 @@ class AdminController extends PluginController
             'wall_lookback_seconds' => ['required', 'integer', 'min:60', 'max:86400'],
             'wall_observe_pool_id' => ['nullable', 'string', 'max:64'],
             'decoy_enabled' => ['required', 'boolean'],
-            'decoy_source_pool_id' => ['nullable', 'string', 'max:64'],
+            'decoy_source_pool_ids' => ['nullable', 'string', 'max:512'],
             'decoy_pool_ids' => ['nullable', 'string', 'max:512'],
             'decoy_confirm_pool_id' => ['nullable', 'string', 'max:64'],
             'decoy_start' => ['required', 'string', 'regex:/^\d{1,2}:\d{2}$/'],
@@ -85,7 +85,8 @@ class AdminController extends PluginController
         $config['wall_lookback_seconds'] = (int) $data['wall_lookback_seconds'];
         $config['wall_observe_pool_id'] = trim((string) ($data['wall_observe_pool_id'] ?? ''));
         $config['decoy_enabled'] = (bool) $data['decoy_enabled'];
-        $config['decoy_source_pool_id'] = trim((string) ($data['decoy_source_pool_id'] ?? ''));
+        $config['decoy_source_pool_ids'] = trim((string) ($data['decoy_source_pool_ids'] ?? ''));
+        unset($config['decoy_source_pool_id']);
         $config['decoy_pool_ids'] = trim((string) ($data['decoy_pool_ids'] ?? ''));
         $config['decoy_confirm_pool_id'] = trim((string) ($data['decoy_confirm_pool_id'] ?? ''));
         $config['decoy_start'] = trim((string) $data['decoy_start']);

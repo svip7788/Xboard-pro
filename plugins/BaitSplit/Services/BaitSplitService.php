@@ -2683,8 +2683,9 @@ class BaitSplitService
             'decoy' => [
                 'active_date' => '',
                 'assigned_at' => 0,
-                'source_pool_id' => '',
+                'source_pool_ids' => [],
                 'groups' => [],
+                'origin' => [],
                 'scored_pools' => [],
             ],
             'decoy_nights' => [],
@@ -2772,11 +2773,21 @@ class BaitSplitService
             }
             $decoyGroups[$poolId] = $this->normalizeIds($ids);
         }
+        $decoyOrigin = [];
+        foreach ((array) ($decoy['origin'] ?? []) as $userId => $poolId) {
+            if ((int) $userId > 0 && (string) $poolId !== '') {
+                $decoyOrigin[(string) (int) $userId] = (string) $poolId;
+            }
+        }
         $router['decoy'] = [
             'active_date' => (string) ($decoy['active_date'] ?? ''),
             'assigned_at' => (int) ($decoy['assigned_at'] ?? 0),
-            'source_pool_id' => (string) ($decoy['source_pool_id'] ?? ''),
+            'source_pool_ids' => array_values(array_filter(array_map(
+                'strval',
+                (array) ($decoy['source_pool_ids'] ?? [])
+            ))),
             'groups' => $decoyGroups,
+            'origin' => $decoyOrigin,
             'scored_pools' => array_values(array_unique(array_map(
                 'strval',
                 (array) ($decoy['scored_pools'] ?? [])
@@ -3774,6 +3785,7 @@ class BaitSplitService
                 'hit_threshold' => max(1, (int) ($this->config['wall_hit_threshold'] ?? 2)),
                 'lookback_seconds' => max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600)),
                 'observe_pool_id' => $this->resolveWallObservePoolId($router),
+                'observe_pool_raw' => (string) ($this->config['wall_observe_pool_id'] ?? ''),
             ],
             'decoy' => [
                 'enabled' => (bool) ($this->config['decoy_enabled'] ?? false),
@@ -3782,16 +3794,14 @@ class BaitSplitService
                 'assigned_at' => (int) ($decoy['assigned_at'] ?? 0),
                 'start' => (string) ($this->config['decoy_start'] ?? '01:00'),
                 'end' => (string) ($this->config['decoy_end'] ?? '09:00'),
-                'source_pool_id' => $this->resolveDecoySourcePoolId($router),
-                'source_pool_name' => $poolName($this->resolveDecoySourcePoolId($router)),
+                'source_pool_ids' => $this->resolveDecoySourcePoolIds($router),
+                'source_pool_names' => array_map($poolName, $this->resolveDecoySourcePoolIds($router)),
                 'confirm_pool_id' => $this->resolveDecoyConfirmPoolId($router),
                 'confirm_pool_name' => $poolName($this->resolveDecoyConfirmPoolId($router)),
                 'decoy_pool_ids' => $decoyPoolIds,
                 'decoy_pool_names' => array_map($poolName, $decoyPoolIds),
                 'groups' => $decoyGroups,
                 'raw' => [
-                    'source' => (string) ($this->config['decoy_source_pool_id'] ?? ''),
-                    'pools' => (string) ($this->config['decoy_pool_ids'] ?? ''),
                     'confirm' => (string) ($this->config['decoy_confirm_pool_id'] ?? ''),
                 ],
             ],
@@ -3840,7 +3850,7 @@ class BaitSplitService
             }
         }
         foreach ($router['pools'] as $poolId => $pool) {
-            if (($pool['name'] ?? '') === '观察3') {
+            if (($pool['type'] ?? '') === 'observation') {
                 return $poolId;
             }
         }
@@ -3864,23 +3874,34 @@ class BaitSplitService
         return '';
     }
 
-    private function resolveDecoySourcePoolId(array $router): string
+    private function resolveDecoySourcePoolIds(array $router): array
     {
-        $ref = $this->resolvePoolIdByRef(
-            $router,
-            (string) ($this->config['decoy_source_pool_id'] ?? '')
-        );
-        return $ref !== '' ? $ref : $this->resolveWallObservePoolId($router);
+        $ids = [];
+        foreach (explode(',', (string) ($this->config['decoy_source_pool_ids'] ?? '')) as $ref) {
+            $poolId = $this->resolvePoolIdByRef($router, $ref);
+            if ($poolId !== '' && !in_array($poolId, $ids, true)) {
+                $ids[] = $poolId;
+            }
+        }
+        if ($ids === []) {
+            $fallback = $this->resolveWallObservePoolId($router);
+            if ($fallback !== '') {
+                $ids[] = $fallback;
+            }
+        }
+        return $ids;
     }
 
     private function resolveDecoyPoolIds(array $router): array
     {
+        $sourceIds = $this->resolveDecoySourcePoolIds($router);
         $ids = [];
         foreach (explode(',', (string) ($this->config['decoy_pool_ids'] ?? '')) as $ref) {
             $poolId = $this->resolvePoolIdByRef($router, $ref);
             if (
                 $poolId === ''
                 || in_array($poolId, $ids, true)
+                || in_array($poolId, $sourceIds, true)
                 || in_array(
                     $router['pools'][$poolId]['type'] ?? '',
                     ['danger', 'blacklist'],
@@ -3955,24 +3976,33 @@ class BaitSplitService
                 continue;
             }
             $router = &$campaign['router'];
-            $sourceId = $this->resolveDecoySourcePoolId($router);
+            $sourceIds = $this->resolveDecoySourcePoolIds($router);
             $decoyPoolIds = $this->resolveDecoyPoolIds($router);
-            if ($sourceId === '' || count($decoyPoolIds) < 2) {
+            if ($sourceIds === [] || count($decoyPoolIds) < 2) {
                 unset($router);
                 continue;
             }
             $decoy = $router['decoy'];
             if ($inWindow && $decoy['active_date'] !== $today) {
-                $memberIds = $this->eligibleUsersQuery($campaign['target_group_ids'])
-                    ->pluck('id')->map('intval')
-                    ->filter(fn(int $uid): bool =>
-                        $this->effectivePoolId($campaign, $uid) === $sourceId)
-                    ->values()->all();
+                $sourceSet = array_flip($sourceIds);
+                $members = [];
+                foreach (
+                    $this->eligibleUsersQuery($campaign['target_group_ids'])
+                        ->pluck('id')->map('intval')->all() as $uid
+                ) {
+                    $poolId = $this->effectivePoolId($campaign, $uid);
+                    if (isset($sourceSet[$poolId])) {
+                        $members[$uid] = $poolId;
+                    }
+                }
+                $memberIds = array_keys($members);
                 shuffle($memberIds);
                 $groups = array_fill_keys($decoyPoolIds, []);
+                $origin = [];
                 foreach ($memberIds as $index => $uid) {
                     $poolId = $decoyPoolIds[$index % count($decoyPoolIds)];
                     $groups[$poolId][] = $uid;
+                    $origin[(string) $uid] = $members[$uid];
                     $router['overrides'][(string) $uid] = $this->normalizeOverride([
                         'pool_id' => $poolId,
                         'locked' => true,
@@ -3990,8 +4020,9 @@ class BaitSplitService
                 $router['decoy'] = [
                     'active_date' => $today,
                     'assigned_at' => $now,
-                    'source_pool_id' => $sourceId,
+                    'source_pool_ids' => $sourceIds,
                     'groups' => $groups,
+                    'origin' => $origin,
                     'scored_pools' => [],
                 ];
                 $router['config_version']++;
@@ -4000,6 +4031,7 @@ class BaitSplitService
                     'campaign_id' => $id,
                     'action' => 'shuffle',
                     'grouped' => count($memberIds),
+                    'sources' => count($sourceIds),
                     'groups' => count($decoyPoolIds),
                 ];
             } elseif (!$inWindow && $decoy['active_date'] !== '') {
@@ -4009,21 +4041,26 @@ class BaitSplitService
                         if ($this->effectivePoolId($campaign, (int) $uid) !== (string) $poolId) {
                             continue;
                         }
+                        $back = $decoy['origin'][(string) $uid] ?? '';
+                        if ($back === '' || !isset($router['pools'][$back])) {
+                            $back = $sourceIds[0];
+                        }
                         $router['overrides'][(string) $uid] = $this->normalizeOverride([
-                            'pool_id' => $sourceId,
+                            'pool_id' => $back,
                             'locked' => true,
                             'note' => '诱捕收回',
                             'updated_at' => $now,
                         ]);
-                        $router['assignments'][(string) $uid] = $sourceId;
+                        $router['assignments'][(string) $uid] = $back;
                         $restored++;
                     }
                 }
                 $router['decoy'] = [
                     'active_date' => '',
                     'assigned_at' => 0,
-                    'source_pool_id' => '',
+                    'source_pool_ids' => [],
                     'groups' => [],
+                    'origin' => [],
                     'scored_pools' => [],
                 ];
                 $router['config_version']++;
