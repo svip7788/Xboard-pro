@@ -3852,6 +3852,7 @@ class BaitSplitService
                 'auto_isolate' => (bool) ($this->config['wall_auto_isolate'] ?? true),
                 'hit_threshold' => max(1, (int) ($this->config['wall_hit_threshold'] ?? 2)),
                 'lookback_seconds' => max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600)),
+                'fresh_max_seconds' => max(300, (int) ($this->config['wall_fresh_max_seconds'] ?? 7200)),
                 'observe_pool_id' => $this->resolveWallObservePoolId($router),
                 'observe_pool_raw' => (string) ($this->config['wall_observe_pool_id'] ?? ''),
             ],
@@ -4044,10 +4045,8 @@ class BaitSplitService
 
     private function seedDecoyDomain(array $campaign, string $poolId): array
     {
-        $pulled = [];
-        foreach ($this->poolExposureIds($campaign, $poolId) as $uid) {
-            $pulled[(int) $uid] = true;
-        }
+        // 按最近拉取时间倒序：内鬼必是活跃拉订阅者，最近拉过的优先进首批，收敛更快
+        $lastMap = $this->poolExposureLastMap($campaign, $poolId);
         $head = [];
         $tail = [];
         foreach (
@@ -4057,15 +4056,15 @@ class BaitSplitService
             if ($this->effectivePoolId($campaign, $uid) !== $poolId) {
                 continue;
             }
-            if (isset($pulled[$uid])) {
-                $head[] = $uid;
+            if (isset($lastMap[$uid])) {
+                $head[$uid] = (int) $lastMap[$uid];
             } else {
                 $tail[] = $uid;
             }
         }
-        shuffle($head);
+        arsort($head);
         shuffle($tail);
-        $ordered = array_merge($head, $tail);
+        $ordered = array_merge(array_keys($head), $tail);
         $queue = $ordered === [] ? [] : [[
             'ids' => $ordered,
             'batch' => $this->decoyBatchSize(),
@@ -4455,6 +4454,7 @@ class BaitSplitService
     ): array {
         $now = time();
         $lookback = max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600));
+        $freshMax = max(300, (int) ($this->config['wall_fresh_max_seconds'] ?? 7200));
         $threshold = max(1, (int) ($this->config['wall_hit_threshold'] ?? 2));
         $autoIsolate = (bool) ($this->config['wall_auto_isolate'] ?? true);
         $obsPoolId = $this->resolveWallObservePoolId($router);
@@ -4468,10 +4468,10 @@ class BaitSplitService
             if ($pool === null) {
                 continue;
             }
-            $windowStart = (int) ($pool['last_rotation_at'] ?? 0);
-            if ($windowStart <= 0) {
-                $windowStart = $now - $lookback;
-            }
+            $rawStart = (int) ($pool['last_rotation_at'] ?? 0);
+            // 老 IP 首墙：从没换过 IP 或该 IP 存活过久（跨白天），曝光窗口不可信 → 只换 IP 不记分
+            $stale = $rawStart <= 0 || ($now - $rawStart) > $freshMax;
+            $windowStart = $rawStart > 0 ? $rawStart : ($now - $lookback);
             $exposed = $this->poolExposureLastMap($campaign, $poolId);
             $exposedTotal = count($exposed);
             $poolSuspects = [];
@@ -4485,12 +4485,13 @@ class BaitSplitService
                 'pool_id' => $poolId,
                 'pool_name' => (string) ($pool['name'] ?? $poolId),
                 'mode' => 'exposure',
+                'stale' => $stale,
                 'window_start' => $windowStart,
                 'window_seconds' => $now - $windowStart,
                 'exposed_total' => $exposedTotal,
-                'suspect_count' => count($poolSuspects),
+                'suspect_count' => $stale ? 0 : count($poolSuspects),
             ];
-            if ($reason !== 'blocked' || $poolSuspects === []) {
+            if ($reason !== 'blocked' || $stale || $poolSuspects === []) {
                 continue;
             }
             $suspectIds = array_merge($suspectIds, $poolSuspects);

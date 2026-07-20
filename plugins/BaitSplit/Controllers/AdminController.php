@@ -70,6 +70,7 @@ class AdminController extends PluginController
             'wall_auto_isolate' => ['required', 'boolean'],
             'wall_hit_threshold' => ['required', 'integer', 'min:1', 'max:50'],
             'wall_lookback_seconds' => ['required', 'integer', 'min:60', 'max:86400'],
+            'wall_fresh_max_seconds' => ['required', 'integer', 'min:300', 'max:86400'],
             'wall_observe_pool_id' => ['nullable', 'string', 'max:64'],
             'decoy_enabled' => ['required', 'boolean'],
             'decoy_source_pool_ids' => ['nullable', 'string', 'max:512'],
@@ -86,6 +87,7 @@ class AdminController extends PluginController
         $config['wall_auto_isolate'] = (bool) $data['wall_auto_isolate'];
         $config['wall_hit_threshold'] = (int) $data['wall_hit_threshold'];
         $config['wall_lookback_seconds'] = (int) $data['wall_lookback_seconds'];
+        $config['wall_fresh_max_seconds'] = (int) $data['wall_fresh_max_seconds'];
         $config['wall_observe_pool_id'] = trim((string) ($data['wall_observe_pool_id'] ?? ''));
         $config['decoy_enabled'] = (bool) $data['decoy_enabled'];
         $config['decoy_source_pool_ids'] = trim((string) ($data['decoy_source_pool_ids'] ?? ''));

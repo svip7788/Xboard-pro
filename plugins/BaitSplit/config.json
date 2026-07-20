@@ -48,6 +48,12 @@
             "label": "被墙前回溯窗口（秒）",
             "description": "判定死 IP 存活期内拉取过的用户为受害者/嫌疑，默认 3600"
         },
+        "wall_fresh_max_seconds": {
+            "type": "number",
+            "default": 7200,
+            "label": "IP 新鲜阈值（秒）",
+            "description": "IP 存活超过此秒数才被墙视为老 IP 首墙，只换 IP 不记分（避免误伤白天正常用户），默认 7200"
+        },
         "wall_observe_pool_id": {
             "type": "string",
             "default": "",
