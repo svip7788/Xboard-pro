@@ -69,8 +69,20 @@
         "decoy_pool_ids": {
             "type": "string",
             "default": "",
-            "label": "诱捕分组池 ID（逗号分隔，需各自独立 IP）",
-            "description": "2 个及以上、各自独立 IP 的池，用于夜间分组；如 poolA,poolB,poolC"
+            "label": "金丝雀池 ID（逗号分隔，各自独立备用 IP）",
+            "description": "1 个及以上、各自独立干净 IP 的池；每轮抽一小批指到这里观察，被墙即锁定嫌疑到该批"
+        },
+        "decoy_batch_size": {
+            "type": "number",
+            "default": 80,
+            "label": "每批人数",
+            "description": "每轮从来源池抽多少人指向金丝雀 IP，默认 80"
+        },
+        "decoy_observe_minutes": {
+            "type": "number",
+            "default": 40,
+            "label": "每批观察时长（分钟）",
+            "description": "每批观察多久后收回并换下一批，默认 40"
         },
         "decoy_confirm_pool_id": {
             "type": "string",

@@ -75,6 +75,8 @@ class AdminController extends PluginController
             'decoy_source_pool_ids' => ['nullable', 'string', 'max:512'],
             'decoy_pool_ids' => ['nullable', 'string', 'max:512'],
             'decoy_confirm_pool_id' => ['nullable', 'string', 'max:64'],
+            'decoy_batch_size' => ['required', 'integer', 'min:1', 'max:5000'],
+            'decoy_observe_minutes' => ['required', 'integer', 'min:5', 'max:480'],
             'decoy_start' => ['required', 'string', 'regex:/^\d{1,2}:\d{2}$/'],
             'decoy_end' => ['required', 'string', 'regex:/^\d{1,2}:\d{2}$/'],
         ]);
@@ -88,6 +90,8 @@ class AdminController extends PluginController
         $config['decoy_source_pool_ids'] = trim((string) ($data['decoy_source_pool_ids'] ?? ''));
         unset($config['decoy_source_pool_id']);
         $config['decoy_pool_ids'] = trim((string) ($data['decoy_pool_ids'] ?? ''));
+        $config['decoy_batch_size'] = (int) $data['decoy_batch_size'];
+        $config['decoy_observe_minutes'] = (int) $data['decoy_observe_minutes'];
         $config['decoy_confirm_pool_id'] = trim((string) ($data['decoy_confirm_pool_id'] ?? ''));
         $config['decoy_start'] = trim((string) $data['decoy_start']);
         $config['decoy_end'] = trim((string) $data['decoy_end']);

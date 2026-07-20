@@ -2686,6 +2686,7 @@ class BaitSplitService
                 'source_pool_ids' => [],
                 'groups' => [],
                 'origin' => [],
+                'tested' => [],
                 'scored_pools' => [],
             ],
             'decoy_nights' => [],
@@ -2788,6 +2789,7 @@ class BaitSplitService
             ))),
             'groups' => $decoyGroups,
             'origin' => $decoyOrigin,
+            'tested' => $this->normalizeIds($decoy['tested'] ?? []),
             'scored_pools' => array_values(array_unique(array_map(
                 'strval',
                 (array) ($decoy['scored_pools'] ?? [])
@@ -3794,6 +3796,13 @@ class BaitSplitService
                 'assigned_at' => (int) ($decoy['assigned_at'] ?? 0),
                 'start' => (string) ($this->config['decoy_start'] ?? '01:00'),
                 'end' => (string) ($this->config['decoy_end'] ?? '09:00'),
+                'batch_size' => max(1, (int) ($this->config['decoy_batch_size'] ?? 80)),
+                'observe_minutes' => max(5, (int) ($this->config['decoy_observe_minutes'] ?? 40)),
+                'tested_count' => count($this->normalizeIds($decoy['tested'] ?? [])),
+                'batch_count' => array_sum(array_map(
+                    fn($ids): int => count((array) $ids),
+                    (array) ($decoy['groups'] ?? [])
+                )),
                 'source_pool_ids' => $this->resolveDecoySourcePoolIds($router),
                 'source_pool_names' => array_map($poolName, $this->resolveDecoySourcePoolIds($router)),
                 'confirm_pool_id' => $this->resolveDecoyConfirmPoolId($router),
@@ -3945,8 +3954,9 @@ class BaitSplitService
     }
 
     /**
-     * 夜间分组诱捕编排：到点把嫌疑来源池随机打散到多个独立 IP 组，
-     * 收回时段把仍在诱捕组的用户放回来源池。命中记分与隔离在 webhook 被墙时进行。
+     * 金丝雀分批诱捕编排：墙时段每隔「观察时长」从嫌疑来源池抽一小批（优先已拉取者）
+     * 指向金丝雀池的新 IP，其余人留旧 IP；该批 IP 被墙则内鬼在这批（webhook 记分）。
+     * 到点收回、抽下一批；白天全部放回原池。
      */
     public function runDecoyOrchestration(): array
     {
@@ -3963,12 +3973,50 @@ class BaitSplitService
         }
     }
 
+    private function recallDecoyBatch(
+        array &$router,
+        array $campaign,
+        array $decoy,
+        array $sourceIds,
+        int $now
+    ): int {
+        $restored = 0;
+        foreach ((array) ($decoy['groups'] ?? []) as $poolId => $ids) {
+            foreach ((array) $ids as $uid) {
+                if ($this->effectivePoolId($campaign, (int) $uid) !== (string) $poolId) {
+                    continue;
+                }
+                $back = $decoy['origin'][(string) $uid] ?? '';
+                if ($back === '' || !isset($router['pools'][$back])) {
+                    $back = $sourceIds[0] ?? '';
+                }
+                if ($back === '') {
+                    continue;
+                }
+                $router['overrides'][(string) $uid] = $this->normalizeOverride([
+                    'pool_id' => $back,
+                    'locked' => true,
+                    'note' => '诱捕收回',
+                    'updated_at' => $now,
+                ]);
+                $router['assignments'][(string) $uid] = $back;
+                $restored++;
+            }
+        }
+        return $restored;
+    }
+
     private function runDecoyLocked(): array
     {
         $state = $this->state();
         $inWindow = $this->decoyInWindow();
         $today = now()->format('Y-m-d');
         $now = time();
+        $batchSize = max(1, (int) ($this->config['decoy_batch_size'] ?? 80));
+        $observeSeconds = max(
+            300,
+            (int) ($this->config['decoy_observe_minutes'] ?? 40) * 60
+        );
         $changed = false;
         $actions = [];
         foreach ($state['campaigns'] as $id => $campaign) {
@@ -3977,100 +4025,136 @@ class BaitSplitService
             }
             $router = &$campaign['router'];
             $sourceIds = $this->resolveDecoySourcePoolIds($router);
-            $decoyPoolIds = $this->resolveDecoyPoolIds($router);
-            if ($sourceIds === [] || count($decoyPoolIds) < 2) {
+            $canaryIds = $this->resolveDecoyPoolIds($router);
+            if ($sourceIds === [] || $canaryIds === []) {
                 unset($router);
                 continue;
             }
             $decoy = $router['decoy'];
-            if ($inWindow && $decoy['active_date'] !== $today) {
-                $sourceSet = array_flip($sourceIds);
-                $members = [];
+
+            if (!$inWindow) {
+                if (($decoy['active_date'] ?? '') !== '') {
+                    $restored = $this->recallDecoyBatch(
+                        $router,
+                        $campaign,
+                        $decoy,
+                        $sourceIds,
+                        $now
+                    );
+                    $router['decoy'] = $this->newRouter([])['decoy'];
+                    $router['config_version']++;
+                    $changed = true;
+                    $actions[] = [
+                        'campaign_id' => $id,
+                        'action' => 'recall',
+                        'restored' => $restored,
+                    ];
+                }
+                unset($router);
+                $state['campaigns'][$id] = $campaign;
+                continue;
+            }
+
+            $newNight = ($decoy['active_date'] ?? '') !== $today;
+            $needNew = $newNight
+                || ($now - (int) ($decoy['assigned_at'] ?? 0)) >= $observeSeconds;
+            if (!$needNew) {
+                unset($router);
+                $state['campaigns'][$id] = $campaign;
+                continue;
+            }
+
+            // 结算/收回上一批（分数已在 webhook 记入），换晚则重置已测名单
+            $this->recallDecoyBatch($router, $campaign, $decoy, $sourceIds, $now);
+            $tested = $newNight ? [] : $this->normalizeIds($decoy['tested'] ?? []);
+
+            $sourceSet = array_flip($sourceIds);
+            $pulledSet = [];
+            foreach ($sourceIds as $srcId) {
+                foreach ($this->poolExposureIds($campaign, $srcId) as $uid) {
+                    $pulledSet[(int) $uid] = true;
+                }
+            }
+            $pickBatch = function (array $testedList) use (
+                $campaign,
+                $sourceSet,
+                $pulledSet
+            ): array {
+                $testedSet = array_flip($testedList);
+                $pulled = [];
+                $other = [];
                 foreach (
                     $this->eligibleUsersQuery($campaign['target_group_ids'])
                         ->pluck('id')->map('intval')->all() as $uid
                 ) {
-                    $poolId = $this->effectivePoolId($campaign, $uid);
-                    if (isset($sourceSet[$poolId])) {
-                        $members[$uid] = $poolId;
+                    if (isset($testedSet[$uid])) {
+                        continue;
+                    }
+                    $pid = $this->effectivePoolId($campaign, $uid);
+                    if (!isset($sourceSet[$pid])) {
+                        continue;
+                    }
+                    if (isset($pulledSet[$uid])) {
+                        $pulled[$uid] = $pid;
+                    } else {
+                        $other[$uid] = $pid;
                     }
                 }
-                $memberIds = array_keys($members);
-                shuffle($memberIds);
-                $groups = array_fill_keys($decoyPoolIds, []);
-                $origin = [];
-                foreach ($memberIds as $index => $uid) {
-                    $poolId = $decoyPoolIds[$index % count($decoyPoolIds)];
-                    $groups[$poolId][] = $uid;
-                    $origin[(string) $uid] = $members[$uid];
-                    $router['overrides'][(string) $uid] = $this->normalizeOverride([
-                        'pool_id' => $poolId,
-                        'locked' => true,
-                        'note' => '夜间分组诱捕',
-                        'updated_at' => $now,
-                    ]);
-                    $router['assignments'][(string) $uid] = $poolId;
-                    $router['decoy_nights'][(string) $uid] =
-                        (int) ($router['decoy_nights'][(string) $uid] ?? 0) + 1;
-                }
-                $router['untested_ids'] = array_values(array_diff(
-                    $router['untested_ids'],
-                    $memberIds
-                ));
-                $router['decoy'] = [
-                    'active_date' => $today,
-                    'assigned_at' => $now,
-                    'source_pool_ids' => $sourceIds,
-                    'groups' => $groups,
-                    'origin' => $origin,
-                    'scored_pools' => [],
-                ];
-                $router['config_version']++;
-                $changed = true;
-                $actions[] = [
-                    'campaign_id' => $id,
-                    'action' => 'shuffle',
-                    'grouped' => count($memberIds),
-                    'sources' => count($sourceIds),
-                    'groups' => count($decoyPoolIds),
-                ];
-            } elseif (!$inWindow && $decoy['active_date'] !== '') {
-                $restored = 0;
-                foreach ($decoy['groups'] as $poolId => $ids) {
-                    foreach ($ids as $uid) {
-                        if ($this->effectivePoolId($campaign, (int) $uid) !== (string) $poolId) {
-                            continue;
-                        }
-                        $back = $decoy['origin'][(string) $uid] ?? '';
-                        if ($back === '' || !isset($router['pools'][$back])) {
-                            $back = $sourceIds[0];
-                        }
-                        $router['overrides'][(string) $uid] = $this->normalizeOverride([
-                            'pool_id' => $back,
-                            'locked' => true,
-                            'note' => '诱捕收回',
-                            'updated_at' => $now,
-                        ]);
-                        $router['assignments'][(string) $uid] = $back;
-                        $restored++;
-                    }
-                }
-                $router['decoy'] = [
-                    'active_date' => '',
-                    'assigned_at' => 0,
-                    'source_pool_ids' => [],
-                    'groups' => [],
-                    'origin' => [],
-                    'scored_pools' => [],
-                ];
-                $router['config_version']++;
-                $changed = true;
-                $actions[] = [
-                    'campaign_id' => $id,
-                    'action' => 'recall',
-                    'restored' => $restored,
-                ];
+                return [$pulled, $other];
+            };
+
+            $need = $batchSize * count($canaryIds);
+            [$pulled, $other] = $pickBatch($tested);
+            if (count($pulled) + count($other) === 0 && $tested !== []) {
+                // 本晚已全部轮测一遍，重开一轮继续累计
+                $tested = [];
+                [$pulled, $other] = $pickBatch($tested);
             }
+            $pulledIds = array_keys($pulled);
+            $otherIds = array_keys($other);
+            shuffle($pulledIds);
+            shuffle($otherIds);
+            $picked = array_slice(array_merge($pulledIds, $otherIds), 0, $need);
+            $members = $pulled + $other;
+
+            $groups = array_fill_keys($canaryIds, []);
+            $origin = [];
+            foreach ($picked as $index => $uid) {
+                $poolId = $canaryIds[$index % count($canaryIds)];
+                $groups[$poolId][] = $uid;
+                $origin[(string) $uid] = $members[$uid];
+                $router['overrides'][(string) $uid] = $this->normalizeOverride([
+                    'pool_id' => $poolId,
+                    'locked' => true,
+                    'note' => '金丝雀诱捕批次',
+                    'updated_at' => $now,
+                ]);
+                $router['assignments'][(string) $uid] = $poolId;
+                $router['decoy_nights'][(string) $uid] =
+                    (int) ($router['decoy_nights'][(string) $uid] ?? 0) + 1;
+            }
+            $router['untested_ids'] = array_values(array_diff(
+                $router['untested_ids'],
+                $picked
+            ));
+            $router['decoy'] = [
+                'active_date' => $today,
+                'assigned_at' => $now,
+                'source_pool_ids' => $sourceIds,
+                'groups' => $groups,
+                'origin' => $origin,
+                'tested' => array_values(array_unique(array_merge($tested, $picked))),
+                'scored_pools' => [],
+            ];
+            $router['config_version']++;
+            $changed = true;
+            $actions[] = [
+                'campaign_id' => $id,
+                'action' => 'batch',
+                'picked' => count($picked),
+                'canary_pools' => count($canaryIds),
+                'batch_size' => $batchSize,
+            ];
             unset($router);
             $state['campaigns'][$id] = $campaign;
         }
