@@ -201,8 +201,8 @@
                 <div class="field"><label>诱捕时段（本地时间）</label><div class="host-tools"><input id="decoyStart" placeholder="01:00" style="flex:1;min-width:0"><span>—</span><input id="decoyEnd" placeholder="09:00" style="flex:1;min-width:0"></div></div>
             </div>
             <div class="field"><label>确认内鬼隔离池</label><select id="decoyConfirm"></select></div>
-            <div class="field"><label>嫌疑来源池（可多选，每晚从这些被墙/嫌疑池抽人打散）</label><div id="decoySource" class="group-list"></div></div>
-            <div class="field"><label>分组池（勾选 ≥2 个各自独立 IP 的池，需与来源池不同）</label><div id="decoyPools" class="group-list"></div></div>
+            <div class="field"><label>① 嫌疑来源池（内鬼现在藏在哪些池，可多选）</label><div id="decoySource" class="group-list"></div></div>
+            <div class="field"><label>② 分组池（每晚把来源池的人随机打散关进这些池；哪个池 IP 被墙内鬼就在那池。需 ≥2 个、各自独立干净 IP、且不能是来源池）</label><div id="decoyPools" class="group-list"></div></div>
 
             <button id="saveWallSettings">保存跟墙 / 诱捕设置</button>
 
