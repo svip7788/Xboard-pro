@@ -29,6 +29,30 @@
             "default": "",
             "label": "AWS IP 轮换接口密钥",
             "description": "至少 32 位随机字符串，用于校验 AWS 换 IP 脚本的 HMAC 签名"
+        },
+        "wall_auto_isolate": {
+            "type": "boolean",
+            "default": true,
+            "label": "被墙自动隔离",
+            "description": "reason=blocked 换 IP 时，累计跟墙分达标的用户自动移入观察3"
+        },
+        "wall_hit_threshold": {
+            "type": "number",
+            "default": 2,
+            "label": "跟墙隔离阈值（次）",
+            "description": "跟墙命中累计达到该次数后自动隔离，默认 2"
+        },
+        "wall_lookback_seconds": {
+            "type": "number",
+            "default": 3600,
+            "label": "被墙前回溯窗口（秒）",
+            "description": "判定死 IP 存活期内拉取过的用户为受害者/嫌疑，默认 3600"
+        },
+        "wall_observe_pool_id": {
+            "type": "string",
+            "default": "",
+            "label": "跟墙隔离目标池 ID",
+            "description": "留空自动选择名称含“观察3”的观察组"
         }
     }
 }

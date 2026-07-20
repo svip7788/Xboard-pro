@@ -61,6 +61,32 @@ class AdminController extends PluginController
         );
     }
 
+    public function saveWallSettings(Request $request): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        $data = $request->validate([
+            'wall_auto_isolate' => ['required', 'boolean'],
+            'wall_hit_threshold' => ['required', 'integer', 'min:1', 'max:50'],
+            'wall_lookback_seconds' => ['required', 'integer', 'min:60', 'max:86400'],
+            'wall_observe_pool_id' => ['nullable', 'string', 'max:64'],
+        ]);
+        $service = app(\App\Services\Plugin\PluginConfigService::class);
+        $config = $service->getDbConfig('bait_split');
+        $config['wall_auto_isolate'] = (bool) $data['wall_auto_isolate'];
+        $config['wall_hit_threshold'] = (int) $data['wall_hit_threshold'];
+        $config['wall_lookback_seconds'] = (int) $data['wall_lookback_seconds'];
+        $config['wall_observe_pool_id'] = trim((string) ($data['wall_observe_pool_id'] ?? ''));
+        $service->updateConfig('bait_split', $config);
+        return $this->success([
+            'wall_auto_isolate' => $config['wall_auto_isolate'],
+            'wall_hit_threshold' => $config['wall_hit_threshold'],
+            'wall_lookback_seconds' => $config['wall_lookback_seconds'],
+            'wall_observe_pool_id' => $config['wall_observe_pool_id'],
+        ]);
+    }
+
     public function createPing(Request $request): JsonResponse
     {
         if ($response = $this->ensureEnabled()) {
