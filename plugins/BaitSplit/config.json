@@ -1,7 +1,7 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "3.2.0",
+    "version": "3.3.0",
     "description": "全量接管节点域名，支持用户池、分批筛查和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
@@ -57,50 +57,56 @@
         "decoy_enabled": {
             "type": "boolean",
             "default": false,
-            "label": "夜间分组诱捕",
-            "description": "夜间墙时段把嫌疑人随机分到多个独立 IP 组，被墙组成员记分，多晚交叉揪出内鬼"
+            "label": "夜间二分收敛诱捕",
+            "description": "夜间来源池被墙时，新 IP 只发一小批，被墙批对半拆续测，逐步缩到真内鬼进危险组"
         },
         "decoy_source_pool_ids": {
             "type": "string",
             "default": "",
-            "label": "诱捕来源池 ID（可多个，逗号分隔）",
-            "description": "每晚从这些被墙/嫌疑池抽人打散；留空自动用跟墙隔离目标池"
+            "label": "嫌疑来源池 ID（可多个，逗号分隔）",
+            "description": "内鬼现藏在哪些池；多个池各自独立并行诱捕。留空自动用跟墙隔离目标池"
         },
-        "decoy_pool_ids": {
+        "decoy_isolate_pool_id": {
             "type": "string",
             "default": "",
-            "label": "金丝雀池 ID（逗号分隔，各自独立备用 IP）",
-            "description": "1 个及以上、各自独立干净 IP 的池；每轮抽一小批指到这里观察，被墙即锁定嫌疑到该批"
+            "label": "隔离中转池 ID",
+            "description": "被墙批先移入该池止血并继续细分；留空自动用第一个观察组"
         },
         "decoy_batch_size": {
             "type": "number",
-            "default": 80,
-            "label": "每批人数",
-            "description": "每轮从来源池抽多少人指向金丝雀 IP，默认 80"
+            "default": 60,
+            "label": "初始每批人数",
+            "description": "来源池被墙后新 IP 首批发给多少人，默认 60；被墙后对半递减"
+        },
+        "decoy_min_batch": {
+            "type": "number",
+            "default": 8,
+            "label": "收敛下限（人）",
+            "description": "批缩到该人数还被墙即整批判定内鬼移入危险组，默认 8"
         },
         "decoy_observe_minutes": {
             "type": "number",
             "default": 40,
             "label": "每批观察时长（分钟）",
-            "description": "每批观察多久后收回并换下一批，默认 40"
+            "description": "一批多久没被墙即判清白、收回换下一批，默认 40"
         },
         "decoy_confirm_pool_id": {
             "type": "string",
             "default": "",
             "label": "确认内鬼隔离池 ID",
-            "description": "跟墙分达阈值判定为内鬼后永久移入该池；留空自动用危险组"
+            "description": "批缩到收敛下限仍被墙，整批永久移入该池；留空自动用危险组"
         },
         "decoy_start": {
             "type": "string",
             "default": "01:00",
             "label": "诱捕开始时间 HH:MM",
-            "description": "夜间墙开始时间，到点自动打散分组"
+            "description": "夜间墙开始时间，被墙且在时段内才开始诱捕"
         },
         "decoy_end": {
             "type": "string",
-            "default": "09:00",
-            "label": "诱捕收回时间 HH:MM",
-            "description": "白天到点自动把嫌疑人收回来源池，恢复正常使用"
+            "default": "08:00",
+            "label": "诱捕结束时间 HH:MM",
+            "description": "到点全组解析恢复工作 IP，不影响白天使用，默认 08:00"
         }
     }
 }
