@@ -989,9 +989,10 @@ class BaitSplitService
             $targetPoolIds = [$matchedPoolId];
         }
 
+        // 诱捕窗口内：来源池换 IP 一律不改 pool.host（保持死 IP 冻结），
+        // blocked 走金丝雀二分；machine 只更新 cur_ip / 当前批 override，避免解冻全池。
         if (
-            $reason === 'blocked'
-            && (bool) ($this->config['decoy_enabled'] ?? false)
+            (bool) ($this->config['decoy_enabled'] ?? false)
             && $this->decoyInWindow()
             && count($targetPoolIds) === 1
             && in_array(
@@ -1000,14 +1001,25 @@ class BaitSplitService
                 true
             )
         ) {
-            $wall = $this->handleDecoyWall(
-                $campaign,
-                $router,
-                $targetPoolIds[0],
-                $oldIp,
-                $newIp,
-                time()
-            );
+            $poolId = $targetPoolIds[0];
+            $nowTs = time();
+            if ($reason === 'blocked') {
+                $wall = $this->handleDecoyWall(
+                    $campaign,
+                    $router,
+                    $poolId,
+                    $oldIp,
+                    $newIp,
+                    $nowTs
+                );
+            } else {
+                $wall = $this->handleDecoyMachineIp(
+                    $router,
+                    $poolId,
+                    $newIp,
+                    $nowTs
+                );
+            }
             $router['config_version']++;
             $state['campaigns'][$campaignId] = $campaign;
             $this->saveState($state);
@@ -1019,6 +1031,7 @@ class BaitSplitService
                 'new_ip' => $newIp,
                 'wall' => $wall,
                 'decoy' => true,
+                'host_frozen' => true,
                 'updated_pool_ids' => [],
                 'updated_node_host_count' => 0,
                 'updated_override_count' => 0,
@@ -1121,11 +1134,39 @@ class BaitSplitService
                     'config_version' => $router['config_version'] ?? 0,
                 ];
             }
-            throw new InvalidArgumentException(
-                $oldIp === ''
-                    ? '目标分组已经是该新 IP，无需更新'
-                    : '目标分组中没有找到正在使用该旧 IP 的配置'
-            );
+            // old_ip 对不上（诱捕冻结 / 人工改过 / 乱序）：仍强制对齐到 webhook 的新 IP，禁止丢事件
+            if ($oldIp !== '') {
+                foreach ($targetPoolIds as $poolId) {
+                    $pool = &$router['pools'][$poolId];
+                    if (($pool['host'] ?? '') === $newIp) {
+                        unset($pool);
+                        continue;
+                    }
+                    Log::warning('BaitSplit 换 IP old_ip 不匹配，强制写入 new_ip', [
+                        'pool_id' => $poolId,
+                        'host' => $pool['host'] ?? '',
+                        'old_ip' => $oldIp,
+                        'new_ip' => $newIp,
+                    ]);
+                    $pool['host'] = $newIp;
+                    foreach ($pool['node_hosts'] as &$host) {
+                        if ($host === $oldIp || $host === '' || $host !== $newIp) {
+                            $host = $newIp;
+                            $updatedNodeHostCount++;
+                        }
+                    }
+                    unset($host);
+                    $updatedPoolIds[] = $poolId;
+                    unset($pool);
+                }
+            }
+            if ($updatedPoolIds === [] && $updatedOverrideCount === 0) {
+                throw new InvalidArgumentException(
+                    $oldIp === ''
+                        ? '目标分组已经是该新 IP，无需更新'
+                        : '目标分组中没有找到正在使用该旧 IP 的配置'
+                );
+            }
         }
         $wall = $this->processWallEvent(
             $campaign,
@@ -4078,9 +4119,19 @@ class BaitSplitService
                 }
             }
         }
+        // 优先名称含「观察3」，避免误落到观察1（信任池）
+        foreach ($router['pools'] as $poolId => $pool) {
+            if (($pool['type'] ?? '') !== 'observation') {
+                continue;
+            }
+            $name = (string) ($pool['name'] ?? '');
+            if (preg_match('/观察\s*3|observe\s*3|obs\s*3/iu', $name)) {
+                return (string) $poolId;
+            }
+        }
         foreach ($router['pools'] as $poolId => $pool) {
             if (($pool['type'] ?? '') === 'observation') {
-                return $poolId;
+                return (string) $poolId;
             }
         }
         return '';
@@ -4330,17 +4381,28 @@ class BaitSplitService
             }
             $confirmPoolId = $this->resolveDecoyConfirmPoolId($router);
             $minBatch = $this->decoyMinBatch();
-            if (($batch <= $minBatch || count($ids) <= $minBatch) && $confirmPoolId !== '') {
+            $reachedFloor = $batch <= $minBatch || count($ids) <= $minBatch;
+            if ($reachedFloor) {
+                // 无危险组时退到隔离池，绝不能无限拆到 1 人却不定罪
+                $target = $confirmPoolId !== ''
+                    ? $confirmPoolId
+                    : $this->resolveDecoyIsolatePoolId($router);
+                if ($target === '') {
+                    $target = (string) ($cur['hold'] ?? $poolId);
+                }
+                $notePrefix = $confirmPoolId !== ''
+                    ? '诱捕确认内鬼'
+                    : '诱捕确认内鬼(无危险组,暂入隔离)';
                 foreach ($ids as $uid) {
                     $key = (string) $uid;
                     $router['overrides'][$key] = $this->normalizeOverride([
-                        'pool_id' => $confirmPoolId,
+                        'pool_id' => $target,
                         'locked' => true,
-                        'note' => '诱捕确认内鬼（批≤' . $this->decoyMinBatch() . '，跟墙 '
-                            . $router['wall_hits'][$key] . ' 次）',
+                        'note' => $notePrefix . '（批≤' . $this->decoyMinBatch()
+                            . '，跟墙 ' . $router['wall_hits'][$key] . ' 次）',
                         'updated_at' => $now,
                     ]);
-                    $router['assignments'][$key] = $confirmPoolId;
+                    $router['assignments'][$key] = $target;
                     $router['untested_ids'] = array_values(array_diff(
                         $router['untested_ids'],
                         [$uid]
@@ -4351,11 +4413,15 @@ class BaitSplitService
                 $hold = $isolatePoolId !== ''
                     ? $isolatePoolId
                     : (string) ($cur['hold'] ?? $poolId);
-                $router['decoy']['domains'][$poolId]['queue'][] = [
+                // 嫌疑批插队头，优先续测，避免天亮前收敛不到
+                if (!is_array($router['decoy']['domains'][$poolId]['queue'] ?? null)) {
+                    $router['decoy']['domains'][$poolId]['queue'] = [];
+                }
+                array_unshift($router['decoy']['domains'][$poolId]['queue'], [
                     'ids' => $ids,
                     'batch' => max(1, intdiv($batch, 2)),
                     'hold' => $hold,
-                ];
+                ]);
                 foreach ($ids as $uid) {
                     $key = (string) $uid;
                     $router['overrides'][$key] = $this->normalizeOverride([
@@ -4384,8 +4450,9 @@ class BaitSplitService
     }
 
     /**
-     * 白天/换晚收回：只清诱捕覆盖并归位 assignment，不动各池 host。
-     * host 死活交给换 IP webhook（避免用陈旧 cur_ip 盖掉已轮换的新 IP）。
+     * 白天/换晚收回：清诱捕覆盖并归位 assignment。
+     * host 仅在「仍等于死 IP / 为空」时提升为 cur_ip，避免盖掉白天已换的新 IP，
+     * 同时防止收回后全池掉回死 IP。
      */
     private function decoyRecallAll(array &$router, int $now): int
     {
@@ -4394,6 +4461,29 @@ class BaitSplitService
         foreach ((array) ($router['decoy']['domains'] ?? []) as $poolId => $domain) {
             if (!is_array($domain)) {
                 continue;
+            }
+            $curIp = (string) ($domain['cur_ip'] ?? '');
+            $deadIp = (string) ($domain['dead_ip'] ?? '');
+            if (
+                $curIp !== ''
+                && isset($router['pools'][$poolId])
+            ) {
+                $host = (string) ($router['pools'][$poolId]['host'] ?? '');
+                if ($host === '' || ($deadIp !== '' && $host === $deadIp)) {
+                    $router['pools'][$poolId]['host'] = $curIp;
+                    foreach ($router['pools'][$poolId]['node_hosts'] as &$h) {
+                        if ($h === '' || ($deadIp !== '' && $h === $deadIp)) {
+                            $h = $curIp;
+                        }
+                    }
+                    unset($h);
+                    Log::notice('BaitSplit 收回时提升来源池 host', [
+                        'pool_id' => $poolId,
+                        'from' => $host,
+                        'to' => $curIp,
+                        'dead_ip' => $deadIp,
+                    ]);
+                }
             }
             $ids = [];
             if (is_array($domain['current'] ?? null)) {
@@ -4435,6 +4525,45 @@ class BaitSplitService
         return $restored;
     }
 
+    /**
+     * 诱捕窗口内 machine 换 IP：保持 host 冻结，只把新 IP 记到 cur_ip，
+     * 若有在测批则同步其 override.host（不算被墙）。
+     */
+    private function handleDecoyMachineIp(
+        array &$router,
+        string $poolId,
+        string $newIp,
+        int $now
+    ): array {
+        if (!isset($router['decoy']['domains'][$poolId])) {
+            return [
+                'reason' => 'machine',
+                'mode' => 'decoy_frozen',
+                'updated_cur_ip' => false,
+            ];
+        }
+        $router['decoy']['domains'][$poolId]['cur_ip'] = $newIp;
+        $cur = $router['decoy']['domains'][$poolId]['current'] ?? null;
+        $n = 0;
+        if (is_array($cur)) {
+            foreach ($this->normalizeIds($cur['ids'] ?? []) as $uid) {
+                $key = (string) $uid;
+                if (!isset($router['overrides'][$key])) {
+                    continue;
+                }
+                $router['overrides'][$key]['host'] = $newIp;
+                $router['overrides'][$key]['updated_at'] = $now;
+                $n++;
+            }
+        }
+        return [
+            'reason' => 'machine',
+            'mode' => 'decoy_frozen',
+            'updated_cur_ip' => true,
+            'retargeted' => $n,
+        ];
+    }
+
     /** 被墙 webhook 进入诱捕流程：结算旧批、记新 IP、抽下一批。 */
     private function handleDecoyWall(
         array $campaign,
@@ -4453,29 +4582,54 @@ class BaitSplitService
         $domain = $router['decoy']['domains'][$poolId];
         $cur = $domain['current'] ?? null;
         $batchIp = (string) ($domain['cur_ip'] ?? '');
-        $deadIp = $oldIp !== '' ? $oldIp : $batchIp;
-        if ($deadIp !== '') {
-            $router['decoy']['domains'][$poolId]['dead_ip'] = $deadIp;
+        // 首墙：用上报的 old_ip 记死 IP；后续墙优先保留已有 dead_ip
+        $deadIp = (string) ($domain['dead_ip'] ?? '');
+        if ($deadIp === '') {
+            $deadIp = $oldIp !== '' ? $oldIp : (string) ($router['pools'][$poolId]['host'] ?? '');
+            if ($deadIp !== '') {
+                $router['decoy']['domains'][$poolId]['dead_ip'] = $deadIp;
+            }
         }
+        // old 对得上金丝雀 / 空 old / 尚未有金丝雀 → 视为本批被墙
         $batchMatches = ($oldIp === '' || $batchIp === '' || $oldIp === $batchIp);
         $walled = false;
         $confirmed = 0;
         $isolated = 0;
+        $mismatch = false;
         if (is_array($cur) && $batchMatches) {
-            $curBatch = (int) ($cur['batch'] ?? 1);
             $curCount = count($this->normalizeIds($cur['ids'] ?? []));
+            $curBatch = max(1, (int) ($cur['batch'] ?? 1));
             $this->decoySettle($router, $poolId, true, $now);
             $walled = true;
-            if ($curBatch <= $this->decoyMinBatch()) {
+            if ($curBatch <= $this->decoyMinBatch() || $curCount <= $this->decoyMinBatch()) {
                 $confirmed = $curCount;
             } else {
                 $isolated = $curCount;
             }
+            $cur = null; // settle 后已清空
+        } elseif (is_array($cur) && !$batchMatches) {
+            $mismatch = true;
+            Log::warning('BaitSplit 诱捕 old_ip 与金丝雀不一致，仍接受新 IP', [
+                'pool_id' => $poolId,
+                'old_ip' => $oldIp,
+                'batch_ip' => $batchIp,
+                'new_ip' => $newIp,
+            ]);
         }
+        // 无论是否匹配，新 IP 必须入账，禁止静默丢弃
+        $router['decoy']['domains'][$poolId]['cur_ip'] = $newIp;
         $drew = false;
-        if (!is_array($cur) || $batchMatches) {
-            $router['decoy']['domains'][$poolId]['cur_ip'] = $newIp;
+        if ($cur === null) {
             $drew = $this->decoyAdvance($router, $poolId, $now);
+        } elseif ($mismatch) {
+            // 在测批未结算：把 override 指到新 IP，避免测死地址
+            foreach ($this->normalizeIds($cur['ids'] ?? []) as $uid) {
+                $key = (string) $uid;
+                if (isset($router['overrides'][$key])) {
+                    $router['overrides'][$key]['host'] = $newIp;
+                    $router['overrides'][$key]['updated_at'] = $now;
+                }
+            }
         }
         $next = $router['decoy']['domains'][$poolId]['current'] ?? null;
         $nextCount = is_array($next)
@@ -4494,6 +4648,7 @@ class BaitSplitService
                 'mode' => 'decoy',
                 'suspect_count' => $confirmed + $isolated,
                 'batch' => $nextCount,
+                'mismatch' => $mismatch,
             ]],
             'suspect_count' => $confirmed + $isolated,
             'scored_count' => $confirmed + $isolated,
@@ -4513,6 +4668,7 @@ class BaitSplitService
             'isolated' => $isolated,
             'next_batch' => $nextCount,
             'drew' => $drew,
+            'mismatch' => $mismatch,
         ];
     }
 
