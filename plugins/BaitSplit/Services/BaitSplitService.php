@@ -10,6 +10,7 @@ use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
@@ -18,6 +19,8 @@ use RuntimeException;
 class BaitSplitService
 {
     private const STATE_KEY = 'bait_split_state';
+    private const STATE_LOCK = 'bait_split:admin_state';
+    private const IP_PENDING_KEY = 'bait_split:ip_rotate_pending';
     private const MIN_BUCKETS = 2;
     private const MAX_BUCKETS = 10;
 
@@ -1095,6 +1098,29 @@ class BaitSplitService
         unset($override);
 
         if ($updatedPoolIds === [] && $updatedOverrideCount === 0) {
+            // 主机已是新 IP（人工补录 / 重复投递）→ 幂等成功，不再记分
+            $alreadyNew = true;
+            foreach ($targetPoolIds as $poolId) {
+                if (($router['pools'][$poolId]['host'] ?? '') !== $newIp) {
+                    $alreadyNew = false;
+                    break;
+                }
+            }
+            if ($alreadyNew) {
+                return [
+                    'campaign_id' => $campaignId,
+                    'target_id' => $targetId,
+                    'reason' => $reason,
+                    'old_ip' => $oldIp,
+                    'new_ip' => $newIp,
+                    'wall' => null,
+                    'already' => true,
+                    'updated_pool_ids' => [],
+                    'updated_node_host_count' => 0,
+                    'updated_override_count' => 0,
+                    'config_version' => $router['config_version'] ?? 0,
+                ];
+            }
             throw new InvalidArgumentException(
                 $oldIp === ''
                     ? '目标分组已经是该新 IP，无需更新'
@@ -1120,6 +1146,7 @@ class BaitSplitService
             'old_ip' => $oldIp,
             'new_ip' => $newIp,
             'wall' => $wall,
+            'already' => false,
             'updated_pool_ids' => array_values($updatedPoolIds),
             'updated_node_host_count' => $updatedNodeHostCount,
             'updated_override_count' => $updatedOverrideCount,
@@ -3405,7 +3432,7 @@ class BaitSplitService
         }
 
         try {
-            Cache::lock('bait_split:admin_state', 15)
+            Cache::lock(self::STATE_LOCK, 15)
                 ->get(function () use (&$campaign, $userId): void {
                     $state = $this->state();
                     $latest = $this->requireRouterCampaign(
@@ -3849,7 +3876,7 @@ class BaitSplitService
             'top_suspects' => $topSuspects,
             'total_tracked' => count($router['wall_hits'] ?? []),
             'settings' => [
-                'auto_isolate' => (bool) ($this->config['wall_auto_isolate'] ?? true),
+                'auto_isolate' => $this->configBool('wall_auto_isolate', true),
                 'hit_threshold' => max(1, (int) ($this->config['wall_hit_threshold'] ?? 2)),
                 'lookback_seconds' => max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600)),
                 'fresh_max_seconds' => max(300, (int) ($this->config['wall_fresh_max_seconds'] ?? 7200)),
@@ -3879,6 +3906,134 @@ class BaitSplitService
                     'isolate' => (string) ($this->config['decoy_isolate_pool_id'] ?? ''),
                 ],
             ],
+            'pending_ip_rotates' => $this->pendingIpRotateCount(),
+        ];
+    }
+
+    /** 换 IP 事件入队（拿不到写锁时不丢事件）。 */
+    public function enqueueIpRotate(array $data): int
+    {
+        try {
+            return (int) Redis::rpush(self::IP_PENDING_KEY, json_encode([
+                'event_id' => (string) ($data['event_id'] ?? ''),
+                'campaign_id' => (string) ($data['campaign_id'] ?? ''),
+                'instance_id' => (string) ($data['instance_id'] ?? ''),
+                'target_id' => (string) ($data['target_id'] ?? ''),
+                'old_ip' => (string) ($data['old_ip'] ?? ''),
+                'new_ip' => (string) ($data['new_ip'] ?? ''),
+                'reason' => (string) ($data['reason'] ?? 'blocked'),
+                'queued_at' => time(),
+            ], JSON_UNESCAPED_UNICODE));
+        } catch (\Throwable $e) {
+            Log::error('BaitSplit 换 IP 入队失败', [
+                'error' => $e->getMessage(),
+                'event_id' => $data['event_id'] ?? '',
+            ]);
+            throw $e;
+        }
+    }
+
+    public function pendingIpRotateCount(): int
+    {
+        try {
+            return (int) Redis::llen(self::IP_PENDING_KEY);
+        } catch (\Throwable) {
+            return 0;
+        }
+    }
+
+    /**
+     * 消费待处理换 IP。每条独立抢锁，失败则退回队列头部并停止（避免乱序）。
+     *
+     * @return array{processed:int,failed:int,remaining:int,results:array}
+     */
+    public function drainPendingIpRotates(int $max = 80): array
+    {
+        $processed = 0;
+        $failed = 0;
+        $results = [];
+        for ($i = 0; $i < $max; $i++) {
+            try {
+                $raw = Redis::lpop(self::IP_PENDING_KEY);
+            } catch (\Throwable) {
+                break;
+            }
+            if (!$raw) {
+                break;
+            }
+            $data = is_string($raw) ? json_decode($raw, true) : null;
+            if (!is_array($data) || ($data['campaign_id'] ?? '') === '' || ($data['new_ip'] ?? '') === '') {
+                $failed++;
+                continue;
+            }
+            $eventKey = 'bait_split:ip_rotate_event:'
+                . hash('sha256', $data['campaign_id'] . ':' . ($data['event_id'] ?? uniqid('p', true)));
+            try {
+                $result = Cache::lock(self::STATE_LOCK, 45)->block(
+                    25,
+                    function () use ($data, $eventKey): array {
+                        $cached = Cache::get($eventKey);
+                        if (is_array($cached)) {
+                            $cached['duplicate'] = true;
+                            return $cached;
+                        }
+                        $result = $this->rotateCampaignIp(
+                            (string) $data['campaign_id'],
+                            (string) ($data['old_ip'] ?? ''),
+                            (string) $data['new_ip'],
+                            (string) ($data['target_id'] ?? ''),
+                            (string) ($data['reason'] ?? 'blocked')
+                        );
+                        $result['event_id'] = (string) ($data['event_id'] ?? '');
+                        $result['instance_id'] = (string) ($data['instance_id'] ?? '');
+                        $result['duplicate'] = false;
+                        $result['from_pending'] = true;
+                        Cache::put($eventKey, $result, now()->addDay());
+                        return $result;
+                    }
+                );
+                $processed++;
+                $results[] = [
+                    'event_id' => $data['event_id'] ?? '',
+                    'target_id' => $data['target_id'] ?? '',
+                    'new_ip' => $data['new_ip'] ?? '',
+                    'already' => !empty($result['already']),
+                ];
+            } catch (LockTimeoutException) {
+                try {
+                    Redis::lpush(self::IP_PENDING_KEY, is_string($raw) ? $raw : json_encode($data));
+                } catch (\Throwable) {
+                }
+                $failed++;
+                Log::warning('BaitSplit pending 换 IP 等待锁超时，已退回队列', [
+                    'event_id' => $data['event_id'] ?? '',
+                ]);
+                break;
+            } catch (InvalidArgumentException $e) {
+                // 配置对不上：记失败但不堵队列
+                $failed++;
+                Log::warning('BaitSplit pending 换 IP 校验失败，丢弃', [
+                    'event_id' => $data['event_id'] ?? '',
+                    'error' => $e->getMessage(),
+                ]);
+            } catch (\Throwable $e) {
+                try {
+                    Redis::lpush(self::IP_PENDING_KEY, is_string($raw) ? $raw : json_encode($data));
+                } catch (\Throwable) {
+                }
+                $failed++;
+                Log::error('BaitSplit pending 换 IP 执行失败，已退回队列', [
+                    'event_id' => $data['event_id'] ?? '',
+                    'error' => $e->getMessage(),
+                ]);
+                break;
+            }
+        }
+        return [
+            'processed' => $processed,
+            'failed' => $failed,
+            'remaining' => $this->pendingIpRotateCount(),
+            'results' => $results,
         ];
     }
 
@@ -4030,16 +4185,28 @@ class BaitSplitService
      */
     public function runDecoyOrchestration(): array
     {
-        if (!(bool) ($this->config['decoy_enabled'] ?? false)) {
-            return ['skipped' => 'disabled'];
+        // 优先消化积压换 IP，避免锁冲突导致永久丢事件
+        $drain = $this->drainPendingIpRotates(80);
+        $decoyEnabled = (bool) ($this->config['decoy_enabled'] ?? false);
+        if (!$decoyEnabled) {
+            return ['skipped' => 'disabled', 'drain' => $drain];
         }
+        // 窗口外（白天收回）多等一会儿，保证 8 点必达
+        $wait = $this->decoyInWindow() ? 12 : 25;
+        $lease = $this->decoyInWindow() ? 45 : 90;
         try {
-            return Cache::lock('bait_split:admin_state', 30)->block(
-                8,
+            $result = Cache::lock(self::STATE_LOCK, $lease)->block(
+                $wait,
                 fn(): array => $this->runDecoyLocked()
             );
+            $result['drain'] = $drain;
+            return $result;
         } catch (LockTimeoutException) {
-            return ['skipped' => 'locked'];
+            Log::warning('BaitSplit bait:decoy 抢锁失败', [
+                'in_window' => $this->decoyInWindow(),
+                'pending' => $drain['remaining'] ?? 0,
+            ]);
+            return ['skipped' => 'locked', 'drain' => $drain];
         }
     }
 
@@ -4216,23 +4383,17 @@ class BaitSplitService
         $router['decoy']['domains'][$poolId]['current'] = null;
     }
 
-    /** 白天/换晚收回：来源池 host 恢复到最新工作 IP，清除诱捕覆盖（已确认内鬼保留）。 */
+    /**
+     * 白天/换晚收回：只清诱捕覆盖并归位 assignment，不动各池 host。
+     * host 死活交给换 IP webhook（避免用陈旧 cur_ip 盖掉已轮换的新 IP）。
+     */
     private function decoyRecallAll(array &$router, int $now): int
     {
         $restored = 0;
-        // 来源池 host 恢复到最新工作 IP；构建 uid→来源池 映射用于归位
         $origin = [];
         foreach ((array) ($router['decoy']['domains'] ?? []) as $poolId => $domain) {
             if (!is_array($domain)) {
                 continue;
-            }
-            $curIp = (string) ($domain['cur_ip'] ?? '');
-            if ($curIp !== '' && isset($router['pools'][$poolId])) {
-                $router['pools'][$poolId]['host'] = $curIp;
-                foreach ($router['pools'][$poolId]['node_hosts'] as &$h) {
-                    $h = $curIp;
-                }
-                unset($h);
             }
             $ids = [];
             if (is_array($domain['current'] ?? null)) {
@@ -4248,10 +4409,13 @@ class BaitSplitService
                 $origin[(string) $uid] = (string) $poolId;
             }
         }
-        // 清除诱捕产生的覆盖：已确认内鬼（危险组）保留，其余归位到来源池
+        // 已确认内鬼（诱捕确认内鬼 / 危险组）保留；其余诱捕覆盖清除
         $markers = ['金丝雀测试批', '诱捕嫌疑隔离', '诱捕清白收回'];
         foreach ($router['overrides'] as $key => $ov) {
             $note = (string) ($ov['note'] ?? '');
+            if (str_contains($note, '诱捕确认内鬼')) {
+                continue;
+            }
             $isDecoy = false;
             foreach ($markers as $m) {
                 if (str_contains($note, $m)) {
@@ -4386,6 +4550,21 @@ class BaitSplitService
                         'action' => 'recall',
                         'restored' => $restored,
                     ];
+                    Log::notice('BaitSplit 白天诱捕收回完成', [
+                        'campaign_id' => $id,
+                        'restored' => $restored,
+                    ]);
+                }
+                // 白天补漏：跟墙分已达标但未隔离的用户
+                $reconciled = $this->reconcileWallIsolates($router, $now);
+                if ($reconciled > 0) {
+                    $router['config_version']++;
+                    $changed = true;
+                    $actions[] = [
+                        'campaign_id' => $id,
+                        'action' => 'reconcile_isolate',
+                        'moved' => $reconciled,
+                    ];
                 }
                 unset($router);
                 $state['campaigns'][$id] = $campaign;
@@ -4444,7 +4623,6 @@ class BaitSplitService
         $lookback = max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600));
         $freshMax = max(300, (int) ($this->config['wall_fresh_max_seconds'] ?? 7200));
         $threshold = max(1, (int) ($this->config['wall_hit_threshold'] ?? 2));
-        $autoIsolate = (bool) ($this->config['wall_auto_isolate'] ?? true);
         $obsPoolId = $this->resolveWallObservePoolId($router);
         $eventPools = [];
         $suspectIds = [];
@@ -4489,38 +4667,9 @@ class BaitSplitService
                     (int) ($router['wall_hits'][$key] ?? 0) + 1;
                 $router['wall_last'][$key] = $now;
                 $scoredCount++;
-                if (
-                    !$autoIsolate
-                    || $obsPoolId === ''
-                    || (int) $router['wall_hits'][$key] < $threshold
-                ) {
-                    continue;
+                if ($this->tryAutoIsolateUser($router, $key, $threshold, $obsPoolId, $now)) {
+                    $movedIds[] = $userId;
                 }
-                $currentPoolId = $router['overrides'][$key]['pool_id']
-                    ?? ($router['assignments'][$key] ?? '');
-                $currentType = $router['pools'][$currentPoolId]['type'] ?? '';
-                if (in_array($currentType, ['danger', 'blacklist'], true)) {
-                    continue;
-                }
-                if (
-                    ($router['overrides'][$key]['pool_id'] ?? '') === $obsPoolId
-                    && !empty($router['overrides'][$key]['locked'])
-                ) {
-                    continue;
-                }
-                $router['assignments'][$key] = $obsPoolId;
-                $router['overrides'][$key] = $this->normalizeOverride([
-                    'pool_id' => $obsPoolId,
-                    'locked' => true,
-                    'note' => '自动跟墙隔离（跟墙 '
-                        . $router['wall_hits'][$key] . ' 次）',
-                    'updated_at' => $now,
-                ]);
-                $router['untested_ids'] = array_values(array_diff(
-                    $router['untested_ids'],
-                    [$userId]
-                ));
-                $movedIds[] = $userId;
             }
         }
         $suspectIds = array_values(array_unique($suspectIds));
@@ -4550,6 +4699,105 @@ class BaitSplitService
             'moved_count' => count($movedIds),
             'observe_pool_id' => $obsPoolId,
         ];
+    }
+
+    private function configBool(string $key, bool $default = false): bool
+    {
+        $v = $this->config[$key] ?? $default;
+        if (is_array($v) && array_key_exists('value', $v)) {
+            $v = $v['value'];
+        }
+        if (is_bool($v)) {
+            return $v;
+        }
+        if (is_string($v)) {
+            return in_array(strtolower(trim($v)), ['1', 'true', 'yes', 'on'], true);
+        }
+        return (bool) $v;
+    }
+
+    /**
+     * 跟墙分达标则锁定到观察隔离池。跳过危险/封禁/已在隔离池锁定/诱捕进行中的用户。
+     */
+    private function tryAutoIsolateUser(
+        array &$router,
+        string $key,
+        int $threshold,
+        string $obsPoolId,
+        int $now
+    ): bool {
+        if (!$this->configBool('wall_auto_isolate', true) || $obsPoolId === '') {
+            return false;
+        }
+        if ((int) ($router['wall_hits'][$key] ?? 0) < $threshold) {
+            return false;
+        }
+        $note = (string) ($router['overrides'][$key]['note'] ?? '');
+        // 诱捕二分进行中或已确认内鬼：不抢流程
+        foreach (['金丝雀测试批', '诱捕嫌疑隔离', '诱捕确认内鬼'] as $marker) {
+            if (str_contains($note, $marker)) {
+                return false;
+            }
+        }
+        $currentPoolId = (string) (
+            $router['overrides'][$key]['pool_id']
+            ?? ($router['assignments'][$key] ?? '')
+        );
+        $currentType = (string) ($router['pools'][$currentPoolId]['type'] ?? '');
+        if (in_array($currentType, ['danger', 'blacklist'], true)) {
+            return false;
+        }
+        if (
+            $currentPoolId === $obsPoolId
+            && !empty($router['overrides'][$key]['locked'])
+            && str_contains($note, '自动跟墙隔离')
+        ) {
+            return false;
+        }
+        // 已在隔离池但未锁定 / 备注不是自动隔离 → 仍强制锁定，防止漏人
+        $router['assignments'][$key] = $obsPoolId;
+        $router['overrides'][$key] = $this->normalizeOverride([
+            'pool_id' => $obsPoolId,
+            'locked' => true,
+            'note' => '自动跟墙隔离（跟墙 '
+                . (int) $router['wall_hits'][$key] . ' 次）',
+            'updated_at' => $now,
+        ]);
+        $uid = (int) $key;
+        if ($uid > 0) {
+            $router['untested_ids'] = array_values(array_diff(
+                $router['untested_ids'] ?? [],
+                [$uid]
+            ));
+        }
+        return true;
+    }
+
+    /** 扫一遍 wall_hits，把已达标但未隔离的用户补隔离（白天 cron / 收回后）。 */
+    private function reconcileWallIsolates(array &$router, int $now): int
+    {
+        $threshold = max(1, (int) ($this->config['wall_hit_threshold'] ?? 2));
+        $obsPoolId = $this->resolveWallObservePoolId($router);
+        if (!$this->configBool('wall_auto_isolate', true) || $obsPoolId === '') {
+            return 0;
+        }
+        $moved = 0;
+        foreach (($router['wall_hits'] ?? []) as $key => $hits) {
+            if ((int) $hits < $threshold) {
+                continue;
+            }
+            if ($this->tryAutoIsolateUser($router, (string) $key, $threshold, $obsPoolId, $now)) {
+                $moved++;
+            }
+        }
+        if ($moved > 0) {
+            Log::notice('BaitSplit 跟墙隔离补漏', [
+                'moved' => $moved,
+                'observe_pool_id' => $obsPoolId,
+                'threshold' => $threshold,
+            ]);
+        }
+        return $moved;
     }
 
     private function routerPoolExposureKey(array $campaign, string $poolId): string

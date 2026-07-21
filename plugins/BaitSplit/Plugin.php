@@ -22,9 +22,10 @@ class Plugin extends AbstractPlugin
 
     public function schedule(\Illuminate\Console\Scheduling\Schedule $schedule): void
     {
+        // withoutOverlapping(5)：防重叠锁最多 5 分钟过期，避免进程被杀后整天跳过
         $schedule->command('bait:decoy')
             ->everyMinute()
-            ->withoutOverlapping()
+            ->withoutOverlapping(5)
             ->runInBackground();
     }
 

@@ -132,7 +132,7 @@ class AdminController extends PluginController
             return $response;
         }
 
-        return $this->execute(
+        return $this->executeRead(
             fn() => BaitSplitService::fromDatabase()->exposureUsers($campaignId)
         );
     }
@@ -352,7 +352,7 @@ class AdminController extends PluginController
             'page' => ['nullable', 'integer', 'min:1'],
             'per_page' => ['nullable', 'integer', 'min:10', 'max:100'],
         ]);
-        return $this->execute(
+        return $this->executeRead(
             fn() => BaitSplitService::fromDatabase()->usersForPool(
                 $campaignId,
                 $poolId,
@@ -594,7 +594,7 @@ class AdminController extends PluginController
             'page' => ['nullable', 'integer', 'min:1'],
             'per_page' => ['nullable', 'integer', 'min:10', 'max:100'],
         ]);
-        return $this->execute(
+        return $this->executeRead(
             fn() => BaitSplitService::fromDatabase()->investigationNodeUsers(
                 $campaignId,
                 $nodeId,
@@ -611,7 +611,7 @@ class AdminController extends PluginController
             return $response;
         }
         $data = $request->validate(['q' => ['nullable', 'string', 'max:100']]);
-        return $this->execute(
+        return $this->executeRead(
             fn() => BaitSplitService::fromDatabase()->searchUsers(
                 $campaignId,
                 (string) ($data['q'] ?? '')
@@ -624,7 +624,7 @@ class AdminController extends PluginController
         if ($response = $this->ensureEnabled()) {
             return $response;
         }
-        return $this->execute(
+        return $this->executeRead(
             fn() => BaitSplitService::fromDatabase()->overrideUsers($campaignId)
         );
     }
@@ -683,11 +683,24 @@ class AdminController extends PluginController
         return $error ? $this->fail($error) : null;
     }
 
+    /** 纯读：不加状态写锁，避免浏览面板挡住换 IP / 诱捕。 */
+    private function executeRead(callable $callback): JsonResponse
+    {
+        try {
+            return $this->success($callback());
+        } catch (InvalidArgumentException $exception) {
+            return $this->fail([422, $exception->getMessage()]);
+        } catch (Throwable $exception) {
+            return $this->fail([500, $exception->getMessage()]);
+        }
+    }
+
+    /** 写操作：抢状态锁；等久一点，减少误报「其他管理操作」。 */
     private function execute(callable $callback): JsonResponse
     {
         try {
-            return Cache::lock('bait_split:admin_state', 10)->block(
-                5,
+            return Cache::lock('bait_split:admin_state', 30)->block(
+                15,
                 fn() => $this->success($callback())
             );
         } catch (InvalidArgumentException $exception) {

@@ -53,8 +53,9 @@ class WebhookController extends Controller
             . hash('sha256', $data['campaign_id'] . ':' . $data['event_id']);
 
         try {
-            $result = Cache::lock('bait_split:admin_state', 10)->block(
-                5,
+            // 换 IP 最高优先级：多等一会儿；仍抢不到则入队，绝不丢事件
+            $result = Cache::lock('bait_split:admin_state', 45)->block(
+                25,
                 function () use ($service, $data, $eventKey): array {
                     $cached = Cache::get($eventKey);
                     if (is_array($cached)) {
@@ -80,7 +81,29 @@ class WebhookController extends Controller
         } catch (InvalidArgumentException $exception) {
             return $this->error($exception->getMessage(), 422);
         } catch (LockTimeoutException) {
-            return $this->error('其他配置操作正在执行，请稍后重试', 423);
+            try {
+                $pending = $service->enqueueIpRotate($data);
+                Log::warning('BaitSplit 换 IP 锁忙，已入待处理队列', [
+                    'event_id' => $data['event_id'],
+                    'target_id' => $data['target_id'],
+                    'new_ip' => $data['new_ip'],
+                    'pending' => $pending,
+                ]);
+                return response()->json([
+                    'ok' => true,
+                    'queued' => true,
+                    'data' => [
+                        'event_id' => $data['event_id'],
+                        'pending' => $pending,
+                    ],
+                ], 202);
+            } catch (Throwable $exception) {
+                Log::error('BaitSplit 换 IP 入队失败', [
+                    'event_id' => $data['event_id'],
+                    'error' => $exception->getMessage(),
+                ]);
+                return $this->error('IP 轮换繁忙且入队失败，请重试', 503);
+            }
         } catch (Throwable $exception) {
             Log::error('BaitSplit AWS IP 轮换失败', [
                 'event_id' => $data['event_id'],
