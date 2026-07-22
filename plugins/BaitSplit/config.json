@@ -1,7 +1,7 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "3.4.2",
+    "version": "3.4.3",
     "description": "全量接管节点域名，支持用户池、分批筛查和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
