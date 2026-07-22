@@ -639,7 +639,8 @@ class BaitSplitService
         if (!$snapshot) {
             throw new InvalidArgumentException('没有可回滚的配置版本');
         }
-        $router['pools'] = $snapshot['pools'];
+        // 新快照只含 pools；旧快照若带 overrides 仍兼容恢复
+        $router['pools'] = $snapshot['pools'] ?? $router['pools'];
         if (isset($snapshot['overrides']) && is_array($snapshot['overrides'])) {
             $router['overrides'] = $snapshot['overrides'];
         }
@@ -968,7 +969,7 @@ class BaitSplitService
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $router = &$campaign['router'];
-        $this->snapshotRouterConfig($router);
+        // 换 IP 高频且可逆（再来一次 webhook），不做全量配置快照
         if (isset($router['pools'][$targetId])) {
             $targetPoolIds = [$targetId];
         } elseif (isset($router['investigation_nodes'][$targetId])) {
@@ -1964,7 +1965,35 @@ class BaitSplitService
 
     private function saveState(array $state): void
     {
+        foreach ($state['campaigns'] as &$campaign) {
+            if (isset($campaign['router']) && is_array($campaign['router'])) {
+                $this->compactRouterState($campaign['router']);
+            }
+        }
+        unset($campaign);
         app(Setting::class)->set(self::STATE_KEY, $state);
+    }
+
+    /**
+     * 压缩路由状态：历史快照只保留池配置（不含 overrides），最多 5 份。
+     * 旧版把每次改池/换 IP 的全量 overrides 打进 history，轻松撑爆 settings.value。
+     */
+    private function compactRouterState(array &$router): void
+    {
+        $slim = [];
+        foreach (
+            array_slice(array_values((array) ($router['config_history'] ?? [])), -5) as $snap
+        ) {
+            if (!is_array($snap)) {
+                continue;
+            }
+            $slim[] = [
+                'version' => (int) ($snap['version'] ?? 0),
+                'pools' => is_array($snap['pools'] ?? null) ? $snap['pools'] : [],
+                'created_at' => (int) ($snap['created_at'] ?? 0),
+            ];
+        }
+        $router['config_history'] = $slim;
     }
 
     private function newCampaign(string $id): array
@@ -2846,8 +2875,15 @@ class BaitSplitService
         $router['secret'] = (string) $router['secret'];
         $router['config_version'] = max(1, (int) $router['config_version']);
         $router['config_history'] = is_array($router['config_history'])
-            ? array_slice($router['config_history'], -20)
+            ? array_slice($router['config_history'], -5)
             : [];
+        // 丢掉历史里的全量 overrides（旧数据瘦身）
+        foreach ($router['config_history'] as &$snap) {
+            if (is_array($snap)) {
+                unset($snap['overrides']);
+            }
+        }
+        unset($snap);
         $pools = [];
         foreach ((array) $router['pools'] as $id => $pool) {
             if (is_array($pool)) {
@@ -3695,13 +3731,13 @@ class BaitSplitService
 
     private function snapshotRouterConfig(array &$router): void
     {
+        // 只快照池配置，供回滚域名/分组结构；不拷贝 overrides（上万条会把 state 撑爆）
         $router['config_history'][] = [
             'version' => $router['config_version'],
             'pools' => $router['pools'],
-            'overrides' => $router['overrides'],
             'created_at' => time(),
         ];
-        $router['config_history'] = array_slice($router['config_history'], -20);
+        $router['config_history'] = array_slice($router['config_history'], -5);
     }
 
     private function requireRouterCampaign(array $state, string $campaignId): array
