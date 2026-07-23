@@ -4276,7 +4276,7 @@ class BaitSplitService
     /**
      * 二分收敛诱捕（墙驱动 + 定时兜底），多来源池各自独立并行：
      * - 首墙：全员覆盖新 IP（armed），不开测，普通人能用。
-     * - 二墙：从拉过武装 IP 的人建嫌疑队列，抽一批测试；host 始终跟最新 IP。
+     * - 二墙：拉过武装 IP 的人前一批测试，其余快隔离进观察3；host 始终跟最新 IP。
      * - 测试批再墙 → 对半拆进隔离中转 / ≤下限进危险组；清白则换下一批。
      * - 到点（白天）清诱捕覆盖。
      */
@@ -4380,12 +4380,13 @@ class BaitSplitService
     }
 
     /**
-     * 二墙开测：只收「武装窗口内拉过订阅」的人进嫌疑队列（按最近拉取排序）。
+     * 收集武装窗口内拉过订阅的嫌疑用户（最近拉取优先）。
+     *
+     * @return list<int>
      */
-    private function seedDecoySuspectsFromArmed(
+    private function collectArmedSuspectIds(
         array $campaign,
         string $poolId,
-        string $armedIp,
         int $armedAt,
         int $now
     ): array {
@@ -4405,7 +4406,23 @@ class BaitSplitService
             $head[$uid] = $ts;
         }
         arsort($head);
-        $ordered = array_keys($head);
+        return array_map('intval', array_keys($head));
+    }
+
+    /**
+     * 二墙开测：前 decoy_batch_size 人进测试队列，其余返回供快隔离。
+     *
+     * @return array{domain: array, test_ids: list<int>, fast_ids: list<int>, total: int}
+     */
+    private function seedDecoySuspectsFromArmed(
+        array $campaign,
+        string $poolId,
+        string $armedIp,
+        int $armedAt,
+        int $now
+    ): array {
+        $ordered = $this->collectArmedSuspectIds($campaign, $poolId, $armedAt, $now);
+        $batch = $this->decoyBatchSize();
         if ($ordered === []) {
             Log::warning('BaitSplit 二墙曝光窗口无人，回退为来源池近期拉取队列', [
                 'pool_id' => $poolId,
@@ -4415,20 +4432,94 @@ class BaitSplitService
             $fallback['armed_ip'] = $armedIp;
             $fallback['armed_at'] = $armedAt;
             $fallback['dead_ip'] = $armedIp;
-            return $fallback;
+            $testIds = $this->normalizeIds($fallback['queue'][0]['ids'] ?? []);
+            // 回退时也只测一批，其余快隔离
+            $fastIds = array_slice($testIds, $batch);
+            $testIds = array_slice($testIds, 0, $batch);
+            $fallback['queue'] = $testIds === [] ? [] : [[
+                'ids' => $testIds,
+                'batch' => $batch,
+                'hold' => $poolId,
+            ]];
+            return [
+                'domain' => $fallback,
+                'test_ids' => $testIds,
+                'fast_ids' => $fastIds,
+                'total' => count($testIds) + count($fastIds),
+            ];
         }
-        return array_merge($this->emptyDecoyDomain(), [
+        $testIds = array_slice($ordered, 0, $batch);
+        $fastIds = array_slice($ordered, $batch);
+        $domain = array_merge($this->emptyDecoyDomain(), [
             'phase' => 'testing',
             'armed' => true,
             'armed_ip' => $armedIp,
             'armed_at' => $armedAt,
             'dead_ip' => $armedIp,
-            'queue' => [[
-                'ids' => $ordered,
-                'batch' => $this->decoyBatchSize(),
+            'queue' => $testIds === [] ? [] : [[
+                'ids' => $testIds,
+                'batch' => $batch,
                 'hold' => $poolId,
             ]],
         ]);
+        return [
+            'domain' => $domain,
+            'test_ids' => $testIds,
+            'fast_ids' => $fastIds,
+            'total' => count($ordered),
+        ];
+    }
+
+    /**
+     * 二墙快隔离：除测试批外的武装 IP 拉取者锁进隔离中转池（默认观察3），白天不自动收回。
+     *
+     * @param list<int> $ids
+     */
+    private function fastIsolateSuspects(
+        array &$router,
+        array $ids,
+        int $now
+    ): int {
+        $isolatePoolId = $this->resolveDecoyIsolatePoolId($router);
+        if ($isolatePoolId === '' || $ids === []) {
+            return 0;
+        }
+        $moved = 0;
+        foreach ($ids as $uid) {
+            $uid = (int) $uid;
+            if ($uid <= 0) {
+                continue;
+            }
+            $key = (string) $uid;
+            $note = (string) ($router['overrides'][$key]['note'] ?? '');
+            if (str_contains($note, '诱捕确认内鬼')) {
+                continue;
+            }
+            $curPool = (string) (
+                $router['overrides'][$key]['pool_id']
+                ?? ($router['assignments'][$key] ?? '')
+            );
+            $curType = (string) ($router['pools'][$curPool]['type'] ?? '');
+            if (in_array($curType, ['danger', 'blacklist'], true)) {
+                continue;
+            }
+            $router['assignments'][$key] = $isolatePoolId;
+            $router['overrides'][$key] = $this->normalizeOverride([
+                'pool_id' => $isolatePoolId,
+                'locked' => true,
+                'note' => '诱捕二墙快隔离（待复核）',
+                'updated_at' => $now,
+            ]);
+            $router['wall_hits'][$key] =
+                (int) ($router['wall_hits'][$key] ?? 0) + 1;
+            $router['wall_last'][$key] = $now;
+            $router['untested_ids'] = array_values(array_diff(
+                $router['untested_ids'] ?? [],
+                [$uid]
+            ));
+            $moved++;
+        }
+        return $moved;
     }
 
     /** 换晚翻篇：日期变了就收回上一夜遗留覆盖并清空探测域。返回是否有变更。 */
@@ -4707,7 +4798,7 @@ class BaitSplitService
     /**
      * 两段式诱捕：
      * - idle→armed（首墙）：全员覆盖新 IP，不开测
-     * - armed→testing（二墙）：从拉过武装 IP 的人建嫌疑队列，抽 60 人测；host 跟最新 IP
+     * - armed→testing（二墙）：拉过武装 IP 的人前一批测，其余快隔离观察3；host 跟最新 IP
      * - testing：金丝雀再墙则二分/定罪；host 始终跟新 IP，普通人能用
      */
     private function handleDecoyWall(
@@ -4763,14 +4854,20 @@ class BaitSplitService
             if ($armedAt <= 0) {
                 $armedAt = $now - max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600));
             }
-            $seeded = $this->seedDecoySuspectsFromArmed(
+            $pack = $this->seedDecoySuspectsFromArmed(
                 $campaign,
                 $poolId,
                 $armedIp,
                 $armedAt,
                 $now
             );
-            $suspectSeeded = count($seeded['queue'][0]['ids'] ?? []);
+            $seeded = $pack['domain'];
+            $suspectSeeded = (int) ($pack['total'] ?? 0);
+            $fastIsolated = $this->fastIsolateSuspects(
+                $router,
+                $pack['fast_ids'] ?? [],
+                $now
+            );
             $seeded['cur_ip'] = $newIp;
             $seeded['armed_ip'] = $armedIp;
             $seeded['armed_at'] = $armedAt;
@@ -4778,10 +4875,13 @@ class BaitSplitService
             $router['decoy']['domains'][$poolId] = $this->normalizeDecoyDomain($seeded);
             $drew = $this->decoyAdvance($router, $poolId, $now);
             $phase = 'testing';
-            Log::notice('BaitSplit 诱捕二墙开测：按武装 IP 曝光抽嫌疑批', [
+            $isolated = $fastIsolated;
+            Log::notice('BaitSplit 诱捕二墙：测试批+其余快隔离', [
                 'pool_id' => $poolId,
                 'armed_ip' => $armedIp,
                 'suspects' => $suspectSeeded,
+                'test_batch' => count($pack['test_ids'] ?? []),
+                'fast_isolated' => $fastIsolated,
                 'new_ip' => $newIp,
                 'drew' => $drew,
             ]);
@@ -4842,12 +4942,17 @@ class BaitSplitService
                 'pool_name' => (string) ($router['pools'][$poolId]['name'] ?? $poolId),
                 'mode' => 'decoy',
                 'phase' => $phase,
-                'suspect_count' => $confirmed + $isolated,
+                'suspect_count' => $suspectSeeded > 0
+                    ? $suspectSeeded
+                    : ($confirmed + $isolated),
                 'batch' => $nextCount,
                 'suspect_seeded' => $suspectSeeded,
+                'fast_isolated' => $isolated,
                 'mismatch' => $mismatch,
             ]],
-            'suspect_count' => $confirmed + $isolated + $suspectSeeded,
+            'suspect_count' => $suspectSeeded > 0
+                ? $suspectSeeded
+                : ($confirmed + $isolated),
             'scored_count' => $confirmed + $isolated,
             'threshold' => $this->decoyMinBatch(),
             'moved_count' => $confirmed,
@@ -5093,7 +5198,7 @@ class BaitSplitService
         }
         $note = (string) ($router['overrides'][$key]['note'] ?? '');
         // 诱捕二分进行中或已确认内鬼：不抢流程
-        foreach (['金丝雀测试批', '诱捕嫌疑隔离', '诱捕确认内鬼'] as $marker) {
+        foreach (['金丝雀测试批', '诱捕嫌疑隔离', '诱捕确认内鬼', '诱捕二墙快隔离'] as $marker) {
             if (str_contains($note, $marker)) {
                 return false;
             }
