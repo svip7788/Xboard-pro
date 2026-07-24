@@ -4414,6 +4414,15 @@ class BaitSplitService
             if (in_array($type, ['danger', 'blacklist'], true)) {
                 continue;
             }
+            $note = (string) (
+                $campaign['router']['overrides'][(string) $uid]['note'] ?? ''
+            );
+            if (
+                str_contains($note, '金丝雀观察正常')
+                || str_contains($note, '诱捕清白收回')
+            ) {
+                continue;
+            }
             if (isset($lastMap[$uid])) {
                 $head[$uid] = (int) $lastMap[$uid];
             } else {
@@ -4457,6 +4466,16 @@ class BaitSplitService
             $eff = $this->effectivePoolId($campaign, $uid);
             $type = $campaign['router']['pools'][$eff]['type'] ?? '';
             if (in_array($type, ['danger', 'blacklist'], true)) {
+                continue;
+            }
+            $note = (string) (
+                $campaign['router']['overrides'][(string) $uid]['note'] ?? ''
+            );
+            // 已观察正常的不再进嫌疑队列
+            if (
+                str_contains($note, '金丝雀观察正常')
+                || str_contains($note, '诱捕清白收回')
+            ) {
                 continue;
             }
             $head[$uid] = $ts;
@@ -4722,12 +4741,14 @@ class BaitSplitService
                 }
             }
         } elseif (!$walled) {
+            // 观察期满未墙 → 标记正常；白天收回不删此备注
             foreach ($ids as $uid) {
                 $key = (string) $uid;
                 $router['overrides'][$key] = $this->normalizeOverride([
                     'pool_id' => $poolId,
+                    'host' => '',
                     'locked' => true,
-                    'note' => '诱捕清白收回',
+                    'note' => '金丝雀观察正常',
                     'updated_at' => $now,
                 ]);
                 $router['assignments'][$key] = $poolId;
@@ -4786,11 +4807,14 @@ class BaitSplitService
                 $origin[(string) $uid] = (string) $poolId;
             }
         }
-        // 已确认内鬼（诱捕确认内鬼 / 危险组）保留；其余诱捕覆盖清除
+        // 已确认内鬼 / 观察正常 保留；测试中/嫌疑隔离/旧清白收回 清除
         $markers = ['金丝雀测试批', '诱捕嫌疑隔离', '诱捕清白收回'];
         foreach ($router['overrides'] as $key => $ov) {
             $note = (string) ($ov['note'] ?? '');
-            if (str_contains($note, '诱捕确认内鬼')) {
+            if (
+                str_contains($note, '诱捕确认内鬼')
+                || str_contains($note, '金丝雀观察正常')
+            ) {
                 continue;
             }
             $isDecoy = false;
@@ -5269,7 +5293,13 @@ class BaitSplitService
         }
         $note = (string) ($router['overrides'][$key]['note'] ?? '');
         // 诱捕二分进行中或已确认内鬼：不抢流程
-        foreach (['金丝雀测试批', '诱捕嫌疑隔离', '诱捕确认内鬼', '诱捕二墙快隔离'] as $marker) {
+        foreach ([
+            '金丝雀测试批',
+            '诱捕嫌疑隔离',
+            '诱捕确认内鬼',
+            '诱捕二墙快隔离',
+            '金丝雀观察正常',
+        ] as $marker) {
             if (str_contains($note, $marker)) {
                 return false;
             }
