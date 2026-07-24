@@ -198,7 +198,7 @@
             </div>
 
             <h3 style="margin-top:20px">二分收敛诱捕（首墙全员可用）<span id="decoyState" class="pill off" style="margin-left:8px">未启用</span></h3>
-            <div class="hint">首墙：新 IP 覆盖全组（普通人能用），不开测。二墙：拉过武装 IP 的人里抽一批继续测，其余嫌疑先锁进隔离中转池（观察3，白天不收回）；来源池只留相对干净的人用最新 IP。再被墙 → 对半拆续测，缩到下限进危险组。host 始终跟最新 IP，到点只收回金丝雀测试覆盖。</div>
+            <div class="hint">首墙：新 IP 覆盖全组（普通人能用），不开测。二墙起：池底座钉回武装 IP，只有当前测试批能拉到新 IP（防卧底不拉订阅白嫖）；其余嫌疑快隔离进观察3。再被墙 → 对半拆续测，缩到下限进危险组。到点收回金丝雀覆盖。</div>
             <div class="split" style="margin-top:12px">
                 <div class="field"><label><input id="decoyEnabled" type="checkbox" style="width:auto;height:auto"> 启用夜间自动诱捕（每分钟调度检查）</label></div>
                 <div class="field"><label>诱捕时段（本地时间）</label><div class="host-tools"><input id="decoyStart" placeholder="01:00" style="flex:1;min-width:0"><span>—</span><input id="decoyEnd" placeholder="08:00" style="flex:1;min-width:0"></div></div>

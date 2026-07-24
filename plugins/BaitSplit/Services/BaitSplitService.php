@@ -990,8 +990,8 @@ class BaitSplitService
             $targetPoolIds = [$matchedPoolId];
         }
 
-        // 诱捕窗口内来源池：blocked 走两段式（首墙全员可用→二墙起测）；
-        // machine 也更新 host，保证普通人能用。
+        // 诱捕窗口内来源池：blocked 走两段式（首墙全员→二墙仅金丝雀批拿新 IP）；
+        // machine：armed 全员跟；testing 仅金丝雀批跟。
         if (
             (bool) ($this->config['decoy_enabled'] ?? false)
             && $this->decoyInWindow()
@@ -4276,8 +4276,8 @@ class BaitSplitService
     /**
      * 二分收敛诱捕（墙驱动 + 定时兜底），多来源池各自独立并行：
      * - 首墙：全员覆盖新 IP（armed），不开测，普通人能用。
-     * - 二墙：拉过武装 IP 的人前一批测试，其余快隔离进观察3；host 始终跟最新 IP。
-     * - 测试批再墙 → 对半拆进隔离中转 / ≤下限进危险组；清白则换下一批。
+     * - 二墙起测：池底座钉回武装 IP；仅当前金丝雀批 override 拿新 IP（防卧底白嫖）。
+     * - 其余嫌疑快隔离进观察3；再墙 → 对半拆 / ≤下限进危险组；清白换下一批。
      * - 到点（白天）清诱捕覆盖。
      */
     public function runDecoyOrchestration(): array
@@ -4337,6 +4337,62 @@ class BaitSplitService
             $h = $ip;
         }
         unset($h);
+    }
+
+    /**
+     * 测试期：来源池底座钉在武装 IP；非金丝雀用户不得拿到 cur_ip。
+     * 已在测的 override.host 保持/对齐到 canaryIp。
+     */
+    private function pinDecoyPoolBaseToArmed(
+        array &$router,
+        string $poolId,
+        string $canaryIp = ''
+    ): void {
+        $domain = $router['decoy']['domains'][$poolId] ?? null;
+        if (!is_array($domain)) {
+            return;
+        }
+        $armedIp = (string) ($domain['armed_ip'] ?? '');
+        if ($armedIp === '') {
+            return;
+        }
+        $this->applyPoolHost($router, $poolId, $armedIp);
+
+        $canaryIds = [];
+        $cur = $domain['current'] ?? null;
+        if (is_array($cur)) {
+            foreach ($this->normalizeIds($cur['ids'] ?? []) as $uid) {
+                $canaryIds[(string) $uid] = true;
+            }
+        }
+        if ($canaryIp === '') {
+            $canaryIp = (string) ($domain['cur_ip'] ?? '');
+        }
+        $now = time();
+        foreach ($router['overrides'] ?? [] as $key => &$ov) {
+            if (!is_array($ov)) {
+                continue;
+            }
+            $ovPool = (string) ($ov['pool_id'] ?? '');
+            // 仅处理仍挂在本诱捕来源池的人（清白收回等）
+            if ($ovPool !== $poolId) {
+                continue;
+            }
+            if (isset($canaryIds[$key])) {
+                if ($canaryIp !== '') {
+                    $ov['host'] = $canaryIp;
+                    $ov['updated_at'] = $now;
+                }
+                continue;
+            }
+            // 非在测用户：清空个人 host，回落到池武装 IP；禁止残留金丝雀 IP
+            $host = (string) ($ov['host'] ?? '');
+            if ($host !== '' && $host !== $armedIp) {
+                $ov['host'] = '';
+                $ov['updated_at'] = $now;
+            }
+        }
+        unset($ov);
     }
 
     /** 兜底：来源池近期拉取用户（二墙曝光窗口无人时用）。 */
@@ -4756,15 +4812,19 @@ class BaitSplitService
         return $restored;
     }
 
-    /** 诱捕窗口内 machine：全员 host 跟新 IP，在测批 override 同步（不算被墙）。 */
+    /**
+     * 诱捕窗口内 machine：
+     * - armed：全员跟新 IP（仍属武装期）
+     * - testing：仅金丝雀批跟新 IP，池底座钉武装 IP（防卧底白嫖）
+     */
     private function handleDecoyMachineIp(
         array &$router,
         string $poolId,
         string $newIp,
         int $now
     ): array {
-        $this->applyPoolHost($router, $poolId, $newIp);
         if (!isset($router['decoy']['domains'][$poolId])) {
+            $this->applyPoolHost($router, $poolId, $newIp);
             return [
                 'reason' => 'machine',
                 'mode' => 'decoy',
@@ -4772,34 +4832,42 @@ class BaitSplitService
                 'updated_cur_ip' => false,
             ];
         }
+        $phase = (string) ($router['decoy']['domains'][$poolId]['phase'] ?? 'idle');
+        if ($phase === 'testing') {
+            $router['decoy']['domains'][$poolId]['cur_ip'] = $newIp;
+            $this->pinDecoyPoolBaseToArmed($router, $poolId, $newIp);
+            $cur = $router['decoy']['domains'][$poolId]['current'] ?? null;
+            $n = is_array($cur) ? count($this->normalizeIds($cur['ids'] ?? [])) : 0;
+            return [
+                'reason' => 'machine',
+                'mode' => 'decoy',
+                'phase' => $phase,
+                'updated_cur_ip' => true,
+                'retargeted' => $n,
+                'pool_pinned_armed' => true,
+            ];
+        }
+
+        // idle / armed：全员可用
+        $this->applyPoolHost($router, $poolId, $newIp);
         $router['decoy']['domains'][$poolId]['cur_ip'] = $newIp;
-        $cur = $router['decoy']['domains'][$poolId]['current'] ?? null;
-        $n = 0;
-        if (is_array($cur)) {
-            foreach ($this->normalizeIds($cur['ids'] ?? []) as $uid) {
-                $key = (string) $uid;
-                if (!isset($router['overrides'][$key])) {
-                    continue;
-                }
-                $router['overrides'][$key]['host'] = $newIp;
-                $router['overrides'][$key]['updated_at'] = $now;
-                $n++;
-            }
+        if ($phase === 'armed') {
+            $router['decoy']['domains'][$poolId]['armed_ip'] = $newIp;
         }
         return [
             'reason' => 'machine',
             'mode' => 'decoy',
-            'phase' => (string) ($router['decoy']['domains'][$poolId]['phase'] ?? 'idle'),
+            'phase' => $phase,
             'updated_cur_ip' => true,
-            'retargeted' => $n,
+            'retargeted' => 0,
         ];
     }
 
     /**
      * 两段式诱捕：
      * - idle→armed（首墙）：全员覆盖新 IP，不开测
-     * - armed→testing（二墙）：拉过武装 IP 的人前一批测，其余快隔离观察3；host 跟最新 IP
-     * - testing：金丝雀再墙则二分/定罪；host 始终跟新 IP，普通人能用
+     * - armed→testing（二墙）：池钉武装 IP；仅测试批拿新 IP；其余嫌疑快隔离
+     * - testing：金丝雀再墙则二分/定罪；池仍钉武装 IP，仅在测批拿新 IP
      */
     private function handleDecoyWall(
         array $campaign,
@@ -4820,8 +4888,6 @@ class BaitSplitService
 
         $phase = (string) ($router['decoy']['domains'][$poolId]['phase'] ?? 'idle');
         $prevHost = (string) ($router['pools'][$poolId]['host'] ?? '');
-        // 全员底座始终跟最新活 IP（不再冻死 IP）
-        $this->applyPoolHost($router, $poolId, $newIp);
 
         $walled = false;
         $confirmed = 0;
@@ -4831,6 +4897,8 @@ class BaitSplitService
         $suspectSeeded = 0;
 
         if ($phase === 'idle') {
+            // 首墙：全员拿新 IP
+            $this->applyPoolHost($router, $poolId, $newIp);
             $dead = $oldIp !== '' ? $oldIp : $prevHost;
             $router['decoy']['domains'][$poolId]['phase'] = 'armed';
             $router['decoy']['domains'][$poolId]['armed'] = true;
@@ -4874,19 +4942,21 @@ class BaitSplitService
             $seeded['dead_ip'] = $armedIp;
             $router['decoy']['domains'][$poolId] = $this->normalizeDecoyDomain($seeded);
             $drew = $this->decoyAdvance($router, $poolId, $now);
+            // 池底座钉武装 IP；仅金丝雀批 override 持有新 IP
+            $this->pinDecoyPoolBaseToArmed($router, $poolId, $newIp);
             $phase = 'testing';
             $isolated = $fastIsolated;
-            Log::notice('BaitSplit 诱捕二墙：测试批+其余快隔离', [
+            Log::notice('BaitSplit 诱捕二墙：仅测试批拿新 IP，池钉武装 IP', [
                 'pool_id' => $poolId,
                 'armed_ip' => $armedIp,
                 'suspects' => $suspectSeeded,
                 'test_batch' => count($pack['test_ids'] ?? []),
                 'fast_isolated' => $fastIsolated,
-                'new_ip' => $newIp,
+                'canary_ip' => $newIp,
                 'drew' => $drew,
             ]);
         } else {
-            // testing：结算当前金丝雀批 + 续测
+            // testing：结算当前金丝雀批 + 续测；池绝不跟新 IP
             $domain = $router['decoy']['domains'][$poolId];
             $cur = $domain['current'] ?? null;
             $batchIp = (string) ($domain['cur_ip'] ?? '');
@@ -4923,6 +4993,7 @@ class BaitSplitService
                     }
                 }
             }
+            $this->pinDecoyPoolBaseToArmed($router, $poolId, $newIp);
         }
 
         $next = $router['decoy']['domains'][$poolId]['current'] ?? null;
