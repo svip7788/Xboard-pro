@@ -4957,32 +4957,47 @@ class BaitSplitService
             if ($armedAt <= 0) {
                 $armedAt = $now - max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600));
             }
-            $pullers = $this->collectPoolPullersInWindow(
-                $campaign,
-                $poolId,
-                $armedAt,
-                $now
-            );
-            $suspectSeeded = count($pullers);
-            $isolated = $this->fastIsolateSuspects(
-                $router,
-                $pullers,
-                $now,
-                '二墙拉订阅→观察3'
-            );
-            // 来源池换新 IP，复位，等下一轮「首墙不管」
-            $this->applyPoolHost($router, $poolId, $newIp);
-            $router['decoy']['domains'][$poolId] = $this->emptyDecoyDomain();
-            $router['pools'][$poolId]['last_rotation_at'] = $now;
-            $phase = 'idle';
-            $logPhase = 'dumped';
-            Log::notice('BaitSplit 二墙：拉过武装 IP 者全部进观察3', [
-                'pool_id' => $poolId,
-                'armed_ip' => $armedIp,
-                'pullers' => $suspectSeeded,
-                'isolated' => $isolated,
-                'new_ip' => $newIp,
-            ]);
+            $isolatePoolId = $this->resolveDecoyIsolatePoolId($router);
+            if ($isolatePoolId === '') {
+                // 没有观察3 时不能复位，否则嫌疑会留在来源池且丢失武装状态
+                $this->applyPoolHost($router, $poolId, $newIp);
+                $router['decoy']['domains'][$poolId]['cur_ip'] = $newIp;
+                $router['pools'][$poolId]['last_rotation_at'] = $now;
+                $logPhase = 'dump_failed';
+                Log::error('BaitSplit 二墙失败：未配置隔离池（观察3），保持武装待重试', [
+                    'pool_id' => $poolId,
+                    'armed_ip' => $armedIp,
+                    'new_ip' => $newIp,
+                ]);
+            } else {
+                $pullers = $this->collectPoolPullersInWindow(
+                    $campaign,
+                    $poolId,
+                    $armedAt,
+                    $now
+                );
+                $suspectSeeded = count($pullers);
+                $isolated = $this->fastIsolateSuspects(
+                    $router,
+                    $pullers,
+                    $now,
+                    '二墙拉订阅→观察3'
+                );
+                // 来源池换新 IP，复位，等下一轮「首墙不管」
+                $this->applyPoolHost($router, $poolId, $newIp);
+                $router['decoy']['domains'][$poolId] = $this->emptyDecoyDomain();
+                $router['pools'][$poolId]['last_rotation_at'] = $now;
+                $phase = 'idle';
+                $logPhase = 'dumped';
+                Log::notice('BaitSplit 二墙：拉过武装 IP 者全部进观察3', [
+                    'pool_id' => $poolId,
+                    'armed_ip' => $armedIp,
+                    'pullers' => $suspectSeeded,
+                    'isolated' => $isolated,
+                    'isolate_pool' => $isolatePoolId,
+                    'new_ip' => $newIp,
+                ]);
+            }
         }
 
         $logEntry = [
