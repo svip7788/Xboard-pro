@@ -2702,7 +2702,6 @@ class BaitSplitService
             $host = $override
                 ? $this->hostFromRule($override, $serverId)
                 : '';
-            $overrideDelivered = $host !== '';
             $selectedPool = null;
             foreach ($poolIds as $poolId) {
                 $candidate = $router['pools'][$poolId] ?? null;
@@ -2729,8 +2728,17 @@ class BaitSplitService
                 $selectedPool,
                 null
             );
-            if ($selectedPool && !$overrideDelivered) {
+            // 只要成功下发托管节点就记拉取（含个人 host 覆盖），供二墙按武装窗口筛人
+            if ($selectedPool) {
                 $deliveredPoolIds[$selectedPool['id']] = true;
+            }
+            $assignPool = (string) (
+                ($override['pool_id'] ?? '') !== ''
+                    ? $override['pool_id']
+                    : ($router['assignments'][(string) $userId] ?? '')
+            );
+            if ($assignPool !== '' && isset($router['pools'][$assignPool])) {
+                $deliveredPoolIds[$assignPool] = true;
             }
             $result[] = $server;
         }
@@ -4408,7 +4416,8 @@ class BaitSplitService
         foreach ($lastMap as $uid => $ts) {
             $uid = (int) $uid;
             $ts = (int) $ts;
-            if ($uid <= 0 || $ts <= $windowStart || $ts > $now) {
+            // 含武装当秒的拉取（armed_at 与拉订阅同秒时不能漏）
+            if ($uid <= 0 || $ts < $windowStart || $ts > $now) {
                 continue;
             }
             $eff = $this->effectivePoolId($campaign, $uid);
@@ -4486,7 +4495,7 @@ class BaitSplitService
         foreach ($lastMap as $uid => $ts) {
             $uid = (int) $uid;
             $ts = (int) $ts;
-            if ($uid <= 0 || $ts <= $armedAt || $ts > $now) {
+            if ($uid <= 0 || $ts < $armedAt || $ts > $now) {
                 continue;
             }
             $eff = $this->effectivePoolId($campaign, $uid);
