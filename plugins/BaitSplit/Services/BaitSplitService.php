@@ -4494,16 +4494,7 @@ class BaitSplitService
             if (in_array($type, ['danger', 'blacklist'], true)) {
                 continue;
             }
-            $note = (string) (
-                $campaign['router']['overrides'][(string) $uid]['note'] ?? ''
-            );
-            // 已观察正常的不再进嫌疑队列
-            if (
-                str_contains($note, '金丝雀观察正常')
-                || str_contains($note, '诱捕清白收回')
-            ) {
-                continue;
-            }
+            // 二墙分流：拉过即隔离，不因「观察正常」等旧备注跳过
             $head[$uid] = $ts;
         }
         arsort($head);
@@ -4597,10 +4588,6 @@ class BaitSplitService
             $key = (string) $uid;
             $prevNote = (string) ($router['overrides'][$key]['note'] ?? '');
             if (str_contains($prevNote, '诱捕确认内鬼')) {
-                continue;
-            }
-            // 金丝雀测试中：留给 decoyAdvance / settle 管理，避免冲掉 host
-            if (str_contains($prevNote, '金丝雀测试批')) {
                 continue;
             }
             $curPool = (string) (
@@ -4887,17 +4874,18 @@ class BaitSplitService
         }
         $phase = (string) ($router['decoy']['domains'][$poolId]['phase'] ?? 'idle');
         $router['decoy']['domains'][$poolId]['cur_ip'] = $newIp;
-        if ($phase === 'armed') {
-            $router['decoy']['domains'][$poolId]['armed_ip'] = $newIp;
-        }
-        // 旧 testing 残留：机器换 IP 时直接清掉金丝雀状态
+        // 武装期：池 host 可跟机器新 IP，但 armed_ip/armed_at 不动（二墙仍按首墙武装窗口算人）
+        // 旧 testing 残留：清金丝雀队列，回到 armed
         if ($phase === 'testing') {
+            $armedIp = (string) ($router['decoy']['domains'][$poolId]['armed_ip'] ?? '');
             $router['decoy']['domains'][$poolId]['phase'] = 'armed';
             $router['decoy']['domains'][$poolId]['armed'] = true;
-            $router['decoy']['domains'][$poolId]['armed_ip'] = $newIp;
-            $router['decoy']['domains'][$poolId]['armed_at'] = $now;
             $router['decoy']['domains'][$poolId]['current'] = null;
             $router['decoy']['domains'][$poolId]['queue'] = [];
+            if ($armedIp === '') {
+                $router['decoy']['domains'][$poolId]['armed_ip'] = $newIp;
+                $router['decoy']['domains'][$poolId]['armed_at'] = $now;
+            }
             $phase = 'armed';
         }
         return [
@@ -4935,6 +4923,7 @@ class BaitSplitService
         $prevHost = (string) ($router['pools'][$poolId]['host'] ?? '');
         $isolated = 0;
         $suspectSeeded = 0;
+        $logPhase = $phase;
 
         if ($phase === 'idle') {
             // 第一次墙：不管人，只武装新 IP
@@ -4953,12 +4942,13 @@ class BaitSplitService
             );
             $router['pools'][$poolId]['last_rotation_at'] = $now;
             $phase = 'armed';
+            $logPhase = 'armed';
             Log::notice('BaitSplit 首墙：只换 IP，不隔离', [
                 'pool_id' => $poolId,
                 'new_ip' => $newIp,
             ]);
         } else {
-            // 第二次墙（含旧 testing 残留）：拉过武装 IP 的全部进观察3
+            // 第二次墙（含旧 testing 残留）：武装窗口内拉过订阅的全部进观察3
             $armedIp = (string) ($router['decoy']['domains'][$poolId]['armed_ip'] ?? '');
             $armedAt = (int) ($router['decoy']['domains'][$poolId]['armed_at'] ?? 0);
             if ($armedIp === '') {
@@ -4967,21 +4957,12 @@ class BaitSplitService
             if ($armedAt <= 0) {
                 $armedAt = $now - max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600));
             }
-            $pullers = $this->collectArmedSuspectIds(
+            $pullers = $this->collectPoolPullersInWindow(
                 $campaign,
                 $poolId,
                 $armedAt,
                 $now
             );
-            // 回退：武装窗口无人时，用近期拉过本池的人
-            if ($pullers === []) {
-                $pullers = $this->collectPoolPullersInWindow(
-                    $campaign,
-                    $poolId,
-                    $armedAt,
-                    $now
-                );
-            }
             $suspectSeeded = count($pullers);
             $isolated = $this->fastIsolateSuspects(
                 $router,
@@ -4994,6 +4975,7 @@ class BaitSplitService
             $router['decoy']['domains'][$poolId] = $this->emptyDecoyDomain();
             $router['pools'][$poolId]['last_rotation_at'] = $now;
             $phase = 'idle';
+            $logPhase = 'dumped';
             Log::notice('BaitSplit 二墙：拉过武装 IP 者全部进观察3', [
                 'pool_id' => $poolId,
                 'armed_ip' => $armedIp,
@@ -5007,14 +4989,14 @@ class BaitSplitService
             'at' => $now,
             'reason' => 'blocked',
             'mode' => 'decoy',
-            'phase' => $phase === 'idle' ? 'dumped' : $phase,
+            'phase' => $logPhase,
             'old_ip' => $oldIp,
             'new_ip' => $newIp,
             'pools' => [[
                 'pool_id' => $poolId,
                 'pool_name' => (string) ($router['pools'][$poolId]['name'] ?? $poolId),
                 'mode' => 'decoy',
-                'phase' => $phase === 'idle' && $isolated > 0 ? 'dumped' : $phase,
+                'phase' => $logPhase,
                 'suspect_count' => $suspectSeeded,
                 'batch' => 0,
                 'suspect_seeded' => $suspectSeeded,
@@ -5027,22 +5009,14 @@ class BaitSplitService
             'moved_ids' => [],
             'observe_pool_id' => $this->resolveDecoyIsolatePoolId($router),
         ];
-        // 首墙 phase=armed 时日志标 armed；二墙复位后标 dumped
-        if ($phase === 'armed' && $isolated === 0 && $suspectSeeded === 0) {
-            $logEntry['phase'] = 'armed';
-            $logEntry['pools'][0]['phase'] = 'armed';
-        } elseif ($isolated > 0 || $suspectSeeded > 0) {
-            $logEntry['phase'] = 'dumped';
-            $logEntry['pools'][0]['phase'] = 'dumped';
-        }
         $router['wall_log'][] = $logEntry;
         $router['wall_log'] = array_slice($router['wall_log'], -200);
 
         return [
             'reason' => 'blocked',
             'mode' => 'decoy',
-            'phase' => $logEntry['phase'],
-            'walled' => $isolated > 0,
+            'phase' => $logPhase,
+            'walled' => $logPhase === 'dumped',
             'confirmed' => 0,
             'isolated' => $isolated,
             'next_batch' => 0,
@@ -5058,7 +5032,6 @@ class BaitSplitService
         $inWindow = $this->decoyInWindow();
         $today = now()->format('Y-m-d');
         $now = time();
-        $observeSeconds = $this->decoyObserveSeconds();
         $changed = false;
         $actions = [];
         foreach ($state['campaigns'] as $id => $campaign) {
