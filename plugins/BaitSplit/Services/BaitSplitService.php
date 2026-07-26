@@ -4210,6 +4210,11 @@ class BaitSplitService
                 return $poolId;
             }
         }
+        foreach ($router['pools'] as $poolId => $pool) {
+            if (trim((string) ($pool['name'] ?? '')) === $ref) {
+                return (string) $poolId;
+            }
+        }
         return '';
     }
 
