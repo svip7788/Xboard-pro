@@ -3992,6 +3992,10 @@ class BaitSplitService
                 'source_pool_names' => array_map($poolName, $decoySourceIds),
                 'isolate_pool_id' => $this->resolveDecoyIsolatePoolId($router),
                 'isolate_pool_name' => $poolName($this->resolveDecoyIsolatePoolId($router)),
+                'isolate_chain_names' => array_map(
+                    $poolName,
+                    $this->decoyIsolateChain($router)
+                ),
                 'confirm_pool_id' => $this->resolveDecoyConfirmPoolId($router),
                 'confirm_pool_name' => $poolName($this->resolveDecoyConfirmPoolId($router)),
                 'domains' => $decoyDomains,
@@ -4227,13 +4231,72 @@ class BaitSplitService
         return $ids;
     }
 
-    private function resolveDecoyIsolatePoolId(array $router): string
+    /**
+     * 隔离链：来源池 → 观察3 → 观察4 → … → 安全组。
+     * 隔离池自己被墙时要往下一级甩，否则嫌疑原地打转永远收敛不了。
+     */
+    private function decoyIsolateChain(array $router): array
     {
-        $ref = $this->resolvePoolIdByRef(
+        $chain = [];
+        $push = function (string $poolId) use (&$chain, $router): void {
+            if ($poolId !== '' && isset($router['pools'][$poolId]) && !in_array($poolId, $chain, true)) {
+                $chain[] = $poolId;
+            }
+        };
+        $raw = trim((string) ($this->config['decoy_isolate_chain'] ?? ''));
+        if ($raw !== '') {
+            foreach (explode(',', $raw) as $ref) {
+                $push($this->resolvePoolIdByRef($router, $ref));
+            }
+            return $chain;
+        }
+        $push($this->resolvePoolIdByRef(
             $router,
             (string) ($this->config['decoy_isolate_pool_id'] ?? '')
-        );
-        return $ref !== '' ? $ref : $this->resolveWallObservePoolId($router);
+        ));
+        $push($this->resolveWallObservePoolId($router));
+        $base = $chain[0] ?? '';
+        $numbered = [];
+        foreach ($router['pools'] as $poolId => $pool) {
+            if (($pool['type'] ?? '') !== 'observation') {
+                continue;
+            }
+            if (preg_match('/观察\s*(\d+)/u', (string) ($pool['name'] ?? ''), $m)) {
+                $numbered[(int) $m[1]] = (string) $poolId;
+            }
+        }
+        ksort($numbered);
+        $baseNum = 0;
+        foreach ($numbered as $num => $poolId) {
+            if ($poolId === $base) {
+                $baseNum = $num;
+            }
+        }
+        foreach ($numbered as $num => $poolId) {
+            if ($num > $baseNum) {
+                $push($poolId);
+            }
+        }
+        $push($this->poolIdByType($router, 'safe'));
+        return $chain;
+    }
+
+    /** 末级返回空串：没有下游可甩，保持武装等人工处理。 */
+    private function resolveDecoyIsolatePoolId(
+        array $router,
+        string $sourcePoolId = ''
+    ): string {
+        $chain = $this->decoyIsolateChain($router);
+        if ($chain === []) {
+            return '';
+        }
+        if ($sourcePoolId !== '') {
+            $idx = array_search($sourcePoolId, $chain, true);
+            if ($idx !== false) {
+                return (string) ($chain[$idx + 1] ?? '');
+            }
+        }
+        return (string) $chain[0];
     }
 
     private function decoyBatchSize(): int
@@ -4582,9 +4645,12 @@ class BaitSplitService
         array &$router,
         array $ids,
         int $now,
-        string $note = '诱捕墙后拉订阅→观察3'
+        string $note = '诱捕墙后拉订阅→观察3',
+        string $targetPoolId = ''
     ): int {
-        $isolatePoolId = $this->resolveDecoyIsolatePoolId($router);
+        $isolatePoolId = $targetPoolId !== ''
+            ? $targetPoolId
+            : $this->resolveDecoyIsolatePoolId($router);
         if ($isolatePoolId === '' || $ids === []) {
             return 0;
         }
@@ -4933,6 +4999,7 @@ class BaitSplitService
         $isolated = 0;
         $suspectSeeded = 0;
         $logPhase = $phase;
+        $isolateTargetId = '';
 
         if ($phase === 'idle') {
             // 第一次墙：不管人，只武装新 IP
@@ -4966,19 +5033,20 @@ class BaitSplitService
             if ($armedAt <= 0) {
                 $armedAt = $now - max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600));
             }
-            $isolatePoolId = $this->resolveDecoyIsolatePoolId($router);
+            $isolatePoolId = $this->resolveDecoyIsolatePoolId($router, $poolId);
             if ($isolatePoolId === '') {
-                // 没有观察3 时不能复位，否则嫌疑会留在来源池且丢失武装状态
+                // 无下游可甩（末级隔离池）：保持武装，人已经筛到底，等人工处理
                 $this->applyPoolHost($router, $poolId, $newIp);
                 $router['decoy']['domains'][$poolId]['cur_ip'] = $newIp;
                 $router['pools'][$poolId]['last_rotation_at'] = $now;
                 $logPhase = 'dump_failed';
-                Log::error('BaitSplit 二墙失败：未配置隔离池（观察3），保持武装待重试', [
+                Log::error('BaitSplit 二墙无下游隔离池，保持武装待人工处理', [
                     'pool_id' => $poolId,
                     'armed_ip' => $armedIp,
                     'new_ip' => $newIp,
                 ]);
             } else {
+                $isolateTargetId = $isolatePoolId;
                 $pullers = $this->collectPoolPullersInWindow(
                     $campaign,
                     $poolId,
@@ -4986,11 +5054,15 @@ class BaitSplitService
                     $now
                 );
                 $suspectSeeded = count($pullers);
+                $targetName = (string) (
+                    $router['pools'][$isolatePoolId]['name'] ?? $isolatePoolId
+                );
                 $isolated = $this->fastIsolateSuspects(
                     $router,
                     $pullers,
                     $now,
-                    '二墙拉订阅→观察3'
+                    '二墙拉订阅→' . $targetName,
+                    $isolatePoolId
                 );
                 // 甩完立刻重新武装：新 IP 只有剩下的人能拉到，再墙即可继续甩
                 $this->applyPoolHost($router, $poolId, $newIp);
@@ -5008,8 +5080,9 @@ class BaitSplitService
                 $router['pools'][$poolId]['last_rotation_at'] = $now;
                 $phase = 'armed';
                 $logPhase = 'dumped';
-                Log::notice('BaitSplit 二墙：拉过武装 IP 者全部进观察3', [
+                Log::notice('BaitSplit 二墙：拉过武装 IP 者全部下沉隔离', [
                     'pool_id' => $poolId,
+                    'isolate_name' => $targetName,
                     'armed_ip' => $armedIp,
                     'pullers' => $suspectSeeded,
                     'isolated' => $isolated,
@@ -5041,7 +5114,9 @@ class BaitSplitService
             'threshold' => 0,
             'moved_count' => $isolated,
             'moved_ids' => [],
-            'observe_pool_id' => $this->resolveDecoyIsolatePoolId($router),
+            'observe_pool_id' => $isolateTargetId !== ''
+                ? $isolateTargetId
+                : $this->resolveDecoyIsolatePoolId($router, $poolId),
         ];
         $router['wall_log'][] = $logEntry;
         $router['wall_log'] = array_slice($router['wall_log'], -200);
