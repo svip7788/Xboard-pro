@@ -4282,8 +4282,8 @@ class BaitSplitService
 
     /**
      * 来源池简易分流（暂不做金丝雀诱捕）：
-     * - 第一次墙：不管，只换新 IP 并武装。
-     * - 第二次墙：武装窗口内拉过该 IP 的人全部进观察3；来源池换新 IP 并复位。
+     * - 当晚第一次墙：不管，只换新 IP 并武装。
+     * - 之后每次墙：武装窗口内拉过该 IP 的人全部进观察3，换新 IP 后立刻重新武装。
      * - 等默认组/测试组/观察2 不墙后，再对观察3 慢慢诱捕（后续）。
      */
     public function runDecoyOrchestration(): array
@@ -4908,8 +4908,8 @@ class BaitSplitService
 
     /**
      * 来源池两墙分流（不做金丝雀）：
-     * - idle→armed：首墙不管，只换 IP
-     * - armed/testing→idle：二墙，拉过武装 IP 的人全部进观察3，来源池换新 IP 复位
+     * - idle→armed：当晚首墙不管，只换 IP
+     * - armed→armed：拉过武装 IP 的人全部进观察3，换新 IP 后继续武装
      */
     private function handleDecoyWall(
         array $campaign,
@@ -4992,11 +4992,21 @@ class BaitSplitService
                     $now,
                     '二墙拉订阅→观察3'
                 );
-                // 来源池换新 IP，复位，等下一轮「首墙不管」
+                // 甩完立刻重新武装：新 IP 只有剩下的人能拉到，再墙即可继续甩
                 $this->applyPoolHost($router, $poolId, $newIp);
-                $router['decoy']['domains'][$poolId] = $this->emptyDecoyDomain();
+                $router['decoy']['domains'][$poolId] = array_merge(
+                    $this->emptyDecoyDomain(),
+                    [
+                        'phase' => 'armed',
+                        'armed' => true,
+                        'armed_ip' => $newIp,
+                        'armed_at' => $now,
+                        'cur_ip' => $newIp,
+                        'dead_ip' => $armedIp,
+                    ]
+                );
                 $router['pools'][$poolId]['last_rotation_at'] = $now;
-                $phase = 'idle';
+                $phase = 'armed';
                 $logPhase = 'dumped';
                 Log::notice('BaitSplit 二墙：拉过武装 IP 者全部进观察3', [
                     'pool_id' => $poolId,
