@@ -4244,7 +4244,18 @@ class BaitSplitService
     {
         $chain = [];
         $push = function (string $poolId) use (&$chain, $router): void {
-            if ($poolId !== '' && isset($router['pools'][$poolId]) && !in_array($poolId, $chain, true)) {
+            if ($poolId === '' || !isset($router['pools'][$poolId])) {
+                return;
+            }
+            // 安全组/危险组/封禁组只认人工操作，不接受自动下沉
+            if (in_array(
+                (string) ($router['pools'][$poolId]['type'] ?? ''),
+                ['safe', 'danger', 'blacklist'],
+                true
+            )) {
+                return;
+            }
+            if (!in_array($poolId, $chain, true)) {
                 $chain[] = $poolId;
             }
         };
@@ -4277,12 +4288,12 @@ class BaitSplitService
                 $baseNum = $num;
             }
         }
+        // 只顺延观察N；安全组/危险组等靠人工管理，绝不自动当下游
         foreach ($numbered as $num => $poolId) {
             if ($num > $baseNum) {
                 $push($poolId);
             }
         }
-        $push($this->poolIdByType($router, 'safe'));
         return $chain;
     }
 
