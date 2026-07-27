@@ -2865,6 +2865,7 @@ class BaitSplitService
             'untested_ids' => array_values($userIds),
             'investigation_nodes' => [],
             'wall_hits' => [],
+            'wall_score' => [],
             'wall_last' => [],
             'wall_log' => [],
             'decoy' => [
@@ -2950,6 +2951,15 @@ class BaitSplitService
             $wallHits[$key] = (int) $count;
         }
         $router['wall_hits'] = $wallHits;
+        $wallScore = [];
+        foreach ((array) ($router['wall_score'] ?? []) as $userId => $score) {
+            $key = (string) (int) $userId;
+            if (!isset($wallHits[$key]) || (float) $score <= 0) {
+                continue;
+            }
+            $wallScore[$key] = round((float) $score, 4);
+        }
+        $router['wall_score'] = $wallScore;
         $router['wall_last'] = array_intersect_key($wallLast, $wallHits);
         $router['wall_log'] = is_array($router['wall_log'] ?? null)
             ? array_slice(array_values($router['wall_log']), -200)
@@ -3921,8 +3931,20 @@ class BaitSplitService
             array_slice($router['wall_log'] ?? [], -$limit)
         );
         $hits = $router['wall_hits'] ?? [];
+        // 优先按加权分排（小批命中权重高），没有分的退回按次数
+        $scores = $router['wall_score'] ?? [];
+        $rank = [];
+        foreach ($hits as $userId => $count) {
+            $rank[$userId] = (float) ($scores[$userId] ?? 0);
+        }
+        arsort($rank);
         arsort($hits);
-        $topIds = array_slice(array_keys($hits), 0, 50, true);
+        $topIds = array_slice(
+            array_keys(array_sum($rank) > 0 ? $rank : $hits),
+            0,
+            50,
+            true
+        );
         $emails = User::query()
             ->whereIn('id', array_map('intval', array_values($topIds)))
             ->pluck('email', 'id');
@@ -3931,7 +3953,8 @@ class BaitSplitService
             $topSuspects[] = [
                 'user_id' => (int) $userId,
                 'email' => (string) ($emails[(int) $userId] ?? ''),
-                'hits' => (int) $hits[$userId],
+                'hits' => (int) ($hits[$userId] ?? 0),
+                'score' => round((float) ($scores[$userId] ?? 0), 3),
                 'nights' => (int) ($router['decoy_nights'][(string) $userId] ?? 0),
                 'last_at' => (int) ($router['wall_last'][$userId] ?? 0),
             ];
@@ -4663,14 +4686,16 @@ class BaitSplitService
         int $now,
         string $note = '诱捕墙后拉订阅→观察3',
         string $targetPoolId = ''
-    ): int {
+    ): array {
         $isolatePoolId = $targetPoolId !== ''
             ? $targetPoolId
             : $this->resolveDecoyIsolatePoolId($router);
         if ($isolatePoolId === '' || $ids === []) {
-            return 0;
+            return [];
         }
-        $moved = 0;
+        // 一批越小，命中越集中：按 1/批大小 加权，真内鬼几晚下来会浮到榜首
+        $weight = 1 / max(1, count($ids));
+        $moved = [];
         foreach ($ids as $uid) {
             $uid = (int) $uid;
             if ($uid <= 0) {
@@ -4698,14 +4723,86 @@ class BaitSplitService
             ]);
             $router['wall_hits'][$key] =
                 (int) ($router['wall_hits'][$key] ?? 0) + 1;
+            $router['wall_score'][$key] = round(
+                (float) ($router['wall_score'][$key] ?? 0) + $weight,
+                4
+            );
             $router['wall_last'][$key] = $now;
             $router['untested_ids'] = array_values(array_diff(
                 $router['untested_ids'] ?? [],
                 [$uid]
             ));
-            $moved++;
+            $moved[] = $uid;
         }
         return $moved;
+    }
+
+    /**
+     * 末级池（没有下游）被墙时的浓缩：本轮拉过订阅的人留下，
+     * 其余退回上一级，池子越缩越小，只用两个 IP 也能收敛。
+     */
+    private function condenseTerminalPool(
+        array &$router,
+        string $poolId,
+        array $pullers,
+        string $upstreamPoolId,
+        int $now
+    ): int {
+        if ($upstreamPoolId === '' || !isset($router['pools'][$upstreamPoolId])) {
+            return 0;
+        }
+        $keep = array_flip(array_map('intval', $pullers));
+        $weight = 1 / max(1, count($keep));
+        foreach (array_keys($keep) as $uid) {
+            $key = (string) $uid;
+            if ((string) ($router['overrides'][$key]['pool_id'] ?? '') !== $poolId) {
+                continue;
+            }
+            $router['wall_hits'][$key] = (int) ($router['wall_hits'][$key] ?? 0) + 1;
+            $router['wall_score'][$key] = round(
+                (float) ($router['wall_score'][$key] ?? 0) + $weight,
+                4
+            );
+            $router['wall_last'][$key] = $now;
+            $router['overrides'][$key]['note'] = '末级浓缩·连续命中 '
+                . (int) $router['wall_hits'][$key] . ' 次';
+            $router['overrides'][$key]['updated_at'] = $now;
+        }
+        $returned = 0;
+        foreach ($router['overrides'] as $key => $ov) {
+            if ((string) ($ov['pool_id'] ?? '') !== $poolId) {
+                continue;
+            }
+            $uid = (int) $key;
+            if ($uid <= 0 || isset($keep[$uid])) {
+                continue;
+            }
+            if (str_contains((string) ($ov['note'] ?? ''), '诱捕确认内鬼')) {
+                continue;
+            }
+            $router['overrides'][$key] = $this->normalizeOverride([
+                'pool_id' => $upstreamPoolId,
+                'locked' => true,
+                'note' => '末级浓缩·本轮未拉订阅退回',
+                'updated_at' => $now,
+            ]);
+            $router['assignments'][$key] = $upstreamPoolId;
+            $returned++;
+        }
+        return $returned;
+    }
+
+    /** 隔离链里的上一级；链首返回空串。 */
+    private function resolveDecoyUpstreamPoolId(
+        array $router,
+        string $poolId
+    ): string {
+        $chain = $this->decoyIsolateChain($router);
+        $idx = array_search($poolId, $chain, true);
+        if ($idx === false || $idx === 0) {
+            return '';
+        }
+        return (string) $chain[$idx - 1];
     }
 
     /** 换晚翻篇：日期变了就收回上一夜遗留覆盖并清空探测域。返回是否有变更。 */
@@ -5016,6 +5113,7 @@ class BaitSplitService
         $suspectSeeded = 0;
         $logPhase = $phase;
         $isolateTargetId = '';
+        $movedIds = [];
 
         if ($phase === 'idle') {
             // 第一次墙：不管人，只武装新 IP
@@ -5050,36 +5148,60 @@ class BaitSplitService
                 $armedAt = $now - max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600));
             }
             $isolatePoolId = $this->resolveDecoyIsolatePoolId($router, $poolId);
+            $pullers = $this->collectPoolPullersInWindow(
+                $campaign,
+                $poolId,
+                $armedAt,
+                $now
+            );
+            $suspectSeeded = count($pullers);
             if ($isolatePoolId === '') {
-                // 无下游可甩（末级隔离池）：保持武装，人已经筛到底，等人工处理
+                // 末级池：本轮拉过的人留下，其余退回上一级，池子越缩越小
+                $upstream = $this->resolveDecoyUpstreamPoolId($router, $poolId);
+                $returned = $this->condenseTerminalPool(
+                    $router,
+                    $poolId,
+                    $pullers,
+                    $upstream,
+                    $now
+                );
                 $this->applyPoolHost($router, $poolId, $newIp);
-                $router['decoy']['domains'][$poolId]['cur_ip'] = $newIp;
+                $router['decoy']['domains'][$poolId] = array_merge(
+                    $this->emptyDecoyDomain(),
+                    [
+                        'phase' => 'armed',
+                        'armed' => true,
+                        'armed_ip' => $newIp,
+                        'armed_at' => $now,
+                        'cur_ip' => $newIp,
+                        'dead_ip' => $armedIp,
+                    ]
+                );
                 $router['pools'][$poolId]['last_rotation_at'] = $now;
-                $logPhase = 'dump_failed';
-                Log::error('BaitSplit 二墙无下游隔离池，保持武装待人工处理', [
+                $phase = 'armed';
+                $logPhase = 'condensed';
+                $movedIds = $pullers;
+                $isolated = $suspectSeeded;
+                Log::notice('BaitSplit 末级浓缩：留下本轮拉订阅者，其余退回上一级', [
                     'pool_id' => $poolId,
-                    'armed_ip' => $armedIp,
+                    'kept' => $suspectSeeded,
+                    'returned' => $returned,
+                    'upstream' => $upstream,
                     'new_ip' => $newIp,
                 ]);
             } else {
                 $isolateTargetId = $isolatePoolId;
-                $pullers = $this->collectPoolPullersInWindow(
-                    $campaign,
-                    $poolId,
-                    $armedAt,
-                    $now
-                );
-                $suspectSeeded = count($pullers);
                 $targetName = (string) (
                     $router['pools'][$isolatePoolId]['name'] ?? $isolatePoolId
                 );
-                $isolated = $this->fastIsolateSuspects(
+                $movedIds = $this->fastIsolateSuspects(
                     $router,
                     $pullers,
                     $now,
                     '二墙拉订阅→' . $targetName,
                     $isolatePoolId
                 );
+                $isolated = count($movedIds);
                 // 甩完立刻重新武装：新 IP 只有剩下的人能拉到，再墙即可继续甩
                 $this->applyPoolHost($router, $poolId, $newIp);
                 $router['decoy']['domains'][$poolId] = array_merge(
@@ -5129,7 +5251,7 @@ class BaitSplitService
             'scored_count' => $isolated,
             'threshold' => 0,
             'moved_count' => $isolated,
-            'moved_ids' => [],
+            'moved_ids' => array_slice(array_map('intval', $movedIds), 0, 200),
             'observe_pool_id' => $isolateTargetId !== ''
                 ? $isolateTargetId
                 : $this->resolveDecoyIsolatePoolId($router, $poolId),
