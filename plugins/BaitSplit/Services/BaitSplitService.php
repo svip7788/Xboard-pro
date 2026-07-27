@@ -5512,10 +5512,11 @@ class BaitSplitService
         if (in_array($currentType, ['danger', 'blacklist'], true)) {
             return false;
         }
+        // 已锁在诱捕隔离链里（观察3/观察4…）的人归诱捕流程管，
+        // 白天补漏不能把浓缩到下游的嫌疑再拖回观察3
         if (
-            $currentPoolId === $obsPoolId
-            && !empty($router['overrides'][$key]['locked'])
-            && str_contains($note, '自动跟墙隔离')
+            !empty($router['overrides'][$key]['locked'])
+            && in_array($currentPoolId, $this->decoyIsolateChain($router), true)
         ) {
             return false;
         }
