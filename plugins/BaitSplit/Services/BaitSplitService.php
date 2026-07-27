@@ -4748,7 +4748,12 @@ class BaitSplitService
         string $upstreamPoolId,
         int $now
     ): int {
-        if ($upstreamPoolId === '' || !isset($router['pools'][$upstreamPoolId])) {
+        // 本轮无人拉订阅还被墙：信息为零，全退回反而丢掉浓缩结果，宁可原地不动
+        if (
+            $pullers === []
+            || $upstreamPoolId === ''
+            || !isset($router['pools'][$upstreamPoolId])
+        ) {
             return 0;
         }
         $keep = array_flip(array_map('intval', $pullers));
