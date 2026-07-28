@@ -1965,12 +1965,18 @@ class BaitSplitService
 
     private function saveState(array $state): void
     {
-        foreach ($state['campaigns'] as &$campaign) {
-            if (isset($campaign['router']) && is_array($campaign['router'])) {
-                $this->compactRouterState($campaign['router']);
+        $campaigns = [];
+        foreach ((array) ($state['campaigns'] ?? []) as $id => $campaign) {
+            $router = $campaign['router'] ?? null;
+            if (is_array($router)) {
+                // 调用方普遍持有 $router = &$campaign['router']，引用会跟着数组拷贝一起传进来。
+                // 不先 unset 断开，压缩就会写回调用方内存，存盘后的读取路径会撞上被剔掉的字段。
+                unset($campaign['router']);
+                $campaign['router'] = $this->compactRouterState($router);
             }
+            $campaigns[$id] = $campaign;
         }
-        unset($campaign);
+        $state['campaigns'] = $campaigns;
         app(Setting::class)->set(self::STATE_KEY, $state);
     }
 
@@ -1978,7 +1984,7 @@ class BaitSplitService
      * 压缩路由状态：历史快照只保留池配置（不含 overrides），最多 5 份。
      * 旧版把每次改池/换 IP 的全量 overrides 打进 history，轻松撑爆 settings.value。
      */
-    private function compactRouterState(array &$router): void
+    private function compactRouterState(array $router): array
     {
         $slim = [];
         foreach (
@@ -2016,6 +2022,7 @@ class BaitSplitService
             $overrides[$userId] = $slimOverride;
         }
         $router['overrides'] = $overrides;
+        return $router;
     }
 
     private function newCampaign(string $id): array
@@ -3366,7 +3373,8 @@ class BaitSplitService
 
     private function overrideIsActive(array $override): bool
     {
-        return (int) $override['expires_at'] <= 0 || (int) $override['expires_at'] > time();
+        $expiresAt = (int) ($override['expires_at'] ?? 0);
+        return $expiresAt <= 0 || $expiresAt > time();
     }
 
     private function overrideBlocksAutomation(?array $override): bool
