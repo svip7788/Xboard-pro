@@ -474,21 +474,23 @@ class BaitSplitService
         }
 
         $keyword = trim($keyword);
-        $query = $this->eligibleUsersQuery($campaign['target_group_ids']);
-        if ($keyword !== '') {
-            $query->where(function (Builder $builder) use ($keyword): void {
-                if (ctype_digit($keyword)) {
-                    $builder->orWhere('id', (int) $keyword);
-                }
-                $builder->orWhere('email', 'like', '%' . $keyword . '%');
-            });
+        $userIds = $this->poolMemberIds($campaign, $poolId);
+        if ($keyword !== '' && $userIds !== []) {
+            $matched = [];
+            foreach (array_chunk($userIds, 5000) as $chunk) {
+                $matched = array_merge($matched, User::query()
+                    ->whereIn('id', $chunk)
+                    ->where(function (Builder $builder) use ($keyword): void {
+                        if (ctype_digit($keyword)) {
+                            $builder->orWhere('id', (int) $keyword);
+                        }
+                        $builder->orWhere('email', 'like', '%' . $keyword . '%');
+                    })
+                    ->orderBy('id')->pluck('id')->map('intval')->all());
+            }
+            sort($matched);
+            $userIds = $matched;
         }
-
-        $userIds = $query->orderBy('id')->pluck('id')->map('intval')
-            ->filter(fn(int $id): bool =>
-                $this->classifiedPoolId($campaign, $id) === $poolId
-            )
-            ->values()->all();
         $perPage = max(10, min(100, $perPage));
         $total = count($userIds);
         $lastPage = max(1, (int) ceil($total / $perPage));
@@ -674,13 +676,12 @@ class BaitSplitService
             }
         }
 
-        $userIds = $this->eligibleUsersQuery($campaign['target_group_ids'])
-            ->pluck('id')->map('intval')
-            ->filter(function (int $userId) use ($campaign, $router, $poolId): bool {
-                $override = $router['overrides'][(string) $userId] ?? null;
-                return $this->classifiedPoolId($campaign, $userId) === $poolId
-                    && !$this->overrideBlocksAutomation($override);
-            })->values()->all();
+        $userIds = array_values(array_filter(
+            $this->poolMemberIds($campaign, $poolId),
+            fn(int $userId): bool => !$this->overrideBlocksAutomation(
+                $router['overrides'][(string) $userId] ?? null
+            )
+        ));
         if ($userIds === []) {
             throw new InvalidArgumentException('该用户池没有可进入树形排查的固定用户');
         }
@@ -2087,6 +2088,72 @@ class BaitSplitService
             ->all();
     }
 
+    /**
+     * 可用用户 ID 集合（缓存 60 秒）。
+     * 面板每次翻页/转组都要用，全量 pluck 三万多行要 600ms+，缓存后基本为零。
+     *
+     * @return array<int,true>
+     */
+    private function eligibleUserIdSet(array $groupIds): array
+    {
+        $ids = $this->normalizeIds($groupIds);
+        sort($ids);
+        return Cache::remember(
+            'bait_split:eligible_ids:' . md5(implode(',', $ids)),
+            60,
+            fn(): array => array_fill_keys(
+                $this->eligibleUsersQuery($ids)->pluck('id')->map('intval')->all(),
+                true
+            )
+        );
+    }
+
+    /**
+     * 池成员 ID：直接从 overrides / assignments 反查，不再全表扫描。
+     *
+     * @return int[] 已按 ID 升序
+     */
+    private function poolMemberIds(array $campaign, string $poolId): array
+    {
+        $router = $campaign['router'];
+        $eligible = $this->eligibleUserIdSet($campaign['target_group_ids']);
+        $claimed = [];
+        $mine = [];
+        foreach ($router['overrides'] as $key => $override) {
+            $uid = (int) $key;
+            if ($uid <= 0 || ($override['pool_id'] ?? '') === '') {
+                continue;
+            }
+            if (!$this->overrideIsActive($override)) {
+                continue;
+            }
+            $claimed[$uid] = true;
+            if ($override['pool_id'] === $poolId && isset($eligible[$uid])) {
+                $mine[] = $uid;
+            }
+        }
+        foreach ($router['assignments'] as $key => $assigned) {
+            $uid = (int) $key;
+            if ($uid <= 0 || isset($claimed[$uid])) {
+                continue;
+            }
+            $claimed[$uid] = true;
+            if ((string) $assigned === $poolId && isset($eligible[$uid])) {
+                $mine[] = $uid;
+            }
+        }
+        // 没有任何归属的用户实际吃的是默认组的 IP，转组时必须算进来
+        if (($router['pools'][$poolId]['type'] ?? '') === 'default') {
+            foreach (array_keys($eligible) as $uid) {
+                if (!isset($claimed[$uid])) {
+                    $mine[] = $uid;
+                }
+            }
+        }
+        sort($mine);
+        return $mine;
+    }
+
     private function eligibleUsersQuery(int|array $groupIds): Builder
     {
         $groupIds = $this->normalizeIds(is_array($groupIds) ? $groupIds : [$groupIds]);
@@ -3151,9 +3218,8 @@ class BaitSplitService
     private function routerStatus(array $campaign): array
     {
         $router = $campaign['router'];
-        $eligibleIds = $this->eligibleUsersQuery($campaign['target_group_ids'])
-            ->pluck('id')->map('intval')->values()->all();
-        $eligibleMap = array_flip($eligibleIds);
+        $eligibleMap = $this->eligibleUserIdSet($campaign['target_group_ids']);
+        $eligibleIds = array_keys($eligibleMap);
         $poolCounts = array_fill_keys(array_keys($router['pools']), 0);
         $poolMemberIds = array_fill_keys(array_keys($router['pools']), []);
         $classifiedPoolIds = [];
@@ -3468,17 +3534,10 @@ class BaitSplitService
         }
 
         $exposedMap = array_flip($this->poolExposureIds($campaign, $sourcePoolId));
-        $userIds = $this->eligibleUsersQuery($campaign['target_group_ids'])
-            ->pluck('id')->map('intval')
-            ->filter(function (int $userId) use (
-                $campaign,
-                $sourcePoolId,
-                $exposedMap,
-                $moveExposed
-            ): bool {
-                return isset($exposedMap[$userId]) === $moveExposed
-                    && $this->effectivePoolId($campaign, $userId) === $sourcePoolId;
-            })->values()->all();
+        $userIds = array_values(array_filter(
+            $this->poolMemberIds($campaign, $sourcePoolId),
+            fn(int $userId): bool => isset($exposedMap[$userId]) === $moveExposed
+        ));
         if ($userIds === []) {
             throw new InvalidArgumentException(
                 $moveExposed
@@ -3778,9 +3837,8 @@ class BaitSplitService
     private function syncRouterPopulation(array &$campaign): void
     {
         $router = &$campaign['router'];
-        $eligible = $this->eligibleUsersQuery($campaign['target_group_ids'])
-            ->pluck('id')->map('intval')->values()->all();
-        $eligibleMap = array_flip($eligible);
+        $eligibleMap = $this->eligibleUserIdSet($campaign['target_group_ids']);
+        $eligible = array_keys($eligibleMap);
         $known = array_flip($router['snapshot_user_ids']);
         foreach ($eligible as $userId) {
             if (!isset($known[$userId])) {
