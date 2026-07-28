@@ -1994,6 +1994,28 @@ class BaitSplitService
             ];
         }
         $router['config_history'] = $slim;
+
+        // overrides 一条 267 字节里有一半是空默认值，读回时 normalizeOverride 会补齐，
+        // 存盘时剔掉能让整行状态小一半，每次读写都跟着快
+        $overrides = [];
+        foreach ((array) ($router['overrides'] ?? []) as $userId => $override) {
+            if (!is_array($override)) {
+                continue;
+            }
+            $slimOverride = [];
+            foreach ($override as $field => $value) {
+                if (
+                    $value === '' || $value === []
+                    || ($field === 'expires_at' && (int) $value === 0)
+                    || ($field === 'locked' && $value === true)
+                ) {
+                    continue;
+                }
+                $slimOverride[$field] = $value;
+            }
+            $overrides[$userId] = $slimOverride;
+        }
+        $router['overrides'] = $overrides;
     }
 
     private function newCampaign(string $id): array
