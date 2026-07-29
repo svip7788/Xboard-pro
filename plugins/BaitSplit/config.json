@@ -1,7 +1,7 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "3.9.2",
+    "version": "4.0.0",
     "description": "全量接管节点域名，支持用户池、分批筛查和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
@@ -101,6 +101,18 @@
             "default": "",
             "label": "确认内鬼隔离池 ID",
             "description": "批缩到收敛下限仍被墙，整批永久移入该池；留空自动用危险组"
+        },
+        "decoy_search_pool_ids": {
+            "type": "string",
+            "default": "",
+            "label": "分组测试搜索槽（逗号分隔）",
+            "description": "每槽一个独立轮换 IP，只装一小组嫌疑人；源头池被墙后拉订阅者均分进槽，哪槽再被墙就把那组继续细分。留空则退回旧的整批下沉模式"
+        },
+        "decoy_convict_at": {
+            "type": "number",
+            "default": 1,
+            "label": "拆到几人定罪",
+            "description": "搜索槽拆到该人数仍被墙即判定内鬼移入危险组，默认 1（精确到个人，不冤枉同组）"
         },
         "decoy_start": {
             "type": "string",

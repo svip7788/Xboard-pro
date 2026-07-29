@@ -2926,6 +2926,8 @@ class BaitSplitService
             'dead_ip' => (string) ($domain['dead_ip'] ?? ''),
             'current' => $current,
             'queue' => $queue,
+            'dispatched_at' => (int) ($domain['dispatched_at'] ?? 0),
+            'group_size' => max(0, (int) ($domain['group_size'] ?? 0)),
         ];
     }
 
@@ -2969,6 +2971,8 @@ class BaitSplitService
                 'domains' => [],
             ],
             'decoy_nights' => [],
+            'search_origin' => [],
+            'suspect_queue' => [],
         ];
     }
 
@@ -3057,6 +3061,31 @@ class BaitSplitService
         }
         $router['wall_score'] = $wallScore;
         $router['wall_last'] = array_intersect_key($wallLast, $wallHits);
+        $searchOrigin = [];
+        foreach ((array) ($router['search_origin'] ?? []) as $userId => $poolId) {
+            $key = (string) (int) $userId;
+            if ((int) $userId <= 0 || (string) $poolId === '') {
+                continue;
+            }
+            $searchOrigin[$key] = (string) $poolId;
+        }
+        $router['search_origin'] = $searchOrigin;
+        $suspectQueue = [];
+        foreach ((array) ($router['suspect_queue'] ?? []) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $ids = $this->normalizeIds($item['ids'] ?? []);
+            if ($ids === []) {
+                continue;
+            }
+            $suspectQueue[] = [
+                'ids' => $ids,
+                'origin' => (string) ($item['origin'] ?? ''),
+                'at' => (int) ($item['at'] ?? 0),
+            ];
+        }
+        $router['suspect_queue'] = array_slice($suspectQueue, -50);
         $router['wall_log'] = is_array($router['wall_log'] ?? null)
             ? array_slice(array_values($router['wall_log']), -200)
             : [];
@@ -4075,6 +4104,8 @@ class BaitSplitService
                 'started_at' => $cur ? (int) ($cur['started_at'] ?? 0) : 0,
                 'queue_items' => count((array) ($domain['queue'] ?? [])),
                 'queue_users' => $queueUsers,
+                'group_size' => (int) ($domain['group_size'] ?? 0),
+                'dispatched_at' => (int) ($domain['dispatched_at'] ?? 0),
             ];
         }
         $decoySourceIds = $this->resolveDecoySourcePoolIds($router);
@@ -4107,6 +4138,16 @@ class BaitSplitService
                     $poolName,
                     $this->decoyIsolateChain($router)
                 ),
+                'search_pool_ids' => $this->decoySearchPoolIds($router),
+                'search_pool_names' => array_map(
+                    $poolName,
+                    $this->decoySearchPoolIds($router)
+                ),
+                'convict_at' => $this->decoyConvictAt(),
+                'suspect_queue_users' => array_sum(array_map(
+                    fn(array $item): int => count($this->normalizeIds($item['ids'] ?? [])),
+                    (array) ($router['suspect_queue'] ?? [])
+                )),
                 'confirm_pool_id' => $this->resolveDecoyConfirmPoolId($router),
                 'confirm_pool_name' => $poolName($this->resolveDecoyConfirmPoolId($router)),
                 'domains' => $decoyDomains,
@@ -4514,6 +4555,8 @@ class BaitSplitService
             'dead_ip' => '',
             'current' => null,
             'queue' => [],
+            'dispatched_at' => 0,
+            'group_size' => 0,
         ];
     }
 
@@ -4885,6 +4928,252 @@ class BaitSplitService
         return $returned;
     }
 
+    /**
+     * 搜索槽：每槽一个独立轮换 IP，只装一小组嫌疑人。
+     * 嫌疑批均分进槽后，哪个槽被墙就说明内鬼在那一组，再对那组细分。
+     */
+    private function decoySearchPoolIds(array $router): array
+    {
+        $ids = [];
+        foreach (
+            explode(',', (string) ($this->config['decoy_search_pool_ids'] ?? '')) as $ref
+        ) {
+            $poolId = $this->resolvePoolIdByRef($router, $ref);
+            if ($poolId === '' || !isset($router['pools'][$poolId])) {
+                continue;
+            }
+            if (in_array(
+                (string) ($router['pools'][$poolId]['type'] ?? ''),
+                ['safe', 'danger', 'blacklist'],
+                true
+            )) {
+                continue;
+            }
+            if (!in_array($poolId, $ids, true)) {
+                $ids[] = $poolId;
+            }
+        }
+        return $ids;
+    }
+
+    /** 拆到几人就定罪（默认 1 人，绝不冤枉同组）。 */
+    private function decoyConvictAt(): int
+    {
+        return max(1, (int) ($this->config['decoy_convict_at'] ?? 1));
+    }
+
+    /**
+     * 所有搜索槽都空 = 可以放新的一批进来。
+     * 一批必须独占全部槽拆到底，否则细分时抢不到槽就卡住了。
+     */
+    private function searchSlotsAllFree(array $router): bool
+    {
+        foreach ($this->decoySearchPoolIds($router) as $slot) {
+            if ($this->poolLockedMemberIds($router, $slot) !== []) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** @return int[] 该池里被覆盖锁定的成员 */
+    private function poolLockedMemberIds(array $router, string $poolId): array
+    {
+        $ids = [];
+        foreach ((array) ($router['overrides'] ?? []) as $key => $override) {
+            if ((string) ($override['pool_id'] ?? '') !== $poolId) {
+                continue;
+            }
+            $uid = (int) $key;
+            if ($uid > 0) {
+                $ids[] = $uid;
+            }
+        }
+        return $ids;
+    }
+
+    /**
+     * 把一批嫌疑人均分到空闲搜索槽。装的全是本批人的槽也算空闲，
+     * 这样一个槽被墙后能就地把自己那组再拆开。
+     *
+     * @return array{dispatched:int,leftover:int[],slots:string[]}
+     */
+    private function dispatchSuspectBatch(
+        array &$router,
+        array $ids,
+        string $originPoolId,
+        int $now
+    ): array {
+        $ids = $this->normalizeIds($ids);
+        if ($ids === []) {
+            return ['dispatched' => 0, 'leftover' => [], 'slots' => []];
+        }
+        $batchMap = array_flip($ids);
+        $free = [];
+        foreach ($this->decoySearchPoolIds($router) as $slot) {
+            $members = $this->poolLockedMemberIds($router, $slot);
+            foreach ($members as $uid) {
+                if (!isset($batchMap[$uid])) {
+                    continue 2;
+                }
+            }
+            $free[] = $slot;
+        }
+        if ($free === []) {
+            return ['dispatched' => 0, 'leftover' => $ids, 'slots' => []];
+        }
+
+        $groups = array_chunk($ids, (int) ceil(count($ids) / count($free)));
+        $dispatched = 0;
+        $used = [];
+        $leftover = [];
+        foreach ($groups as $index => $group) {
+            $slot = $free[$index] ?? '';
+            if ($slot === '') {
+                $leftover = array_merge($leftover, $group);
+                continue;
+            }
+            $weight = 1 / max(1, count($group));
+            $placed = 0;
+            foreach ($group as $uid) {
+                $key = (string) $uid;
+                $note = (string) ($router['overrides'][$key]['note'] ?? '');
+                if (str_contains($note, '诱捕确认内鬼')) {
+                    continue;
+                }
+                $curPool = (string) (
+                    $router['overrides'][$key]['pool_id']
+                    ?? ($router['assignments'][$key] ?? '')
+                );
+                if (in_array(
+                    (string) ($router['pools'][$curPool]['type'] ?? ''),
+                    ['danger', 'blacklist'],
+                    true
+                )) {
+                    continue;
+                }
+                $home = $originPoolId !== ''
+                    ? $originPoolId
+                    : (string) ($router['search_origin'][$key] ?? '');
+                if ($home !== '' && !in_array($home, $this->decoySearchPoolIds($router), true)) {
+                    $router['search_origin'][$key] = $home;
+                }
+                $router['overrides'][$key] = $this->normalizeOverride([
+                    'pool_id' => $slot,
+                    'locked' => true,
+                    'note' => '分组测试（本组 ' . count($group) . ' 人）',
+                    'updated_at' => $now,
+                ]);
+                $router['assignments'][$key] = $slot;
+                $router['wall_hits'][$key] = (int) ($router['wall_hits'][$key] ?? 0) + 1;
+                $router['wall_score'][$key] = round(
+                    (float) ($router['wall_score'][$key] ?? 0) + $weight,
+                    4
+                );
+                $router['wall_last'][$key] = $now;
+                $router['untested_ids'] = array_values(array_diff(
+                    $router['untested_ids'] ?? [],
+                    [$uid]
+                ));
+                $dispatched++;
+                $placed++;
+            }
+            if (!isset($router['decoy']['domains'][$slot])) {
+                $router['decoy']['domains'][$slot] = $this->emptyDecoyDomain();
+            }
+            $router['decoy']['domains'][$slot]['dispatched_at'] = $placed > 0 ? $now : 0;
+            $router['decoy']['domains'][$slot]['group_size'] = $placed;
+            $used[] = $slot;
+        }
+        return [
+            'dispatched' => $dispatched,
+            'leftover' => array_values($leftover),
+            'slots' => $used,
+        ];
+    }
+
+    /** 单人放回来源池；已定罪的不动。 */
+    private function releaseSearchSlotUser(
+        array &$router,
+        int $uid,
+        int $now,
+        string $note
+    ): int {
+        $key = (string) $uid;
+        $override = $router['overrides'][$key] ?? null;
+        if ($uid <= 0 || !is_array($override)) {
+            return 0;
+        }
+        if (str_contains((string) ($override['note'] ?? ''), '诱捕确认内鬼')) {
+            return 0;
+        }
+        $home = (string) ($router['search_origin'][$key] ?? '');
+        // 判清白就该毕业：从嫌疑池（观察3/4）来的人不退回嫌疑池，否则永远在被反复测
+        if (
+            $home === ''
+            || !isset($router['pools'][$home])
+            || in_array($home, $this->decoySearchPoolIds($router), true)
+            || in_array($home, $this->decoyIsolateChain($router), true)
+        ) {
+            $home = $this->poolIdByType($router, 'default');
+        }
+        if ($home === '') {
+            return 0;
+        }
+        $router['overrides'][$key] = $this->normalizeOverride([
+            'pool_id' => $home,
+            'locked' => true,
+            'note' => $note,
+            'updated_at' => $now,
+        ]);
+        $router['assignments'][$key] = $home;
+        unset($router['search_origin'][$key]);
+        return 1;
+    }
+
+    /** 观察期内没墙 = 整组清白，放回原来的池子，槽位腾空复用。 */
+    private function releaseSearchSlot(
+        array &$router,
+        string $slot,
+        int $now,
+        string $note
+    ): int {
+        $released = 0;
+        foreach ($this->poolLockedMemberIds($router, $slot) as $uid) {
+            $released += $this->releaseSearchSlotUser($router, $uid, $now, $note);
+        }
+        if (isset($router['decoy']['domains'][$slot])) {
+            $router['decoy']['domains'][$slot]['dispatched_at'] = 0;
+            $router['decoy']['domains'][$slot]['group_size'] = 0;
+        }
+        return $released;
+    }
+
+    /** 拆到只剩这几个人还被墙：定罪进危险组。 */
+    private function convictSuspects(array &$router, array $ids, int $now): array
+    {
+        $target = $this->resolveDecoyConfirmPoolId($router);
+        $ids = $this->normalizeIds($ids);
+        if ($target === '' || $ids === []) {
+            return [];
+        }
+        $convicted = [];
+        foreach ($ids as $uid) {
+            $key = (string) $uid;
+            $router['overrides'][$key] = $this->normalizeOverride([
+                'pool_id' => $target,
+                'locked' => true,
+                'note' => '诱捕确认内鬼（分组测试拆到 ' . count($ids) . ' 人仍被墙，跟墙 '
+                    . (int) ($router['wall_hits'][$key] ?? 0) . ' 次）',
+                'updated_at' => $now,
+            ]);
+            $router['assignments'][$key] = $target;
+            unset($router['search_origin'][$key]);
+            $convicted[] = $uid;
+        }
+        return $convicted;
+    }
+
     /** 隔离链里的上一级；链首返回空串。 */
     private function resolveDecoyUpstreamPoolId(
         array $router,
@@ -5067,6 +5356,16 @@ class BaitSplitService
     {
         $restored = 0;
         $origin = [];
+        // 天亮收工：搜索槽里没定罪的一律放回来源池，别把人留在小槽里过白天
+        foreach ($this->decoySearchPoolIds($router) as $slot) {
+            $this->releaseSearchSlot(
+                $router,
+                $slot,
+                $now,
+                '诱捕清白收回·天亮未结论'
+            );
+        }
+        $router['suspect_queue'] = [];
         foreach ((array) ($router['decoy']['domains'] ?? []) as $poolId => $domain) {
             if (!is_array($domain)) {
                 continue;
@@ -5240,6 +5539,7 @@ class BaitSplitService
             if ($armedAt <= 0) {
                 $armedAt = $now - max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600));
             }
+            $searchSlots = $this->decoySearchPoolIds($router);
             $isolatePoolId = $this->resolveDecoyIsolatePoolId($router, $poolId);
             $pullers = $this->collectPoolPullersInWindow(
                 $campaign,
@@ -5248,7 +5548,111 @@ class BaitSplitService
                 $now
             );
             $suspectSeeded = count($pullers);
-            if ($isolatePoolId === '') {
+            if (in_array($poolId, $searchSlots, true)) {
+                // 搜索槽被墙：内鬼就在本组拉过订阅的人里，同组没拉的当场放回去
+                $group = $this->poolLockedMemberIds($router, $poolId);
+                $hit = array_values(array_intersect($group, $pullers));
+                $clean = array_values(array_diff($group, $hit));
+                $cleared = 0;
+                foreach ($clean as $uid) {
+                    $cleared += $this->releaseSearchSlotUser(
+                        $router,
+                        (int) $uid,
+                        $now,
+                        '诱捕清白收回·同组被墙但本轮未拉订阅'
+                    );
+                }
+                if ($hit === []) {
+                    // 本组没人拉却被墙：这一轮没信息，换 IP 重开观察窗，人不动也不放
+                    $logPhase = 'search_noinfo';
+                    $router['decoy']['domains'][$poolId]['dispatched_at'] = $now;
+                } elseif (count($hit) <= $this->decoyConvictAt()) {
+                    $movedIds = $this->convictSuspects($router, $hit, $now);
+                    $isolated = count($movedIds);
+                    $isolateTargetId = $this->resolveDecoyConfirmPoolId($router);
+                    $logPhase = 'convicted';
+                    Log::warning('BaitSplit 分组测试定罪', [
+                        'pool_id' => $poolId,
+                        'ids' => $movedIds,
+                        'released_same_group' => $cleared,
+                    ]);
+                } else {
+                    $split = $this->dispatchSuspectBatch($router, $hit, '', $now);
+                    if ($split['leftover'] !== []) {
+                        $router['suspect_queue'][] = [
+                            'ids' => $split['leftover'],
+                            'origin' => '',
+                            'at' => $now,
+                        ];
+                    }
+                    $movedIds = $hit;
+                    $isolated = $split['dispatched'];
+                    $logPhase = 'split';
+                    Log::notice('BaitSplit 分组测试细分', [
+                        'pool_id' => $poolId,
+                        'hit' => count($hit),
+                        'slots' => $split['slots'],
+                        'released_same_group' => $cleared,
+                    ]);
+                }
+                $this->applyPoolHost($router, $poolId, $newIp);
+                $router['decoy']['domains'][$poolId] = array_merge(
+                    $this->normalizeDecoyDomain(
+                        $router['decoy']['domains'][$poolId] ?? []
+                    ),
+                    [
+                        'phase' => 'armed',
+                        'armed' => true,
+                        'armed_ip' => $newIp,
+                        'armed_at' => $now,
+                        'cur_ip' => $newIp,
+                        'dead_ip' => $armedIp,
+                    ]
+                );
+                $router['pools'][$poolId]['last_rotation_at'] = $now;
+                $phase = 'armed';
+            } elseif ($searchSlots !== []) {
+                // 产嫌疑的池：拉过武装 IP 的人扇出均分进搜索槽，池里其余人不动
+                // 槽里还有上一批没拆完就先排队，绝不打断正在收敛的那一批
+                $fan = $this->searchSlotsAllFree($router)
+                    ? $this->dispatchSuspectBatch($router, $pullers, $poolId, $now)
+                    : ['dispatched' => 0, 'leftover' => $pullers, 'slots' => []];
+                if ($fan['leftover'] !== []) {
+                    $router['suspect_queue'][] = [
+                        'ids' => $fan['leftover'],
+                        'origin' => $poolId,
+                        'at' => $now,
+                    ];
+                }
+                $movedIds = $pullers;
+                $isolated = $fan['dispatched'];
+                $isolateTargetId = (string) ($fan['slots'][0] ?? '');
+                $logPhase = $fan['dispatched'] > 0 ? 'fanout' : 'queued';
+                $this->applyPoolHost($router, $poolId, $newIp);
+                $router['decoy']['domains'][$poolId] = array_merge(
+                    $this->normalizeDecoyDomain(
+                        $router['decoy']['domains'][$poolId] ?? []
+                    ),
+                    [
+                        'phase' => 'armed',
+                        'armed' => true,
+                        'armed_ip' => $newIp,
+                        'armed_at' => $now,
+                        'cur_ip' => $newIp,
+                        'dead_ip' => $armedIp,
+                    ]
+                );
+                $router['pools'][$poolId]['last_rotation_at'] = $now;
+                $phase = 'armed';
+                Log::notice('BaitSplit 二墙扇出：拉订阅者均分进搜索槽', [
+                    'pool_id' => $poolId,
+                    'pullers' => $suspectSeeded,
+                    'dispatched' => $fan['dispatched'],
+                    'queued' => count($fan['leftover']),
+                    'slots' => $fan['slots'],
+                    'new_ip' => $newIp,
+                ]);
+            } elseif ($isolatePoolId === '') {
                 // 末级池：本轮拉过的人留下，其余退回上一级，池子越缩越小
                 $upstream = $this->resolveDecoyUpstreamPoolId($router, $poolId);
                 $returned = $this->condenseTerminalPool(
@@ -5441,6 +5845,66 @@ class BaitSplitService
                 }
                 $touched = true;
             }
+
+            // 搜索槽：观察期内没被墙就是清白，放人腾槽；腾出来立刻派发积压嫌疑批
+            $observeSeconds = $this->decoyObserveSeconds();
+            foreach ($this->decoySearchPoolIds($router) as $slot) {
+                $dispatchedAt = (int) (
+                    $router['decoy']['domains'][$slot]['dispatched_at'] ?? 0
+                );
+                if ($dispatchedAt <= 0 || $now - $dispatchedAt < $observeSeconds) {
+                    continue;
+                }
+                $released = $this->releaseSearchSlot(
+                    $router,
+                    $slot,
+                    $now,
+                    '诱捕清白收回·分组测试观察期内未被墙'
+                );
+                if ($released > 0) {
+                    $touched = true;
+                    $actions[] = [
+                        'campaign_id' => $id,
+                        'action' => 'search_release',
+                        'pool_id' => $slot,
+                        'released' => $released,
+                    ];
+                    Log::notice('BaitSplit 分组测试放行：观察期无墙', [
+                        'pool_id' => $slot,
+                        'released' => $released,
+                    ]);
+                }
+            }
+            // 槽全空才放下一批：一批独占全部槽拆到底，中途不掺新人
+            $pending = (array) ($router['suspect_queue'] ?? []);
+            if ($pending !== [] && $this->searchSlotsAllFree($router)) {
+                $item = array_shift($pending);
+                $result = $this->dispatchSuspectBatch(
+                    $router,
+                    (array) ($item['ids'] ?? []),
+                    (string) ($item['origin'] ?? ''),
+                    $now
+                );
+                if ($result['dispatched'] === 0) {
+                    array_unshift($pending, $item);
+                } else {
+                    $touched = true;
+                    if ($result['leftover'] !== []) {
+                        array_unshift($pending, [
+                            'ids' => $result['leftover'],
+                            'origin' => (string) ($item['origin'] ?? ''),
+                            'at' => (int) ($item['at'] ?? $now),
+                        ]);
+                    }
+                    $actions[] = [
+                        'campaign_id' => $id,
+                        'action' => 'search_dispatch',
+                        'dispatched' => $result['dispatched'],
+                        'slots' => $result['slots'],
+                    ];
+                }
+            }
+            $router['suspect_queue'] = array_values($pending);
             if ($touched) {
                 $router['config_version']++;
                 $changed = true;
@@ -5605,11 +6069,14 @@ class BaitSplitService
         if (in_array($currentType, ['danger', 'blacklist'], true)) {
             return false;
         }
-        // 已锁在诱捕隔离链里（观察3/观察4…）的人归诱捕流程管，
-        // 白天补漏不能把浓缩到下游的嫌疑再拖回观察3
+        // 已锁在诱捕隔离链或搜索槽里的人归诱捕流程管，
+        // 白天补漏不能把正在分组测试的嫌疑再拖回观察3
         if (
             !empty($router['overrides'][$key]['locked'])
-            && in_array($currentPoolId, $this->decoyIsolateChain($router), true)
+            && in_array($currentPoolId, array_merge(
+                $this->decoyIsolateChain($router),
+                $this->decoySearchPoolIds($router)
+            ), true)
         ) {
             return false;
         }
