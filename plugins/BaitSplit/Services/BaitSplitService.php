@@ -2970,6 +2970,7 @@ class BaitSplitService
             'decoy' => [
                 'active_date' => '',
                 'domains' => [],
+                'carryover' => [],
             ],
             'decoy_nights' => [],
             'search_origin' => [],
@@ -3102,6 +3103,7 @@ class BaitSplitService
         $router['decoy'] = [
             'active_date' => (string) ($decoy['active_date'] ?? ''),
             'domains' => $domains,
+            'carryover' => $this->normalizeIds($decoy['carryover'] ?? []),
         ];
         $decoyNights = [];
         foreach ((array) ($router['decoy_nights'] ?? []) as $userId => $count) {
@@ -5013,13 +5015,17 @@ class BaitSplitService
         array $ids,
         string $originPoolId,
         int $now,
-        bool $proven = false
+        bool $proven = false,
+        int $maxSlots = 0
     ): array {
         $ids = $this->normalizeIds($ids);
         if ($ids === []) {
             return ['dispatched' => 0, 'leftover' => [], 'slots' => []];
         }
         $free = $this->freeSearchSlots($router, $ids);
+        if ($maxSlots > 0) {
+            $free = array_slice($free, 0, $maxSlots);
+        }
         if ($free === []) {
             return ['dispatched' => 0, 'leftover' => $ids, 'slots' => []];
         }
@@ -5129,9 +5135,12 @@ class BaitSplitService
      * 实测刚被墙时抓到的人 20 分钟内有 6 成会再拉订阅，隔一两个小时的只有 1%，
      * 所以宁可让陈旧的组下车，也要先测最新鲜的那一批。
      */
-    private function preemptUnprovenSlots(array &$router, int $now): int
-    {
-        $evicted = 0;
+    private function preemptUnprovenSlots(
+        array &$router,
+        int $now,
+        int $limit = 0
+    ): int {
+        $candidates = [];
         foreach ($this->decoySearchPoolIds($router) as $slot) {
             $domain = $router['decoy']['domains'][$slot] ?? [];
             if (!empty($domain['proven'])) {
@@ -5140,6 +5149,16 @@ class BaitSplitService
             if ($this->poolLockedMemberIds($router, $slot) === []) {
                 continue;
             }
+            $candidates[$slot] = (int) ($domain['dispatched_at'] ?? 0);
+        }
+        // 先赶最老的一组：进槽越久还没墙，剩下的窗口越榨不出东西，
+        // 而刚进来的人正是最可能马上拉订阅的
+        asort($candidates);
+        if ($limit > 0) {
+            $candidates = array_slice($candidates, 0, $limit, true);
+        }
+        $evicted = 0;
+        foreach (array_keys($candidates) as $slot) {
             $evicted += $this->releaseSearchSlot(
                 $router,
                 $slot,
@@ -5149,6 +5168,43 @@ class BaitSplitService
             );
         }
         return $evicted;
+    }
+
+    /**
+     * 已取证的组暂时收进重点嫌疑名单，扣在观察3 里等空槽复测。
+     * 用在两处：天亮收工、以及这一轮组里一个人都没拉订阅（等于什么都没测到，
+     * 不能当清白放回默认组，一夜换来的线索就这么断了）。
+     */
+    private function parkProvenGroup(
+        array &$router,
+        string $slot,
+        int $now,
+        string $note
+    ): int {
+        $keepPoolId = $this->resolveDecoyIsolatePoolId($router, '');
+        $carry = $this->normalizeIds($router['decoy']['carryover'] ?? []);
+        $parked = 0;
+        foreach ($this->poolLockedMemberIds($router, $slot) as $uid) {
+            $key = (string) $uid;
+            $override = $router['overrides'][$key] ?? [];
+            if (str_contains((string) ($override['note'] ?? ''), '诱捕确认内鬼')) {
+                continue;
+            }
+            if ($keepPoolId !== '') {
+                $router['overrides'][$key] = $this->normalizeOverride([
+                    'pool_id' => $keepPoolId,
+                    'locked' => true,
+                    'note' => $note,
+                    'updated_at' => $now,
+                ]);
+                $router['assignments'][$key] = $keepPoolId;
+            }
+            unset($router['search_origin'][$key]);
+            $carry[] = (int) $uid;
+            $parked++;
+        }
+        $router['decoy']['carryover'] = $this->normalizeIds($carry);
+        return $parked;
     }
 
     /** 单人放回来源池；已定罪的不动。 */
@@ -5277,7 +5333,11 @@ class BaitSplitService
             return false;
         }
         $this->decoyRecallAll($router, $now);
-        $router['decoy'] = ['active_date' => $today, 'domains' => []];
+        $router['decoy'] = [
+            'active_date' => $today,
+            'domains' => [],
+            'carryover' => $this->normalizeIds($router['decoy']['carryover'] ?? []),
+        ];
         return true;
     }
 
@@ -5436,14 +5496,30 @@ class BaitSplitService
     {
         $restored = 0;
         $origin = [];
-        // 天亮收工：搜索槽里没定罪的一律放回来源池，别把人留在小槽里过白天
+        // 天亮收工：搜索槽里没定罪的一律放回来源池，别把人留在小槽里过白天。
+        // 但已取证的链拆到最后剩的这几个人是一整夜换来的最强线索，
+        // 当清白放回默认组就白干了——扣在观察3 里，今晚开工先测他们
+        $parked = 0;
         foreach ($this->decoySearchPoolIds($router) as $slot) {
+            if (!empty($router['decoy']['domains'][$slot]['proven'])) {
+                $parked += $this->parkProvenGroup(
+                    $router,
+                    $slot,
+                    $now,
+                    '分组测试·重点嫌疑（昨夜收敛未定罪，今晚续测）'
+                );
+            }
             $this->releaseSearchSlot(
                 $router,
                 $slot,
                 $now,
                 '诱捕清白收回·天亮未结论'
             );
+        }
+        if ($parked > 0) {
+            Log::warning('BaitSplit 天亮保留重点嫌疑', [
+                'ids' => $router['decoy']['carryover'] ?? [],
+            ]);
         }
         $router['suspect_queue'] = [];
         foreach ((array) ($router['decoy']['domains'] ?? []) as $poolId => $domain) {
@@ -5494,6 +5570,8 @@ class BaitSplitService
             if (
                 str_contains($note, '诱捕确认内鬼')
                 || str_contains($note, '金丝雀观察正常')
+                // 重点嫌疑要扣在观察3 里过白天，今晚续测，别跟着一起清掉
+                || str_contains($note, '重点嫌疑')
             ) {
                 continue;
             }
@@ -5660,8 +5738,12 @@ class BaitSplitService
                         'released_same_group' => $cleared,
                     ]);
                 } else {
-                    // 别的槽还占着时只剩自己可用，原样放回去这轮就白挨了一次墙。
-                    // 留一半在槽里继续测、另一半退回原池排队，保证每次墙都对半收敛
+                    // 已取证的收敛链优先抢槽：这组里一定有内鬼，比任何新鲜嫌疑批都值钱。
+                    // 抢不到槽就只能对半砍、另一半退回原池，等于把一半线索扔了，
+                    // 还要多挨好几次墙才能收敛完
+                    if (count($this->freeSearchSlots($router, $hit)) < 2) {
+                        $this->preemptUnprovenSlots($router, $now);
+                    }
                     $deferred = [];
                     if (count($this->freeSearchSlots($router, $hit)) <= 1) {
                         $half = (int) ceil(count($hit) / 2);
@@ -5717,16 +5799,27 @@ class BaitSplitService
                 // 产嫌疑的池：拉过武装 IP 的人扇出均分进搜索槽，池里其余人不动。
                 // 刚被墙抓到的人最新鲜（20 分钟内 6 成会再拉订阅），槽不够时
                 // 顶掉还没取证的组也要先测这一批；已取证的收敛链受保护
+                // 只顶一个槽：新鲜批占满三个槽的话，别的池被墙时又得把它们全赶下车，
+                // 谁都跑不完观察期。一个槽装得下一批，被墙后细分时再抢槽不迟
                 $evicted = 0;
-                $fan = $this->dispatchSuspectBatch($router, $pullers, $poolId, $now);
+                $fan = $this->dispatchSuspectBatch(
+                    $router,
+                    $pullers,
+                    $poolId,
+                    $now,
+                    false,
+                    1
+                );
                 if ($fan['dispatched'] === 0) {
-                    $evicted = $this->preemptUnprovenSlots($router, $now);
+                    $evicted = $this->preemptUnprovenSlots($router, $now, 1);
                     if ($evicted > 0) {
                         $fan = $this->dispatchSuspectBatch(
                             $router,
                             $pullers,
                             $poolId,
-                            $now
+                            $now,
+                            false,
+                            1
                         );
                     }
                 }
@@ -5909,7 +6002,13 @@ class BaitSplitService
                     || ($router['decoy']['domains'] ?? []) !== []
                 ) {
                     $restored = $this->decoyRecallAll($router, $now);
-                    $router['decoy'] = ['active_date' => '', 'domains' => []];
+                    $router['decoy'] = [
+                        'active_date' => '',
+                        'domains' => [],
+                        'carryover' => $this->normalizeIds(
+                            $router['decoy']['carryover'] ?? []
+                        ),
+                    ];
                     $router['config_version']++;
                     $changed = true;
                     $actions[] = [
@@ -5960,6 +6059,37 @@ class BaitSplitService
                 $touched = true;
             }
 
+            // 昨夜拆到最后没来得及定罪的重点嫌疑，今晚开工第一件事就是把他们送回槽里
+            $carry = $this->normalizeIds($router['decoy']['carryover'] ?? []);
+            if ($carry !== []) {
+                // 只占一个槽：万一这批人一直不拉订阅，别让他们把三个槽全霸着
+                $resume = $this->dispatchSuspectBatch(
+                    $router,
+                    $carry,
+                    '',
+                    $now,
+                    true,
+                    1
+                );
+                if ($resume['dispatched'] > 0) {
+                    $router['decoy']['carryover'] = $this->normalizeIds(
+                        $resume['leftover']
+                    );
+                    $touched = true;
+                    $actions[] = [
+                        'campaign_id' => $id,
+                        'action' => 'search_resume',
+                        'dispatched' => $resume['dispatched'],
+                        'slots' => $resume['slots'],
+                    ];
+                    Log::warning('BaitSplit 续测昨夜重点嫌疑', [
+                        'ids' => array_slice($carry, 0, 20),
+                        'dispatched' => $resume['dispatched'],
+                        'slots' => $resume['slots'],
+                    ]);
+                }
+            }
+
             // 搜索槽：观察期内没被墙就是清白，放人腾槽；腾出来立刻派发积压嫌疑批
             $observeSeconds = $this->decoyObserveSeconds();
             foreach ($this->decoySearchPoolIds($router) as $slot) {
@@ -5980,12 +6110,41 @@ class BaitSplitService
                         $now
                     )
                 ));
+                $parked = 0;
+                if (
+                    $pulled === 0
+                    && !empty($router['decoy']['domains'][$slot]['proven'])
+                ) {
+                    // 已取证的组这一轮没一个人拉订阅：槽 IP 根本没送到人手里，
+                    // 判不了清白也判不了有罪，收进重点嫌疑等下一轮，别把线索放跑
+                    $parked = $this->parkProvenGroup(
+                        $router,
+                        $slot,
+                        $now,
+                        '分组测试·重点嫌疑（本轮无人拉订阅，待复测）'
+                    );
+                    if ($parked > 0) {
+                        Log::warning('BaitSplit 已取证组本轮无人拉订阅，转入重点嫌疑', [
+                            'pool_id' => $slot,
+                            'parked' => $parked,
+                        ]);
+                    }
+                }
                 $released = $this->releaseSearchSlot(
                     $router,
                     $slot,
                     $now,
                     '诱捕清白收回·分组测试观察期内未被墙'
                 );
+                if ($parked > 0) {
+                    $touched = true;
+                    $actions[] = [
+                        'campaign_id' => $id,
+                        'action' => 'search_park',
+                        'pool_id' => $slot,
+                        'parked' => $parked,
+                    ];
+                }
                 if ($released > 0) {
                     $touched = true;
                     $actions[] = [
