@@ -197,22 +197,20 @@
                 <div class="field"><label>IP 新鲜阈值（秒，超过视为老 IP 首墙只换不记分）</label><input id="wallFresh" type="number" min="300" max="86400" value="7200"></div>
             </div>
 
-            <h3 style="margin-top:20px">二分收敛诱捕（首墙全员可用）<span id="decoyState" class="pill off" style="margin-left:8px">未启用</span></h3>
-            <div class="hint">链式下沉：当晚第一次墙只换 IP（无法判断谁拉过）；之后每次墙都把「拉过当前武装 IP」的人甩到下一级，换新 IP 后立刻重新武装。隔离池自己被墙时继续往下一级甩（观察3 → 观察4 → 安全组），逐级收敛到少数人。<span id="decoyChain"></span></div>
+            <h3 style="margin-top:20px">全天精确 IP 诱捕<span id="decoyState" class="pill off" style="margin-left:8px">未启用</span></h3>
+            <div class="hint">24 小时按实际下发的 IP 记录拉取者：来源池二墙后，嫌疑人先进入观察3，再由三个搜索槽固定批次复测；两次阴性进入观察1候选池，单人两次阳性进入危险组。安全组始终只允许人工转入。<span id="decoyChain"></span></div>
             <div class="split" style="margin-top:12px">
-                <div class="field"><label><input id="decoyEnabled" type="checkbox" style="width:auto;height:auto"> 启用夜间自动诱捕（每分钟调度检查）</label></div>
-                <div class="field"><label>诱捕时段（本地时间）</label><div class="host-tools"><input id="decoyStart" placeholder="01:00" style="flex:1;min-width:0"><span>—</span><input id="decoyEnd" placeholder="08:00" style="flex:1;min-width:0"></div></div>
+                <div class="field"><label><input id="decoyEnabled" type="checkbox" style="width:auto;height:auto"> 启用全天自动诱捕（每分钟调度检查）</label></div>
             </div>
             <div class="split">
-                <div class="field"><label>初始每批人数</label><input id="decoyBatch" type="number" min="1" max="5000" value="60"></div>
-                <div class="field"><label>收敛下限（人）</label><input id="decoyMinBatch" type="number" min="1" max="5000" value="8"></div>
+                <div class="field"><label>搜索槽每批人数</label><input id="decoyBatch" type="number" min="1" max="5000" value="30"></div>
+                <div class="field"><label>每批观察时长（分钟）</label><input id="decoyObserve" type="number" min="5" max="480" value="180"></div>
             </div>
             <div class="split">
-                <div class="field"><label>每批观察时长（分钟）</label><input id="decoyObserve" type="number" min="5" max="480" value="40"></div>
                 <div class="field"><label>隔离中转池（被墙批先移入这里续测）</label><select id="decoyIsolate"></select></div>
+                <div class="field"><label>确认内鬼池（单人两次独立阳性后转入）</label><select id="decoyConfirm"></select></div>
             </div>
-            <div class="field"><label>确认内鬼隔离池（缩到下限仍被墙 → 移入此池）</label><select id="decoyConfirm"></select></div>
-            <div class="field"><label>嫌疑来源池（内鬼现在藏在哪些池，可多选，各自独立并行）</label><div id="decoySource" class="group-list cols-5"></div></div>
+            <div class="field"><label>嫌疑来源池（观察1、搜索槽和安全组会被自动排除）</label><div id="decoySource" class="group-list cols-5"></div></div>
 
             <button id="saveWallSettings">保存跟墙 / 诱捕设置</button>
 
@@ -449,10 +447,7 @@ events.textContent='';(wallData.events||[]).forEach(ev=>{const row=events.insert
 renderDecoy()}
 function renderDecoy(){const d=wallData?.decoy;if(!d)return;const chain=$('decoyChain');if(chain){const slots=d.search_pool_names||[];if(slots.length)chain.textContent=` 当前链路：默认/观察3 精确IP拉取者 → ${slots.join(' / ')} 固定批测试 → 两次阴性进 ${d.candidate_pool_name||'观察1'} → 72小时后待人工转安全组；单人两次阳性进危险组${d.suspect_queue_users?`（候测 ${d.suspect_queue_users} 人）`:''}（候选 ${d.candidate_users||0} 人，待确认 ${d.candidate_ready||0} 人）`;else chain.textContent=(d.isolate_chain_names||[]).length?` 当前链路：${(d.source_pool_names||[]).join('、')} → ${(d.isolate_chain_names||[]).join(' → ')}`:''}const st=$('decoyState');if(d.enabled){if((d.testing_count||0)>0){st.textContent=`${d.monitor_24h?'全天监控':'诱捕中'}·在测 ${d.testing_count} 人`;st.className='pill on'}else if(d.in_window){st.textContent=d.monitor_24h?'全天监控·待墙触发':'时段内·待墙触发';st.className='pill warn'}else{st.textContent='已启用·窗口外';st.className='pill off'}}else{st.textContent='未启用';st.className='pill off'}
 if(document.activeElement!==$('decoyEnabled'))$('decoyEnabled').checked=!!d.enabled;
-if(document.activeElement!==$('decoyStart'))$('decoyStart').value=d.start||'01:00';
-if(document.activeElement!==$('decoyEnd'))$('decoyEnd').value=d.end||'08:00';
 if(document.activeElement!==$('decoyBatch'))$('decoyBatch').value=d.batch_size||30;
-if(document.activeElement!==$('decoyMinBatch'))$('decoyMinBatch').value=d.min_batch||8;
 if(document.activeElement!==$('decoyObserve'))$('decoyObserve').value=d.observe_minutes||180;
 const all=pools();
 fillSelect('decoyConfirm',all,d.raw?.confirm||'','自动（危险组）');
@@ -462,7 +457,7 @@ const g=$('decoyGroups');g.textContent='';const slotIds=new Set((d.search_pool_i
 async function loadWallLog(){const campaignId=current?.id;if(!campaignId||!router()){wallData=null;renderWall();return}const data=await request(api('/wall-log?limit=100'));if(current?.id!==campaignId)return;wallData=data;renderWall()}
 async function isolateSuspect(userId){const poolId=wallData?.settings?.observe_pool_id||pools().find(p=>p.type==='observation'&&/观察3/.test(p.name))?.id;if(!poolId)return toast('未找到观察3用户池，请先配置隔离目标池','error');if(!confirm(`把用户 ${userId} 锁定隔离到该观察池？`))return;try{updateCurrent(await request(api(`/overrides/${userId}`),{method:'POST',body:JSON.stringify({pool_id:poolId,host:'',node_hosts:{},server_name:'',transport_host:'',locked:true,note:'跟墙嫌疑手动隔离',expires_at:0})}));toast('已隔离该用户');await loadWallLog()}catch(error){toast(error.message,'error')}}
 $('refreshWall').onclick=()=>loadWallLog().catch(error=>toast(error.message,'error'));
-$('saveWallSettings').onclick=async()=>{try{const decoySources=[...document.querySelectorAll('.decoySource:checked')].map(i=>i.value);if($('decoyEnabled').checked&&!decoySources.length)throw new Error('启用诱捕需勾选至少 1 个嫌疑来源池');const body={wall_auto_isolate:$('wallAutoIsolate').checked,wall_hit_threshold:Number($('wallThreshold').value)||2,wall_lookback_seconds:Number($('wallLookback').value)||3600,wall_fresh_max_seconds:Number($('wallFresh').value)||7200,wall_observe_pool_id:$('wallObservePool').value,decoy_enabled:$('decoyEnabled').checked,decoy_monitor_24h:true,decoy_source_pool_ids:decoySources.join(','),decoy_isolate_pool_id:$('decoyIsolate').value,decoy_confirm_pool_id:$('decoyConfirm').value,decoy_batch_size:Number($('decoyBatch').value)||30,decoy_min_batch:Number($('decoyMinBatch').value)||8,decoy_observe_minutes:Number($('decoyObserve').value)||180,decoy_cooldown_minutes:60,decoy_start:$('decoyStart').value.trim()||'01:00',decoy_end:$('decoyEnd').value.trim()||'08:00'};await request('/wall-settings',{method:'POST',body:JSON.stringify(body)});toast('全天精确 IP 监控设置已保存');await loadWallLog()}catch(error){toast(error.message,'error')}};
+$('saveWallSettings').onclick=async()=>{try{const decoySources=[...document.querySelectorAll('.decoySource:checked')].map(i=>i.value);if($('decoyEnabled').checked&&!decoySources.length)throw new Error('启用诱捕需勾选至少 1 个嫌疑来源池');const body={wall_auto_isolate:$('wallAutoIsolate').checked,wall_hit_threshold:Number($('wallThreshold').value)||2,wall_lookback_seconds:Number($('wallLookback').value)||3600,wall_fresh_max_seconds:Number($('wallFresh').value)||7200,wall_observe_pool_id:$('wallObservePool').value,decoy_enabled:$('decoyEnabled').checked,decoy_monitor_24h:true,decoy_source_pool_ids:decoySources.join(','),decoy_isolate_pool_id:$('decoyIsolate').value,decoy_confirm_pool_id:$('decoyConfirm').value,decoy_batch_size:Number($('decoyBatch').value)||30,decoy_min_batch:1,decoy_observe_minutes:Number($('decoyObserve').value)||180,decoy_cooldown_minutes:60,decoy_start:'01:00',decoy_end:'08:00'};await request('/wall-settings',{method:'POST',body:JSON.stringify(body)});toast('全天精确 IP 监控设置已保存');await loadWallLog()}catch(error){toast(error.message,'error')}};
 $('campaignSelect').onchange=async event=>{const selectedId=event.target.value;try{loading(true,'正在切换任务…');await refresh(false);current=campaigns.find(item=>item.id===selectedId)||blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent();await loadOverrides();await loadWallLog().catch(()=>{})}catch(error){toast(error.message,'error')}finally{loading(false)}};
 $('newCampaign').onclick=()=>{current=blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent()};
 $('copyCampaignId').onclick=async()=>{const id=current?.id||$('campaignIdDisplay').value;if(!id)return toast('请先保存任务','error');try{await navigator.clipboard.writeText(id);toast(`campaign_id 已复制：${id}`)}catch{toast('复制失败，请手动选中复制','error')}};
