@@ -73,12 +73,15 @@ class AdminController extends PluginController
             'wall_fresh_max_seconds' => ['required', 'integer', 'min:300', 'max:86400'],
             'wall_observe_pool_id' => ['nullable', 'string', 'max:64'],
             'decoy_enabled' => ['required', 'boolean'],
+            'decoy_monitor_24h' => ['nullable', 'boolean'],
             'decoy_source_pool_ids' => ['nullable', 'string', 'max:512'],
             'decoy_isolate_pool_id' => ['nullable', 'string', 'max:64'],
             'decoy_confirm_pool_id' => ['nullable', 'string', 'max:64'],
+            'decoy_candidate_pool_id' => ['nullable', 'string', 'max:64'],
             'decoy_batch_size' => ['required', 'integer', 'min:1', 'max:5000'],
             'decoy_min_batch' => ['required', 'integer', 'min:1', 'max:5000'],
             'decoy_observe_minutes' => ['required', 'integer', 'min:5', 'max:480'],
+            'decoy_cooldown_minutes' => ['nullable', 'integer', 'min:0', 'max:480'],
             'decoy_start' => ['required', 'string', 'regex:/^\d{1,2}:\d{2}$/'],
             'decoy_end' => ['required', 'string', 'regex:/^\d{1,2}:\d{2}$/'],
         ]);
@@ -90,12 +93,24 @@ class AdminController extends PluginController
         $config['wall_fresh_max_seconds'] = (int) $data['wall_fresh_max_seconds'];
         $config['wall_observe_pool_id'] = trim((string) ($data['wall_observe_pool_id'] ?? ''));
         $config['decoy_enabled'] = (bool) $data['decoy_enabled'];
+        if (array_key_exists('decoy_monitor_24h', $data)) {
+            $config['decoy_monitor_24h'] = (bool) $data['decoy_monitor_24h'];
+        }
         $config['decoy_source_pool_ids'] = trim((string) ($data['decoy_source_pool_ids'] ?? ''));
         unset($config['decoy_source_pool_id'], $config['decoy_pool_ids']);
         $config['decoy_isolate_pool_id'] = trim((string) ($data['decoy_isolate_pool_id'] ?? ''));
+        if (array_key_exists('decoy_candidate_pool_id', $data)) {
+            $config['decoy_candidate_pool_id'] = trim(
+                (string) ($data['decoy_candidate_pool_id'] ?? '')
+            );
+        }
         $config['decoy_batch_size'] = (int) $data['decoy_batch_size'];
         $config['decoy_min_batch'] = (int) $data['decoy_min_batch'];
         $config['decoy_observe_minutes'] = (int) $data['decoy_observe_minutes'];
+        if (array_key_exists('decoy_cooldown_minutes', $data)) {
+            $config['decoy_cooldown_minutes'] =
+                (int) $data['decoy_cooldown_minutes'];
+        }
         $config['decoy_confirm_pool_id'] = trim((string) ($data['decoy_confirm_pool_id'] ?? ''));
         $config['decoy_start'] = trim((string) $data['decoy_start']);
         $config['decoy_end'] = trim((string) $data['decoy_end']);

@@ -1,7 +1,7 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "4.2.0",
+    "version": "5.0.0",
     "description": "全量接管节点域名，支持用户池、分批筛查和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
@@ -63,8 +63,14 @@
         "decoy_enabled": {
             "type": "boolean",
             "default": false,
-            "label": "夜间二分收敛诱捕",
-            "description": "夜间来源池被墙时，新 IP 只发一小批，被墙批对半拆续测，逐步缩到真内鬼进危险组"
+            "label": "精确 IP 诱捕",
+            "description": "按实际下发的精确 IP 记录拉取者，来源池二墙后先移入观察3，再用三个搜索槽复测"
+        },
+        "decoy_monitor_24h": {
+            "type": "boolean",
+            "default": true,
+            "label": "全天 24 小时监控",
+            "description": "开启后不再受夜间时段限制，白天少量墙事件也会完整记录和处理"
         },
         "decoy_source_pool_ids": {
             "type": "string",
@@ -80,9 +86,9 @@
         },
         "decoy_batch_size": {
             "type": "number",
-            "default": 60,
+            "default": 30,
             "label": "初始每批人数",
-            "description": "来源池被墙后新 IP 首批发给多少人，默认 60；被墙后对半递减"
+            "description": "每个搜索槽一次测试多少人，默认 30"
         },
         "decoy_min_batch": {
             "type": "number",
@@ -92,9 +98,21 @@
         },
         "decoy_observe_minutes": {
             "type": "number",
-            "default": 40,
+            "default": 180,
             "label": "每批观察时长（分钟）",
-            "description": "一批多久没被墙即判清白、收回换下一批，默认 40"
+            "description": "从最后一次真实拉取开始观察，默认 180 分钟，覆盖已发现的 141 分钟墙延迟长尾"
+        },
+        "decoy_cooldown_minutes": {
+            "type": "number",
+            "default": 60,
+            "label": "搜索槽冷却时长（分钟）",
+            "description": "上一批结束后空置多久才允许复用，防止迟到的墙误伤下一批"
+        },
+        "decoy_candidate_pool_id": {
+            "type": "string",
+            "default": "",
+            "label": "候选清白池 ID",
+            "description": "留空自动选择观察1；两次独立阴性后进入，72 小时且实际拉取 3 次无墙后仅标记待人工转安全组"
         },
         "decoy_confirm_pool_id": {
             "type": "string",
@@ -111,8 +129,8 @@
         "decoy_queue_ttl_minutes": {
             "type": "number",
             "default": 30,
-            "label": "嫌疑批保鲜期（分钟）",
-            "description": "排队超过该时长的嫌疑批直接丢弃：刚被墙抓到的人 20 分钟内约 6 成会再拉订阅，隔一两小时的只剩 1%，测了也拿不到证据还占住槽位"
+            "label": "旧版嫌疑批保鲜期（已停用）",
+            "description": "5.0 起嫌疑分支不会因超时自动丢弃，此项仅兼容旧配置"
         },
         "decoy_convict_at": {
             "type": "number",
@@ -124,13 +142,13 @@
             "type": "string",
             "default": "01:00",
             "label": "诱捕开始时间 HH:MM",
-            "description": "夜间墙开始时间，被墙且在时段内才开始诱捕"
+            "description": "仅关闭全天监控时生效"
         },
         "decoy_end": {
             "type": "string",
             "default": "08:00",
             "label": "诱捕结束时间 HH:MM",
-            "description": "到点全组解析恢复工作 IP，不影响白天使用，默认 08:00"
+            "description": "仅关闭全天监控时生效"
         }
     }
 }
