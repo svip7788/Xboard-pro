@@ -4167,13 +4167,17 @@ class BaitSplitService
         $decoy = $router['decoy'];
         $decoyDomains = [];
         $testingCount = 0;
+        $searchPoolMap = array_flip($this->decoySearchPoolIds($router));
         foreach ((array) ($decoy['domains'] ?? []) as $poolId => $domain) {
             if (!is_array($domain)) {
                 continue;
             }
             $cur = is_array($domain['current'] ?? null) ? $domain['current'] : null;
             $curCount = $cur ? count($this->normalizeIds($cur['ids'] ?? [])) : 0;
-            $testingCount += $curCount;
+            $groupCount = isset($searchPoolMap[(string) $poolId])
+                ? count($this->poolLockedMemberIds($router, (string) $poolId))
+                : (int) ($domain['group_size'] ?? 0);
+            $testingCount += max($curCount, $groupCount);
             $queueUsers = 0;
             foreach ((array) ($domain['queue'] ?? []) as $item) {
                 $queueUsers += count($this->normalizeIds($item['ids'] ?? []));
@@ -4190,7 +4194,7 @@ class BaitSplitService
                 'started_at' => $cur ? (int) ($cur['started_at'] ?? 0) : 0,
                 'queue_items' => count((array) ($domain['queue'] ?? [])),
                 'queue_users' => $queueUsers,
-                'group_size' => (int) ($domain['group_size'] ?? 0),
+                'group_size' => $groupCount,
                 'dispatched_at' => (int) ($domain['dispatched_at'] ?? 0),
                 'proven' => (bool) ($domain['proven'] ?? false),
                 'cooldown_until' => (int) ($domain['cooldown_until'] ?? 0),
