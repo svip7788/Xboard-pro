@@ -4038,6 +4038,20 @@ class BaitSplitService
                     );
                     Redis::hset($ipLastKey, (string) $userId, $now);
                     Redis::expire($ipLastKey, 86400 * 14);
+                    $sessionAt = (int) (
+                        $campaign['router']['decoy']['domains'][(string) $poolId]['dispatched_at']
+                        ?? 0
+                    );
+                    if ($sessionAt > 0) {
+                        $ipFirstKey = $this->routerPoolIpExposureFirstKey(
+                            $campaign,
+                            (string) $poolId,
+                            $ip,
+                            $sessionAt
+                        );
+                        Redis::hsetnx($ipFirstKey, (string) $userId, $now);
+                        Redis::expire($ipFirstKey, 86400 * 14);
+                    }
                 }
             }
         } catch (\Throwable) {
@@ -4068,6 +4082,63 @@ class BaitSplitService
         } catch (\Throwable) {
             return [];
         }
+    }
+
+    /** @return array<int,int> 搜索槽本次派发中每个用户首次拿到精确 IP 的时间 */
+    private function poolIpExposureFirstMap(
+        array $campaign,
+        string $poolId,
+        string $ip,
+        int $sessionAt
+    ): array {
+        if ($ip === '' || $sessionAt <= 0) {
+            return [];
+        }
+        try {
+            $raw = Redis::hgetall($this->routerPoolIpExposureFirstKey(
+                $campaign,
+                $poolId,
+                $ip,
+                $sessionAt
+            ));
+            $map = [];
+            foreach ((array) $raw as $userId => $ts) {
+                if ((int) $userId > 0 && (int) $ts >= $sessionAt) {
+                    $map[(int) $userId] = (int) $ts;
+                }
+            }
+            return $map;
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * @return array{pulled:list<int>,graduated:list<int>,no_info:list<int>}
+     */
+    private function classifySearchSlotMembers(
+        array $members,
+        array $firstPullMap,
+        int $now,
+        int $observeSeconds
+    ): array {
+        $members = $this->normalizeIds($members);
+        $pulled = array_values(array_intersect(
+            $members,
+            array_map('intval', array_keys($firstPullMap))
+        ));
+        $graduated = [];
+        foreach ($pulled as $uid) {
+            $firstPullAt = (int) ($firstPullMap[$uid] ?? 0);
+            if ($firstPullAt > 0 && $now - $firstPullAt >= $observeSeconds) {
+                $graduated[] = $uid;
+            }
+        }
+        return [
+            'pulled' => $pulled,
+            'graduated' => $graduated,
+            'no_info' => array_values(array_diff($members, $pulled)),
+        ];
     }
 
     private function poolExposureIds(array $campaign, string $poolId): array
@@ -6534,24 +6605,23 @@ class BaitSplitService
                     ?? ''
                 );
                 $members = $this->poolLockedMemberIds($router, $slot);
-                $pullMap = $this->poolIpExposureLastMap(
+                $firstPullMap = $this->poolIpExposureFirstMap(
                     $campaign,
                     $slot,
-                    $slotIp
+                    $slotIp,
+                    $dispatchedAt
                 );
-                $pulledIds = array_values(array_intersect(
+                $classified = $this->classifySearchSlotMembers(
                     $members,
-                    array_map('intval', array_keys($pullMap))
-                ));
-                $lastPullAt = 0;
-                foreach ($pulledIds as $uid) {
-                    $lastPullAt = max($lastPullAt, (int) ($pullMap[$uid] ?? 0));
-                }
-                // 从最后一次真实拉取起观察，不能从派发时就开始倒计时。
-                if ($lastPullAt > 0 && $now - $lastPullAt < $observeSeconds) {
+                    $firstPullMap,
+                    $now,
+                    $observeSeconds
+                );
+                $graduatedIds = $classified['graduated'];
+                $noInfoIds = $classified['no_info'];
+                if ($graduatedIds === [] && $noInfoIds === []) {
                     continue;
                 }
-                $noInfoIds = array_values(array_diff($members, $pulledIds));
                 if ($noInfoIds !== []) {
                     $router['suspect_queue'][] = [
                         'ids' => $noInfoIds,
@@ -6559,14 +6629,66 @@ class BaitSplitService
                         'at' => $now,
                     ];
                 }
-                $released = $this->releaseSearchSlot(
-                    $router,
-                    $slot,
-                    $now,
-                    '分组测试完成：实际拉取后完整观察期无墙',
-                    true,
-                    $pulledIds
-                );
+                if ($graduatedIds !== []) {
+                    $last = (array) (
+                        $router['decoy']['domains'][$slot]['last_group'] ?? []
+                    );
+                    $lastIds = (
+                        (string) ($last['ip'] ?? '') === $slotIp
+                        ? $this->normalizeIds($last['ids'] ?? [])
+                        : []
+                    );
+                    $router['decoy']['domains'][$slot]['last_group'] = [
+                        'ids' => $this->normalizeIds(array_merge(
+                            $lastIds,
+                            $graduatedIds
+                        )),
+                        'ip' => $slotIp,
+                        'from' => $dispatchedAt,
+                        'to' => $now,
+                    ];
+                }
+                $released = 0;
+                foreach ($graduatedIds as $uid) {
+                    $released += $this->releaseSearchSlotUser(
+                        $router,
+                        $uid,
+                        $now,
+                        '分组测试完成：首次拉取后独立观察期无墙',
+                        false,
+                        true
+                    );
+                }
+                foreach ($noInfoIds as $uid) {
+                    $released += $this->releaseSearchSlotUser(
+                        $router,
+                        $uid,
+                        $now,
+                        '分组测试无拉取记录（回观察3排队复测）',
+                        false,
+                        false
+                    );
+                }
+                $remaining = $this->poolLockedMemberIds($router, $slot);
+                if ($remaining === []) {
+                    $router['decoy']['domains'][$slot] = array_merge(
+                        $this->normalizeDecoyDomain(
+                            $router['decoy']['domains'][$slot]
+                        ),
+                        [
+                            'phase' => 'idle',
+                            'armed' => false,
+                            'armed_at' => 0,
+                            'dispatched_at' => 0,
+                            'group_size' => 0,
+                            'proven' => false,
+                            'cooldown_until' => $now + $this->decoyCooldownSeconds(),
+                        ]
+                    );
+                } else {
+                    $router['decoy']['domains'][$slot]['group_size'] =
+                        count($remaining);
+                }
                 if ($released > 0) {
                     $touched = true;
                     $actions[] = [
@@ -6574,14 +6696,16 @@ class BaitSplitService
                         'action' => 'search_release',
                         'pool_id' => $slot,
                         'released' => $released,
-                        'pulled' => count($pulledIds),
+                        'graduated' => count($graduatedIds),
                         'no_info' => count($noInfoIds),
+                        'remaining' => count($remaining),
                     ];
-                    Log::notice('BaitSplit 分组测试放行：观察期无墙', [
+                    Log::notice('BaitSplit 搜索槽按用户独立结算', [
                         'pool_id' => $slot,
                         'released' => $released,
-                        'pulled' => count($pulledIds),
+                        'graduated' => count($graduatedIds),
                         'no_info' => count($noInfoIds),
+                        'remaining' => count($remaining),
                         'slot_ip' => $slotIp,
                     ]);
                 }
@@ -6898,6 +7022,16 @@ class BaitSplitService
     ): string {
         return $this->routerPoolExposureKey($campaign, $poolId)
             . ':ip:' . sha1($ip) . ':last';
+    }
+
+    private function routerPoolIpExposureFirstKey(
+        array $campaign,
+        string $poolId,
+        string $ip,
+        int $sessionAt
+    ): string {
+        return $this->routerPoolExposureKey($campaign, $poolId)
+            . ':ip:' . sha1($ip) . ':session:' . $sessionAt . ':first';
     }
 
     private function recordExposure(

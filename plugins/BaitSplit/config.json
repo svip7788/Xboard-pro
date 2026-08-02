@@ -1,7 +1,7 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "5.0.0",
+    "version": "5.0.1",
     "description": "全量接管节点域名，支持用户池、分批筛查和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
@@ -100,7 +100,7 @@
             "type": "number",
             "default": 180,
             "label": "每批观察时长（分钟）",
-            "description": "从最后一次真实拉取开始观察，默认 180 分钟，覆盖已发现的 141 分钟墙延迟长尾"
+            "description": "每个用户从首次拿到该测试 IP 起独立观察，重复拉取不重置，默认 180 分钟"
         },
         "decoy_cooldown_minutes": {
             "type": "number",
