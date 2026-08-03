@@ -329,22 +329,35 @@ class OrderService
         $order = $this->order;
         HookManager::call('order.cancel.before', $order);
         try {
-            DB::beginTransaction();
-            $order->status = Order::STATUS_CANCELLED;
-            if (!$order->save()) {
-                throw new \Exception('Failed to save order status.');
-            }
-            if ($order->balance_amount) {
-                $userService = new UserService();
-                if (!$userService->addBalance($order->user_id, $order->balance_amount)) {
-                    throw new \Exception('Failed to add balance.');
+            $cancelled = false;
+            DB::transaction(function () use ($order, &$cancelled) {
+                // 原子状态迁移：仅 pending → cancelled 能成功一次。
+                // 并发取消时其余请求 affected=0，不会重复退余额。
+                // （Eloquent save() 依据加载时的原始属性判脏，行锁无法挡住双退。）
+                $affected = Order::where('id', $order->id)
+                    ->where('status', Order::STATUS_PENDING)
+                    ->update(['status' => Order::STATUS_CANCELLED]);
+
+                if ($affected === 0) {
+                    return;
                 }
+
+                $cancelled = true;
+                $order->refresh();
+                $this->order = $order;
+
+                if ($order->balance_amount) {
+                    $userService = new UserService();
+                    if (!$userService->addBalance($order->user_id, $order->balance_amount)) {
+                        throw new \Exception('Failed to add balance.');
+                    }
+                }
+            });
+            if ($cancelled) {
+                HookManager::call('order.cancel.after', $this->order);
             }
-            DB::commit();
-            HookManager::call('order.cancel.after', $order);
             return true;
         } catch (\Exception $e) {
-            DB::rollBack();
             Log::error($e);
             return false;
         }
