@@ -676,14 +676,16 @@ class BaitSplitService
             }
         }
 
-        $userIds = array_values(array_filter(
-            $this->poolMemberIds($campaign, $poolId),
-            fn(int $userId): bool => !$this->overrideBlocksAutomation(
-                $router['overrides'][(string) $userId] ?? null
-            )
-        ));
+        // 管理员主动点「进入树形排查」时，池内锁定用户必须带上。
+        // 观察组里的人几乎全是锁定的；若仍按 overrideBlocksAutomation 过滤，
+        // 会出现「危险观察1 有人却无法进树」的情况。
+        $userIds = $this->normalizeIds($this->poolMemberIds($campaign, $poolId));
         if ($userIds === []) {
             throw new InvalidArgumentException('该用户池没有可进入树形排查的固定用户');
+        }
+        $type = (string) ($sourcePool['type'] ?? '');
+        if (in_array($type, ['danger', 'blacklist'], true)) {
+            throw new InvalidArgumentException('危险组 / 封禁组不能进入树形排查');
         }
 
         $nodeId = 'tree-' . Str::uuid();
