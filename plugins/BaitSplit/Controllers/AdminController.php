@@ -79,9 +79,13 @@ class AdminController extends PluginController
             'decoy_confirm_pool_id' => ['nullable', 'string', 'max:64'],
             'decoy_candidate_pool_id' => ['nullable', 'string', 'max:64'],
             'decoy_batch_size' => ['required', 'integer', 'min:1', 'max:5000'],
+            'decoy_hot_batch_size' => ['nullable', 'integer', 'min:1', 'max:100'],
+            'decoy_verify_batch_size' => ['nullable', 'integer', 'min:1', 'max:5000'],
             'decoy_min_batch' => ['required', 'integer', 'min:1', 'max:5000'],
             'decoy_observe_minutes' => ['required', 'integer', 'min:5', 'max:480'],
             'decoy_cooldown_minutes' => ['nullable', 'integer', 'min:0', 'max:480'],
+            'decoy_risk_start' => ['nullable', 'string', 'regex:/^\d{1,2}:\d{2}$/'],
+            'decoy_risk_end' => ['nullable', 'string', 'regex:/^\d{1,2}:\d{2}$/'],
             'decoy_start' => ['required', 'string', 'regex:/^\d{1,2}:\d{2}$/'],
             'decoy_end' => ['required', 'string', 'regex:/^\d{1,2}:\d{2}$/'],
         ]);
@@ -105,11 +109,23 @@ class AdminController extends PluginController
             );
         }
         $config['decoy_batch_size'] = (int) $data['decoy_batch_size'];
+        if (array_key_exists('decoy_hot_batch_size', $data)) {
+            $config['decoy_hot_batch_size'] = (int) $data['decoy_hot_batch_size'];
+        }
+        if (array_key_exists('decoy_verify_batch_size', $data)) {
+            $config['decoy_verify_batch_size'] = (int) $data['decoy_verify_batch_size'];
+        }
         $config['decoy_min_batch'] = (int) $data['decoy_min_batch'];
         $config['decoy_observe_minutes'] = (int) $data['decoy_observe_minutes'];
         if (array_key_exists('decoy_cooldown_minutes', $data)) {
             $config['decoy_cooldown_minutes'] =
                 (int) $data['decoy_cooldown_minutes'];
+        }
+        if (array_key_exists('decoy_risk_start', $data)) {
+            $config['decoy_risk_start'] = trim((string) $data['decoy_risk_start']);
+        }
+        if (array_key_exists('decoy_risk_end', $data)) {
+            $config['decoy_risk_end'] = trim((string) $data['decoy_risk_end']);
         }
         $config['decoy_confirm_pool_id'] = trim((string) ($data['decoy_confirm_pool_id'] ?? ''));
         $config['decoy_start'] = trim((string) $data['decoy_start']);

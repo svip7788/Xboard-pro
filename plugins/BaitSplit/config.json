@@ -1,7 +1,7 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "5.0.2",
+    "version": "5.1.0",
     "description": "全量接管节点域名，支持用户池、分批筛查和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
@@ -86,9 +86,21 @@
         },
         "decoy_batch_size": {
             "type": "number",
-            "default": 30,
-            "label": "初始每批人数",
-            "description": "每个搜索槽一次测试多少人，默认 30"
+            "default": 100,
+            "label": "初筛车道每批人数",
+            "description": "初筛搜索槽一次测试多少人，默认 100"
+        },
+        "decoy_hot_batch_size": {
+            "type": "number",
+            "default": 10,
+            "label": "高风险车道每批人数",
+            "description": "已有搜索槽阳性或重点嫌疑优先小批复测，默认 10"
+        },
+        "decoy_verify_batch_size": {
+            "type": "number",
+            "default": 100,
+            "label": "二验车道每批人数",
+            "description": "已完成一轮阴性的用户进行第二轮确认，默认 100"
         },
         "decoy_min_batch": {
             "type": "number",
@@ -107,6 +119,18 @@
             "default": 60,
             "label": "搜索槽冷却时长（分钟）",
             "description": "上一批结束后空置多久才允许复用，防止迟到的墙误伤下一批"
+        },
+        "decoy_risk_start": {
+            "type": "string",
+            "default": "01:00",
+            "label": "清白判定高风险窗口开始",
+            "description": "墙事件仍全天监控，但阴性观察时长只累计该高风险窗口内的时间"
+        },
+        "decoy_risk_end": {
+            "type": "string",
+            "default": "09:00",
+            "label": "清白判定高风险窗口结束",
+            "description": "默认 09:00，避免白天不墙导致错误判清白"
         },
         "decoy_candidate_pool_id": {
             "type": "string",
