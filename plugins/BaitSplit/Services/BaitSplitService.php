@@ -2980,6 +2980,7 @@ class BaitSplitService
             'wall_hits' => [],
             'wall_score' => [],
             'wall_last' => [],
+            'wall_evidence_version' => 1,
             'wall_log' => [],
             'decoy' => [
                 'active_date' => '',
@@ -3114,7 +3115,7 @@ class BaitSplitService
                 'at' => (int) ($item['at'] ?? 0),
             ];
         }
-        // 嫌疑分支不能因状态归一化被静默截断；500 批按每批 30 人可容纳 1.5 万人。
+        // 嫌疑分支不能因状态归一化被静默截断。
         $router['suspect_queue'] = array_slice($suspectQueue, -500);
         foreach (['clean_rounds', 'positive_rounds'] as $counterKey) {
             $normalized = [];
@@ -3125,6 +3126,14 @@ class BaitSplitService
             }
             $router[$counterKey] = $normalized;
         }
+        if ((int) ($router['wall_evidence_version'] ?? 1) < 2) {
+            // 5.1 及以前把来源池的普通拉取者也累计成“跟墙命中”，
+            // 数值无法区分真实搜索槽阳性，升级时一次性清掉污染分。
+            $router['wall_hits'] = [];
+            $router['wall_score'] = [];
+            $router['wall_last'] = [];
+            $router['wall_evidence_version'] = 2;
+        }
         $candidateUsers = [];
         foreach ((array) ($router['candidate_users'] ?? []) as $userId => $item) {
             if ((int) $userId <= 0 || !is_array($item)) {
@@ -3132,7 +3141,7 @@ class BaitSplitService
             }
             $candidateUsers[(string) (int) $userId] = [
                 'entered_at' => (int) ($item['entered_at'] ?? 0),
-                'baseline_pulls' => max(0, (int) ($item['baseline_pulls'] ?? 0)),
+                'baseline_pulls' => max(-1, (int) ($item['baseline_pulls'] ?? -1)),
                 'ready_at' => (int) ($item['ready_at'] ?? 0),
             ];
         }
@@ -4285,6 +4294,7 @@ class BaitSplitService
             ];
         }
         $decoySourceIds = $this->resolveDecoySourcePoolIds($router);
+        $candidatePoolId = $this->resolveDecoyCandidatePoolId($router);
         return [
             'events' => $events,
             'top_suspects' => $topSuspects,
@@ -4327,11 +4337,12 @@ class BaitSplitService
                 )),
                 'confirm_pool_id' => $this->resolveDecoyConfirmPoolId($router),
                 'confirm_pool_name' => $poolName($this->resolveDecoyConfirmPoolId($router)),
-                'candidate_pool_id' => $this->resolveDecoyCandidatePoolId($router),
-                'candidate_pool_name' => $poolName(
-                    $this->resolveDecoyCandidatePoolId($router)
+                'candidate_pool_id' => $candidatePoolId,
+                'candidate_pool_name' => $poolName($candidatePoolId),
+                'candidate_users' => count(
+                    $this->poolLockedMemberIds($router, $candidatePoolId)
                 ),
-                'candidate_users' => count($router['candidate_users'] ?? []),
+                'candidate_tracked' => count($router['candidate_users'] ?? []),
                 'candidate_ready' => count(array_filter(
                     (array) ($router['candidate_users'] ?? []),
                     fn(array $item): bool => (int) ($item['ready_at'] ?? 0) > 0
@@ -5144,7 +5155,8 @@ class BaitSplitService
         array $ids,
         int $now,
         string $note = '诱捕墙后拉订阅→观察3',
-        string $targetPoolId = ''
+        string $targetPoolId = '',
+        string $sourcePoolId = ''
     ): array {
         $isolatePoolId = $targetPoolId !== ''
             ? $targetPoolId
@@ -5152,8 +5164,7 @@ class BaitSplitService
         if ($isolatePoolId === '' || $ids === []) {
             return [];
         }
-        // 一批越小，命中越集中：按 1/批大小 加权，真内鬼几晚下来会浮到榜首
-        $weight = 1 / max(1, count($ids));
+        $searchPoolMap = array_flip($this->decoySearchPoolIds($router));
         $moved = [];
         foreach ($ids as $uid) {
             $uid = (int) $uid;
@@ -5169,8 +5180,15 @@ class BaitSplitService
                 $router['overrides'][$key]['pool_id']
                 ?? ($router['assignments'][$key] ?? '')
             );
+            if ($curPool === '') {
+                $curPool = $this->poolIdByType($router, 'default');
+            }
             $curType = (string) ($router['pools'][$curPool]['type'] ?? '');
-            if (in_array($curType, ['danger', 'blacklist'], true)) {
+            if (
+                in_array($curType, ['danger', 'blacklist'], true)
+                || isset($searchPoolMap[$curPool])
+                || ($sourcePoolId !== '' && $curPool !== $sourcePoolId)
+            ) {
                 continue;
             }
             $router['assignments'][$key] = $isolatePoolId;
@@ -5180,13 +5198,6 @@ class BaitSplitService
                 'note' => $note,
                 'updated_at' => $now,
             ]);
-            $router['wall_hits'][$key] =
-                (int) ($router['wall_hits'][$key] ?? 0) + 1;
-            $router['wall_score'][$key] = round(
-                (float) ($router['wall_score'][$key] ?? 0) + $weight,
-                4
-            );
-            $router['wall_last'][$key] = $now;
             $router['untested_ids'] = array_values(array_diff(
                 $router['untested_ids'] ?? [],
                 [$uid]
@@ -5551,6 +5562,11 @@ class BaitSplitService
                 return $poolId === $isolatePool;
             }
         ));
+        // 普通初筛严格按入队顺序，来源池反复被墙不能把高活跃正常用户
+        // 反复顶到队首；只有已有阳性证据的车道才按风险排序。
+        if ($lane === 'bulk') {
+            return array_slice($ids, 0, $limit);
+        }
         return array_slice($this->sortDecoyRiskIds($router, $ids), 0, $limit);
     }
 
@@ -5611,6 +5627,53 @@ class BaitSplitService
     }
 
     /**
+     * @return list<array{lane:string,dispatched:int,slots:array}>
+     */
+    private function dispatchSearchLanes(array &$router, int $now): array
+    {
+        $searchSlots = $this->decoySearchPoolIds($router);
+        $freeSlots = $this->freeSearchSlots($router);
+        $dispatched = [];
+        $dispatchLane = function (string $lane, string $slot) use (
+            &$router,
+            &$freeSlots,
+            &$dispatched,
+            $now
+        ): bool {
+            if ($slot === '' || !in_array($slot, $freeSlots, true)) {
+                return false;
+            }
+            $result = $this->dispatchDecoyLane($router, $slot, $lane, $now);
+            if ($result['dispatched'] <= 0) {
+                return false;
+            }
+            $freeSlots = array_values(array_diff($freeSlots, $result['slots']));
+            $dispatched[] = [
+                'lane' => $lane,
+                'dispatched' => (int) $result['dispatched'],
+                'slots' => $result['slots'],
+            ];
+            return true;
+        };
+
+        $hotSlot = (string) ($searchSlots[0] ?? '');
+        $bulkSlot = (string) ($searchSlots[1] ?? '');
+        $verifySlot = (string) ($searchSlots[2] ?? '');
+        if (!$dispatchLane('hot', $hotSlot)) {
+            if (!$dispatchLane('bulk', $hotSlot)) {
+                $dispatchLane('verify', $hotSlot);
+            }
+        }
+        if (!$dispatchLane('verify', $verifySlot)) {
+            $dispatchLane('bulk', $verifySlot);
+        }
+        if (!$dispatchLane('bulk', $bulkSlot)) {
+            $dispatchLane('verify', $bulkSlot);
+        }
+        return $dispatched;
+    }
+
+    /**
      * 已取证的组暂时收进重点嫌疑名单，扣在观察3 里等空槽复测。
      * 用在两处：天亮收工、以及这一轮组里一个人都没拉订阅（等于什么都没测到，
      * 不能当清白放回默认组，一夜换来的线索就这么断了）。
@@ -5629,6 +5692,60 @@ class BaitSplitService
         );
     }
 
+    /**
+     * A 槽独占高风险收敛。升级前遗留在 B/C 的高风险分支先保留证据，
+     * 收回观察3等待 A 槽，避免三条车道再次全部被阳性分支占满。
+     */
+    private function rebalanceSearchLaneRoles(array &$router, int $now): int
+    {
+        $slots = $this->decoySearchPoolIds($router);
+        $hotSlot = (string) ($slots[0] ?? '');
+        if ($hotSlot === '') {
+            return 0;
+        }
+        $parked = 0;
+        foreach (array_slice($slots, 1) as $slot) {
+            $domain = $this->normalizeDecoyDomain(
+                $router['decoy']['domains'][$slot] ?? []
+            );
+            if ((string) ($domain['lane'] ?? '') !== 'hot') {
+                continue;
+            }
+            $members = $this->poolLockedMemberIds($router, $slot);
+            if ($members !== []) {
+                $domain['last_group'] = [
+                    'ids' => $members,
+                    'ip' => (string) ($router['pools'][$slot]['host'] ?? ''),
+                    'from' => (int) ($domain['dispatched_at'] ?? 0),
+                    'to' => $now,
+                ];
+                $parked += $this->parkProvenIds(
+                    $router,
+                    $members,
+                    $now,
+                    '高风险分支转交搜索槽A继续收敛'
+                );
+            }
+            $router['decoy']['domains'][$slot] = array_merge($domain, [
+                'phase' => 'idle',
+                'armed' => false,
+                'armed_at' => 0,
+                'dispatched_at' => 0,
+                'group_size' => 0,
+                'proven' => false,
+                'lane' => '',
+                'cooldown_until' => $now + $this->decoyCooldownSeconds(),
+            ]);
+        }
+        if ($parked > 0) {
+            Log::notice('BaitSplit 高风险分支归并到A车道候测', [
+                'parked' => $parked,
+                'hot_slot' => $hotSlot,
+            ]);
+        }
+        return $parked;
+    }
+
     /** 同上，但直接指定人。 */
     private function parkProvenIds(
         array &$router,
@@ -5643,6 +5760,16 @@ class BaitSplitService
             $key = (string) $uid;
             $override = $router['overrides'][$key] ?? [];
             if (str_contains((string) ($override['note'] ?? ''), '诱捕确认内鬼')) {
+                continue;
+            }
+            $currentPoolId = (string) (
+                $override['pool_id'] ?? ($router['assignments'][$key] ?? '')
+            );
+            if (in_array(
+                (string) ($router['pools'][$currentPoolId]['type'] ?? ''),
+                ['safe', 'danger', 'blacklist'],
+                true
+            )) {
                 continue;
             }
             if ($keepPoolId !== '') {
@@ -5880,18 +6007,34 @@ class BaitSplitService
      * 观察1只做候选清白池：满 72 小时且至少拉取 3 次后仅标记待人工确认，
      * 永远不自动进入安全组。
      */
+    /**
+     * @return array{ready:int,adopted:int}
+     */
     private function refreshCandidateUsers(
         array $campaign,
         array &$router,
         int $now
-    ): int {
+    ): array {
         $poolId = $this->resolveDecoyCandidatePoolId($router);
         if ($poolId === '') {
-            return 0;
+            return ['ready' => 0, 'adopted' => 0];
+        }
+        $adopted = 0;
+        foreach ($this->poolLockedMemberIds($router, $poolId) as $uid) {
+            $key = (string) $uid;
+            if (isset($router['candidate_users'][$key])) {
+                continue;
+            }
+            $router['candidate_users'][$key] = [
+                'entered_at' => $now,
+                'baseline_pulls' => -1,
+                'ready_at' => 0,
+            ];
+            $adopted++;
         }
         $ids = array_map('intval', array_keys($router['candidate_users'] ?? []));
         if ($ids === []) {
-            return 0;
+            return ['ready' => 0, 'adopted' => $adopted];
         }
         $stats = $this->poolExposureStats($campaign, $poolId, $ids);
         $ready = 0;
@@ -5927,7 +6070,7 @@ class BaitSplitService
             $router['assignments'][$key] = $poolId;
             $ready++;
         }
-        return $ready;
+        return ['ready' => $ready, 'adopted' => $adopted];
     }
 
     /** 隔离链里的上一级；链首返回空串。 */
@@ -6345,6 +6488,7 @@ class BaitSplitService
                 $armedAt = $now - max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600));
             }
             $searchSlots = $this->decoySearchPoolIds($router);
+            $hotSlot = (string) ($searchSlots[0] ?? '');
             $candidatePoolId = $this->resolveDecoyCandidatePoolId($router);
             $isolatePoolId = $this->resolveDecoyIsolatePoolId($router, $poolId);
             $pullers = $this->collectPoolPullersInWindow(
@@ -6364,7 +6508,8 @@ class BaitSplitService
                     $pullers,
                     $now,
                     '候选清白池再墙→观察3复测',
-                    $isolateTargetId
+                    $isolateTargetId,
+                    $poolId
                 );
                 foreach ($movedIds as $uid) {
                     $key = (string) $uid;
@@ -6406,6 +6551,7 @@ class BaitSplitService
                 // 上一组人可能已经过了观察期被放走，墙才姗姗来迟。
                 // 实测 21% 的墙是这样迟到的，不倒查就会算到下一批无辜的人头上
                 $recalled = [];
+                $lateRecall = false;
                 if ($hit === []) {
                     $recalled = $this->recallLateWallGroup(
                         $campaign,
@@ -6416,7 +6562,10 @@ class BaitSplitService
                     );
                     if ($recalled !== []) {
                         $hit = $recalled;
-                        $noInfo = [];
+                        // 迟到的墙属于上一组；当前组不能继续沿用已经换掉的 IP。
+                        // 将当前组按无结论回队，避免观察计时和 IP 会话错位。
+                        $noInfo = $group;
+                        $lateRecall = true;
                     }
                 }
                 $cleared = 0;
@@ -6488,33 +6637,61 @@ class BaitSplitService
                         'released_same_group' => $cleared,
                     ]);
                 } else {
-                    // 不打断其他固定批次；当前槽使用 webhook 刚换出的新 IP 继续一支，
-                    // 其余阳性分支完整保留在 carryover，等独立槽自然空出后复测。
-                    // 剔下来的这一半有一半概率装着内鬼，进重点嫌疑名单等空槽。
-                    // 以前扔进普通队列，30 分钟保鲜期一过就没了，链子就是这么断的。
-                    // 必须先把他们挪走，槽腾空了留下的那一半才派得进去
                     $note = '分组测试·重点嫌疑（细分剔下的另一半，等空槽复测）';
-                    $deferred = [];
-                    if (count($this->freeSearchSlots($router, $hit)) <= 1) {
-                        $half = (int) ceil(count($hit) / 2);
-                        $deferred = array_slice($hit, $half);
-                        $hit = array_slice($hit, 0, $half);
-                        $this->parkProvenIds($router, $deferred, $now, $note);
+                    if ($poolId !== $hotSlot) {
+                        // B/C 的阳性证据只入高风险队列，由 A 槽继续拆分。
+                        // 绝不让初筛、二验槽被高风险分支长期占用。
+                        $isolated = $this->parkProvenIds(
+                            $router,
+                            $hit,
+                            $now,
+                            'B/C命中转交搜索槽A继续收敛'
+                        );
+                        $movedIds = $hit;
+                        $logPhase = 'deferred_hot';
+                        Log::notice('BaitSplit B/C命中转交A车道', [
+                            'pool_id' => $poolId,
+                            'hit' => count($hit),
+                            'released_same_group' => $cleared,
+                        ]);
+                    } else {
+                        // A 槽只在自己槽内继续拆，不能借用 B/C。
+                        $deferred = [];
+                        if (count($hit) > 1) {
+                            $half = (int) ceil(count($hit) / 2);
+                            $deferred = array_slice($hit, $half);
+                            $hit = array_slice($hit, 0, $half);
+                            $this->parkProvenIds($router, $deferred, $now, $note);
+                        }
+                        $split = $this->dispatchSuspectBatch(
+                            $router,
+                            $hit,
+                            '',
+                            $now,
+                            true,
+                            1,
+                            [$poolId],
+                            'hot'
+                        );
+                        if ($split['leftover'] !== []) {
+                            $this->parkProvenIds(
+                                $router,
+                                $split['leftover'],
+                                $now,
+                                $note
+                            );
+                        }
+                        $movedIds = $hit;
+                        $isolated = $split['dispatched'];
+                        $logPhase = 'split';
+                        Log::notice('BaitSplit A车道高风险细分', [
+                            'pool_id' => $poolId,
+                            'hit' => count($hit),
+                            'deferred' => count($deferred),
+                            'released_same_group' => $cleared,
+                            'late_recall' => $lateRecall,
+                        ]);
                     }
-                    $split = $this->dispatchSuspectBatch($router, $hit, '', $now, true);
-                    if ($split['leftover'] !== []) {
-                        $this->parkProvenIds($router, $split['leftover'], $now, $note);
-                    }
-                    $movedIds = $hit;
-                    $isolated = $split['dispatched'];
-                    $logPhase = 'split';
-                    Log::notice('BaitSplit 分组测试细分', [
-                        'pool_id' => $poolId,
-                        'hit' => count($hit),
-                        'deferred' => count($deferred),
-                        'slots' => $split['slots'],
-                        'released_same_group' => $cleared,
-                    ]);
                 }
                 $this->applyPoolHost($router, $poolId, $newIp);
                 $router['decoy']['domains'][$poolId] = array_merge(
@@ -6531,6 +6708,26 @@ class BaitSplitService
                     ]
                 );
                 $router['pools'][$poolId]['last_rotation_at'] = $now;
+                if (
+                    $poolId !== $hotSlot
+                    && $this->poolLockedMemberIds($router, $poolId) === []
+                ) {
+                    $router['decoy']['domains'][$poolId] = array_merge(
+                        $this->normalizeDecoyDomain(
+                            $router['decoy']['domains'][$poolId]
+                        ),
+                        [
+                            'phase' => 'idle',
+                            'armed' => false,
+                            'armed_at' => 0,
+                            'dispatched_at' => 0,
+                            'group_size' => 0,
+                            'proven' => false,
+                            'lane' => '',
+                            'cooldown_until' => $now + $this->decoyCooldownSeconds(),
+                        ]
+                    );
+                }
                 $phase = 'armed';
             } elseif ($searchSlots !== []) {
                 // 来源池止血优先：见过死 IP 的人先全部移出来源池到观察3，
@@ -6541,7 +6738,8 @@ class BaitSplitService
                     $pullers,
                     $now,
                     '精确 IP 二墙拉取者→观察3候测',
-                    $holdPoolId
+                    $holdPoolId,
+                    $poolId
                 );
                 if ($parkedIds !== []) {
                     $router['suspect_queue'][] = [
@@ -6621,7 +6819,8 @@ class BaitSplitService
                     $pullers,
                     $now,
                     '二墙拉订阅→' . $targetName,
-                    $isolatePoolId
+                    $isolatePoolId,
+                    $poolId
                 );
                 $isolated = count($movedIds);
                 // 甩完立刻重新武装：新 IP 只有剩下的人能拉到，再墙即可继续甩
@@ -6777,6 +6976,16 @@ class BaitSplitService
                 $touched = true;
             }
 
+            $rebalanced = $this->rebalanceSearchLaneRoles($router, $now);
+            if ($rebalanced > 0) {
+                $touched = true;
+                $actions[] = [
+                    'campaign_id' => $id,
+                    'action' => 'lane_rebalance',
+                    'parked' => $rebalanced,
+                ];
+            }
+
             // 搜索槽：观察期内没被墙就是清白，放人腾槽；腾出来立刻派发积压嫌疑批
             $observeSeconds = $this->decoyObserveSeconds();
             foreach ($this->decoySearchPoolIds($router) as $slot) {
@@ -6909,61 +7118,49 @@ class BaitSplitService
                     ]);
                 }
             }
-            // 三车道动态调度：高风险优先，其次二验，剩余槽位全部跑大批初筛。
-            $searchSlots = $this->decoySearchPoolIds($router);
-            $freeSlots = $this->freeSearchSlots($router);
-            $dispatchLane = function (string $lane, string $preferred = '') use (
-                &$router,
-                &$freeSlots,
-                &$touched,
-                &$actions,
-                $id,
-                $now
-            ): void {
-                if ($freeSlots === []) {
-                    return;
-                }
-                $slot = in_array($preferred, $freeSlots, true)
-                    ? $preferred
-                    : $freeSlots[0];
-                $result = $this->dispatchDecoyLane($router, $slot, $lane, $now);
-                if ($result['dispatched'] <= 0) {
-                    return;
-                }
-                $freeSlots = array_values(array_diff($freeSlots, $result['slots']));
+            // 三车道固定职责：A 才能跑高风险；B 初筛；C 二验。
+            // A 无高风险、B/C 无本职任务时可借跑普通任务，但 B/C 绝不接高风险，
+            // 防止一次墙把三条车道全部堵死。
+            foreach ($this->dispatchSearchLanes($router, $now) as $result) {
                 $touched = true;
                 $actions[] = [
                     'campaign_id' => $id,
                     'action' => 'lane_dispatch',
-                    'lane' => $lane,
+                    'lane' => $result['lane'],
                     'dispatched' => $result['dispatched'],
                     'slots' => $result['slots'],
                 ];
                 Log::notice('BaitSplit 三车道派发', [
-                    'lane' => $lane,
+                    'lane' => $result['lane'],
                     'dispatched' => $result['dispatched'],
                     'slots' => $result['slots'],
                 ]);
-            };
-            $dispatchLane('hot', $searchSlots[0] ?? '');
-            $dispatchLane('verify', $searchSlots[2] ?? '');
-            foreach (array_values($freeSlots) as $slot) {
-                $dispatchLane('bulk', $slot);
             }
-            $candidateReady = $this->refreshCandidateUsers(
+            $candidateResult = $this->refreshCandidateUsers(
                 $campaign,
                 $router,
                 $now
             );
-            if ($candidateReady > 0) {
+            if ($candidateResult['adopted'] > 0) {
+                $touched = true;
+                $actions[] = [
+                    'campaign_id' => $id,
+                    'action' => 'candidate_adopted',
+                    'users' => $candidateResult['adopted'],
+                ];
+                Log::notice('BaitSplit 候选组旧成员纳入72小时跟踪', [
+                    'users' => $candidateResult['adopted'],
+                ]);
+            }
+            if ($candidateResult['ready'] > 0) {
                 $touched = true;
                 $actions[] = [
                     'campaign_id' => $id,
                     'action' => 'candidate_ready',
-                    'users' => $candidateReady,
+                    'users' => $candidateResult['ready'],
                 ];
                 Log::notice('BaitSplit 候选清白用户待人工确认', [
-                    'users' => $candidateReady,
+                    'users' => $candidateResult['ready'],
                 ]);
             }
             if ($touched) {

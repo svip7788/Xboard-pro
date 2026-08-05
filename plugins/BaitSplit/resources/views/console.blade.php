@@ -198,7 +198,7 @@
             </div>
 
             <h3 style="margin-top:20px">全天精确 IP 诱捕<span id="decoyState" class="pill off" style="margin-left:8px">未启用</span></h3>
-            <div class="hint">三车道动态搜索：A 优先复测高风险用户，B 大批初筛，C 优先做第二轮阴性确认；车道无对应任务时自动处理积压。墙事件全天记录，但清白观察时长只累计 01:00–09:00 高风险时段。<span id="decoyChain"></span></div>
+            <div class="hint">三车道隔离搜索：A 专门收敛高风险分支，B 大批初筛，C 第二轮阴性确认；A 无高风险、B/C 无本职任务时才借跑普通任务，高风险绝不占用 B/C。墙事件全天记录，但清白观察时长只累计 01:00–09:00 高风险时段。<span id="decoyChain"></span></div>
             <div class="split" style="margin-top:12px">
                 <div class="field"><label><input id="decoyEnabled" type="checkbox" style="width:auto;height:auto"> 启用全天自动诱捕（每分钟调度检查）</label></div>
             </div>
