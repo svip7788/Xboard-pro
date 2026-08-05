@@ -6016,7 +6016,7 @@ class BaitSplitService
      * 永远不自动进入安全组。
      */
     /**
-     * @return array{ready:int,adopted:int}
+     * @return array{ready:int,adopted:int,removed:int}
      */
     private function refreshCandidateUsers(
         array $campaign,
@@ -6025,7 +6025,7 @@ class BaitSplitService
     ): array {
         $poolId = $this->resolveDecoyCandidatePoolId($router);
         if ($poolId === '') {
-            return ['ready' => 0, 'adopted' => 0];
+            return ['ready' => 0, 'adopted' => 0, 'removed' => 0];
         }
         $adopted = 0;
         foreach ($this->poolMemberIds($campaign, $poolId) as $uid) {
@@ -6042,14 +6042,16 @@ class BaitSplitService
         }
         $ids = array_map('intval', array_keys($router['candidate_users'] ?? []));
         if ($ids === []) {
-            return ['ready' => 0, 'adopted' => $adopted];
+            return ['ready' => 0, 'adopted' => $adopted, 'removed' => 0];
         }
         $stats = $this->poolExposureStats($campaign, $poolId, $ids);
         $ready = 0;
+        $removed = 0;
         foreach ($ids as $uid) {
             $key = (string) $uid;
             if ($this->effectivePoolId($campaign, $uid) !== $poolId) {
                 unset($router['candidate_users'][$key]);
+                $removed++;
                 continue;
             }
             $item = $router['candidate_users'][$key];
@@ -6078,7 +6080,7 @@ class BaitSplitService
             $router['assignments'][$key] = $poolId;
             $ready++;
         }
-        return ['ready' => $ready, 'adopted' => $adopted];
+        return ['ready' => $ready, 'adopted' => $adopted, 'removed' => $removed];
     }
 
     /** 隔离链里的上一级；链首返回空串。 */
@@ -7169,6 +7171,14 @@ class BaitSplitService
                 Log::notice('BaitSplit 候选清白用户待人工确认', [
                     'users' => $candidateResult['ready'],
                 ]);
+            }
+            if ($candidateResult['removed'] > 0) {
+                $touched = true;
+                $actions[] = [
+                    'campaign_id' => $id,
+                    'action' => 'candidate_pruned',
+                    'users' => $candidateResult['removed'],
+                ];
             }
             if ($touched) {
                 $router['config_version']++;
