@@ -3115,8 +3115,21 @@ class BaitSplitService
                 'at' => (int) ($item['at'] ?? 0),
             ];
         }
-        // 嫌疑分支不能因状态归一化被静默截断。
-        $router['suspect_queue'] = array_slice($suspectQueue, -500);
+        // 批次过多时合并最老部分，不得截掉 FIFO 队首或永久丢失候选。
+        if (count($suspectQueue) > 500) {
+            $mergeCount = count($suspectQueue) - 499;
+            $oldest = array_slice($suspectQueue, 0, $mergeCount);
+            $mergedIds = [];
+            foreach ($oldest as $item) {
+                $mergedIds = array_merge($mergedIds, $item['ids']);
+            }
+            $suspectQueue = array_merge([[
+                'ids' => $this->normalizeIds($mergedIds),
+                'origin' => (string) ($oldest[0]['origin'] ?? ''),
+                'at' => (int) ($oldest[0]['at'] ?? 0),
+            ]], array_slice($suspectQueue, $mergeCount));
+        }
+        $router['suspect_queue'] = $suspectQueue;
         foreach (['clean_rounds', 'positive_rounds'] as $counterKey) {
             $normalized = [];
             foreach ((array) ($router[$counterKey] ?? []) as $userId => $count) {
@@ -4340,7 +4353,7 @@ class BaitSplitService
                 'candidate_pool_id' => $candidatePoolId,
                 'candidate_pool_name' => $poolName($candidatePoolId),
                 'candidate_users' => count(
-                    $this->poolLockedMemberIds($router, $candidatePoolId)
+                    $this->poolMemberIds($campaign, $candidatePoolId)
                 ),
                 'candidate_tracked' => count($router['candidate_users'] ?? []),
                 'candidate_ready' => count(array_filter(
@@ -5176,13 +5189,7 @@ class BaitSplitService
             if (str_contains($prevNote, '诱捕确认内鬼')) {
                 continue;
             }
-            $curPool = (string) (
-                $router['overrides'][$key]['pool_id']
-                ?? ($router['assignments'][$key] ?? '')
-            );
-            if ($curPool === '') {
-                $curPool = $this->poolIdByType($router, 'default');
-            }
+            $curPool = $this->routerUserPoolId($router, $uid);
             $curType = (string) ($router['pools'][$curPool]['type'] ?? '');
             if (
                 in_array($curType, ['danger', 'blacklist'], true)
@@ -5345,6 +5352,23 @@ class BaitSplitService
         return $ids;
     }
 
+    private function routerUserPoolId(array $router, int $userId): string
+    {
+        $key = (string) $userId;
+        $override = $router['overrides'][$key] ?? null;
+        if (
+            is_array($override)
+            && $this->overrideIsActive($override)
+            && (string) ($override['pool_id'] ?? '') !== ''
+        ) {
+            return (string) $override['pool_id'];
+        }
+        $assigned = (string) ($router['assignments'][$key] ?? '');
+        return $assigned !== ''
+            ? $assigned
+            : $this->poolIdByType($router, 'default');
+    }
+
     /**
      * 把一批嫌疑人均分到空闲搜索槽。装的全是本批人的槽也算空闲，
      * 这样一个槽被墙后能就地把自己那组再拆开。
@@ -5412,10 +5436,7 @@ class BaitSplitService
                 if (str_contains($note, '诱捕确认内鬼')) {
                     continue;
                 }
-                $curPool = (string) (
-                    $router['overrides'][$key]['pool_id']
-                    ?? ($router['assignments'][$key] ?? '')
-                );
+                $curPool = $this->routerUserPoolId($router, (int) $uid);
                 if (in_array(
                     (string) ($router['pools'][$curPool]['type'] ?? ''),
                     ['danger', 'blacklist'],
@@ -5555,10 +5576,7 @@ class BaitSplitService
                     return false;
                 }
                 $key = (string) $uid;
-                $poolId = (string) (
-                    $router['overrides'][$key]['pool_id']
-                    ?? ($router['assignments'][$key] ?? '')
-                );
+                $poolId = $this->routerUserPoolId($router, $uid);
                 return $poolId === $isolatePool;
             }
         ));
@@ -5659,17 +5677,9 @@ class BaitSplitService
         $hotSlot = (string) ($searchSlots[0] ?? '');
         $bulkSlot = (string) ($searchSlots[1] ?? '');
         $verifySlot = (string) ($searchSlots[2] ?? '');
-        if (!$dispatchLane('hot', $hotSlot)) {
-            if (!$dispatchLane('bulk', $hotSlot)) {
-                $dispatchLane('verify', $hotSlot);
-            }
-        }
-        if (!$dispatchLane('verify', $verifySlot)) {
-            $dispatchLane('bulk', $verifySlot);
-        }
-        if (!$dispatchLane('bulk', $bulkSlot)) {
-            $dispatchLane('verify', $bulkSlot);
-        }
+        $dispatchLane('hot', $hotSlot);
+        $dispatchLane('bulk', $bulkSlot);
+        $dispatchLane('verify', $verifySlot);
         return $dispatched;
     }
 
@@ -5762,9 +5772,7 @@ class BaitSplitService
             if (str_contains((string) ($override['note'] ?? ''), '诱捕确认内鬼')) {
                 continue;
             }
-            $currentPoolId = (string) (
-                $override['pool_id'] ?? ($router['assignments'][$key] ?? '')
-            );
+            $currentPoolId = $this->routerUserPoolId($router, (int) $uid);
             if (in_array(
                 (string) ($router['pools'][$currentPoolId]['type'] ?? ''),
                 ['safe', 'danger', 'blacklist'],
@@ -6020,7 +6028,7 @@ class BaitSplitService
             return ['ready' => 0, 'adopted' => 0];
         }
         $adopted = 0;
-        foreach ($this->poolLockedMemberIds($router, $poolId) as $uid) {
+        foreach ($this->poolMemberIds($campaign, $poolId) as $uid) {
             $key = (string) $uid;
             if (isset($router['candidate_users'][$key])) {
                 continue;
@@ -7118,9 +7126,8 @@ class BaitSplitService
                     ]);
                 }
             }
-            // 三车道固定职责：A 才能跑高风险；B 初筛；C 二验。
-            // A 无高风险、B/C 无本职任务时可借跑普通任务，但 B/C 绝不接高风险，
-            // 防止一次墙把三条车道全部堵死。
+            // 三车道完全隔离：A 高风险、B 初筛、C 二验，互不借用。
+            // 宁可暂时空闲，也不能让普通长观察批堵住高风险收敛槽。
             foreach ($this->dispatchSearchLanes($router, $now) as $result) {
                 $touched = true;
                 $actions[] = [
@@ -7322,10 +7329,7 @@ class BaitSplitService
                 return false;
             }
         }
-        $currentPoolId = (string) (
-            $router['overrides'][$key]['pool_id']
-            ?? ($router['assignments'][$key] ?? '')
-        );
+        $currentPoolId = $this->routerUserPoolId($router, (int) $key);
         $currentType = (string) ($router['pools'][$currentPoolId]['type'] ?? '');
         // 安全组只认人工操作，自动流程一律不碰
         if (in_array($currentType, ['danger', 'blacklist', 'safe'], true)) {
