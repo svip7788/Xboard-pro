@@ -6028,7 +6028,9 @@ class BaitSplitService
             return ['ready' => 0, 'adopted' => 0, 'removed' => 0];
         }
         $adopted = 0;
-        foreach ($this->poolMemberIds($campaign, $poolId) as $uid) {
+        $memberIds = $this->poolMemberIds($campaign, $poolId);
+        $memberMap = array_flip($memberIds);
+        foreach ($memberIds as $uid) {
             $key = (string) $uid;
             if (isset($router['candidate_users'][$key])) {
                 continue;
@@ -6049,7 +6051,10 @@ class BaitSplitService
         $removed = 0;
         foreach ($ids as $uid) {
             $key = (string) $uid;
-            if ($this->effectivePoolId($campaign, $uid) !== $poolId) {
+            if (
+                !isset($memberMap[$uid])
+                || $this->effectivePoolId($campaign, $uid) !== $poolId
+            ) {
                 unset($router['candidate_users'][$key]);
                 $removed++;
                 continue;
