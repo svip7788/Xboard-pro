@@ -1,7 +1,7 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "5.2.3",
+    "version": "5.3.0",
     "description": "全量接管节点域名，支持用户池、分批筛查和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
@@ -86,9 +86,9 @@
         },
         "decoy_batch_size": {
             "type": "number",
-            "default": 100,
+            "default": 300,
             "label": "初筛车道每批人数",
-            "description": "初筛搜索槽一次测试多少人，默认 100"
+            "description": "初筛搜索槽一次测试多少人；只按实际拉取者归因，默认 300"
         },
         "decoy_hot_batch_size": {
             "type": "number",
@@ -98,9 +98,9 @@
         },
         "decoy_verify_batch_size": {
             "type": "number",
-            "default": 100,
+            "default": 200,
             "label": "二验车道每批人数",
-            "description": "已完成一轮阴性的用户进行第二轮确认，默认 100"
+            "description": "已完成一轮阴性的用户进行第二轮确认，默认 200"
         },
         "decoy_min_batch": {
             "type": "number",
