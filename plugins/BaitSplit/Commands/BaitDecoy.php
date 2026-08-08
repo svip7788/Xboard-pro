@@ -9,11 +9,11 @@ class BaitDecoy extends Command
 {
     protected $signature = 'bait:decoy';
 
-    protected $description = '夜间分组诱捕编排：到点打散嫌疑人到独立 IP 组，白天收回；并消费积压换 IP';
+    protected $description = '分钟级维护：消化积压换 IP，轮询追猎槽新 IP 上线，解散空转追猎链';
 
     public function handle(): int
     {
-        // 大状态落盘需要足够内存，避免白天收回 OOM
+        // 大状态落盘需要足够内存
         @ini_set('memory_limit', '1024M');
 
         try {
@@ -28,18 +28,15 @@ class BaitDecoy extends Command
                 ));
             }
             if (isset($result['skipped'])) {
-                $this->info('诱捕跳过：' . $result['skipped']);
-                // locked 时仍算成功：pending 可能已消化一部分，下分钟再试收回
+                $this->info('追猎维护跳过：' . $result['skipped']);
+                // locked 时仍算成功：pending 可能已消化一部分，下分钟再试
                 return self::SUCCESS;
             }
             foreach ($result['actions'] ?? [] as $action) {
                 $this->info(json_encode($action, JSON_UNESCAPED_UNICODE));
             }
             if (($result['actions'] ?? []) === []) {
-                $this->info(json_encode([
-                    'in_window' => $result['in_window'] ?? null,
-                    'actions' => [],
-                ], JSON_UNESCAPED_UNICODE));
+                $this->info('无动作');
             }
             return self::SUCCESS;
         } catch (\Throwable $exception) {
