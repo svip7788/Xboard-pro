@@ -993,6 +993,69 @@ class BaitSplitService
             $targetPoolIds = [$matchedPoolId];
         }
 
+        // 墙后二分追猎优先接管：它自带完整的洗清/切分/定罪流程，不走旧车道。
+        if (
+            $this->huntEnabled()
+            && count($targetPoolIds) === 1
+            && in_array(
+                $targetPoolIds[0],
+                $this->huntManagedPoolIds($router),
+                true
+            )
+        ) {
+            $poolId = $targetPoolIds[0];
+            $nowTs = time();
+            // 我们自己请求的换 IP 落地时也会收到通知，绝不能当成墙来算嫌疑。
+            $consumed = $this->huntConsumeRequestedRotation(
+                $router,
+                $poolId,
+                $newIp,
+                $nowTs
+            );
+            if ($consumed) {
+                $wall = [
+                    'reason' => 'hunt_rotation',
+                    'mode' => 'hunt',
+                    'phase' => 'slot_ip_ready',
+                ];
+            } elseif ($reason === 'blocked') {
+                $wall = $this->huntHandleWall(
+                    $campaign,
+                    $router,
+                    $poolId,
+                    $oldIp,
+                    $newIp,
+                    $nowTs
+                );
+                $wall['mode'] = 'hunt';
+                $this->huntLogWall($router, $poolId, $oldIp, $newIp, $wall, $nowTs);
+            } else {
+                $this->applyPoolHost($router, $poolId, $newIp);
+                $wall = [
+                    'reason' => $reason,
+                    'mode' => 'hunt',
+                    'phase' => 'machine',
+                ];
+            }
+            $router['config_version']++;
+            $state['campaigns'][$campaignId] = $campaign;
+            $this->saveState($state);
+            return [
+                'campaign_id' => $campaignId,
+                'target_id' => $targetId,
+                'reason' => $reason,
+                'old_ip' => $oldIp,
+                'new_ip' => $newIp,
+                'wall' => $wall,
+                'hunt' => true,
+                'host_frozen' => false,
+                'updated_pool_ids' => [$poolId],
+                'updated_node_host_count' => 0,
+                'updated_override_count' => 0,
+                'config_version' => $router['config_version'],
+            ];
+        }
+
         // 24 小时监控生产池、候选清白池和搜索槽。具体是否开全天由配置控制。
         if (
             (bool) ($this->config['decoy_enabled'] ?? false)
@@ -2990,6 +3053,7 @@ class BaitSplitService
             'decoy_nights' => [],
             'search_origin' => [],
             'queue_strategy_version' => 2,
+            'hunt' => $this->emptyHuntState(),
             'fresh_suspects' => [],
             'dormant_suspects' => [],
             'suspect_queue' => [],
@@ -3194,6 +3258,7 @@ class BaitSplitService
             'domains' => $domains,
             'carryover' => $this->normalizeIds($decoy['carryover'] ?? []),
         ];
+        $router['hunt'] = $this->normalizeHuntState($router['hunt'] ?? []);
         $decoyNights = [];
         foreach ((array) ($router['decoy_nights'] ?? []) as $userId => $count) {
             if ((int) $userId > 0 && (int) $count > 0) {
@@ -4424,7 +4489,50 @@ class BaitSplitService
                     'isolate' => (string) ($this->config['decoy_isolate_pool_id'] ?? ''),
                 ],
             ],
+            'hunt' => $this->huntReport($router, $poolName),
             'pending_ip_rotates' => $this->pendingIpRotateCount(),
+        ];
+    }
+
+    /** 追猎状态给控制台看：每条链进展、定罪记录、非泄露铁证。 */
+    private function huntReport(array $router, callable $poolName): array
+    {
+        $hunt = $this->normalizeHuntState($router['hunt'] ?? []);
+        $chains = [];
+        foreach ($hunt['chains'] as $chainId => $chain) {
+            $slots = [];
+            foreach ($chain['slots'] as $slotId) {
+                $slot = $hunt['slots'][$slotId] ?? [];
+                $slots[] = [
+                    'pool_id' => $slotId,
+                    'pool_name' => $poolName($slotId),
+                    'host' => (string) ($router['pools'][$slotId]['host'] ?? ''),
+                    'members' => count((array) ($slot['members'] ?? [])),
+                    'pending' => count((array) ($slot['pending'] ?? [])),
+                    'awaiting_ip' => (bool) ($slot['awaiting_ip'] ?? false),
+                ];
+            }
+            $chains[] = [
+                'id' => $chainId,
+                'round' => $chain['round'],
+                'seed_size' => $chain['seed_size'],
+                'origin_pool_name' => $poolName($chain['origin_pool_id']),
+                'last_event_at' => $chain['last_event_at'],
+                'slots' => $slots,
+            ];
+        }
+        $servicePoolIds = $this->huntServicePoolIds($router);
+        $slotPoolIds = $this->huntSlotIds($router);
+        return [
+            'enabled' => $this->huntEnabled(),
+            'rotate_api_ready' => $this->huntRotateClient() !== null,
+            'service_pool_names' => array_map($poolName, $servicePoolIds),
+            'slot_pool_names' => array_map($poolName, $slotPoolIds),
+            'chain_capacity' => intdiv(count($slotPoolIds), 2),
+            'active_chains' => count($chains),
+            'chains' => $chains,
+            'convicted' => array_reverse($hunt['convicted']),
+            'anomalies' => array_reverse($hunt['anomalies']),
         ];
     }
 
@@ -6614,6 +6722,812 @@ class BaitSplitService
         return $restored;
     }
 
+    // ===================== 墙后二分追猎（v6） =====================
+    // 内鬼要上报就必须先刷新订阅拿到新 IP，这一步他绕不过去。所以每次墙都能
+    // 拿到一个干净结论：没拉过这个死 IP 的人本轮无罪；拉过的人里必有内鬼。
+    // 于是把拉过的人对半切到一条链的两个槽（各自全新 IP），下次哪个槽被墙，
+    // 人就在那一半。log2(N) 次墙即可定位到个人。
+    //
+    // 关键前提：每次换人必须换全新 IP。IP 一旦被上一批人看过就报废，否则
+    // 归因会串批——这正是旧逻辑失效的原因。
+
+    private function emptyHuntState(): array
+    {
+        return [
+            'chains' => [],
+            'slots' => [],
+            'anomalies' => [],
+            'convicted' => [],
+            'seeded_at' => 0,
+        ];
+    }
+
+    private function normalizeHuntState(mixed $hunt): array
+    {
+        $hunt = is_array($hunt) ? $hunt : [];
+        $slots = [];
+        foreach ((array) ($hunt['slots'] ?? []) as $poolId => $slot) {
+            $poolId = (string) $poolId;
+            if ($poolId === '' || !is_array($slot)) {
+                continue;
+            }
+            $slots[$poolId] = [
+                'chain_id' => (string) ($slot['chain_id'] ?? ''),
+                'members' => $this->normalizeIds($slot['members'] ?? []),
+                'pending' => $this->normalizeIds($slot['pending'] ?? []),
+                'ip' => (string) ($slot['ip'] ?? ''),
+                'ip_at' => max(0, (int) ($slot['ip_at'] ?? 0)),
+                'awaiting_ip' => (bool) ($slot['awaiting_ip'] ?? false),
+                'requested_at' => max(0, (int) ($slot['requested_at'] ?? 0)),
+            ];
+        }
+        $chains = [];
+        foreach ((array) ($hunt['chains'] ?? []) as $chainId => $chain) {
+            $chainId = (string) $chainId;
+            if ($chainId === '' || !is_array($chain)) {
+                continue;
+            }
+            $chainSlots = array_values(array_unique(array_filter(
+                array_map('strval', (array) ($chain['slots'] ?? []))
+            )));
+            if (count($chainSlots) !== 2) {
+                continue;
+            }
+            $chains[$chainId] = [
+                'id' => $chainId,
+                'slots' => $chainSlots,
+                'round' => max(0, (int) ($chain['round'] ?? 0)),
+                'seed_size' => max(0, (int) ($chain['seed_size'] ?? 0)),
+                'origin_pool_id' => (string) ($chain['origin_pool_id'] ?? ''),
+                'created_at' => max(0, (int) ($chain['created_at'] ?? 0)),
+                'last_event_at' => max(0, (int) ($chain['last_event_at'] ?? 0)),
+            ];
+        }
+        $anomalies = [];
+        foreach ((array) ($hunt['anomalies'] ?? []) as $item) {
+            if (is_array($item)) {
+                $anomalies[] = [
+                    'at' => max(0, (int) ($item['at'] ?? 0)),
+                    'pool_id' => (string) ($item['pool_id'] ?? ''),
+                    'ip' => (string) ($item['ip'] ?? ''),
+                    'kind' => (string) ($item['kind'] ?? ''),
+                ];
+            }
+        }
+        $convicted = [];
+        foreach ((array) ($hunt['convicted'] ?? []) as $item) {
+            if (is_array($item) && (int) ($item['user_id'] ?? 0) > 0) {
+                $convicted[] = [
+                    'at' => max(0, (int) ($item['at'] ?? 0)),
+                    'user_id' => (int) $item['user_id'],
+                    'rounds' => max(0, (int) ($item['rounds'] ?? 0)),
+                    'seed_size' => max(0, (int) ($item['seed_size'] ?? 0)),
+                ];
+            }
+        }
+        return [
+            'chains' => $chains,
+            'slots' => $slots,
+            'anomalies' => array_slice($anomalies, -50),
+            'convicted' => array_slice($convicted, -50),
+            'seeded_at' => max(0, (int) ($hunt['seeded_at'] ?? 0)),
+        ];
+    }
+
+    private function huntEnabled(): bool
+    {
+        return $this->configBool('hunt_enabled', false);
+    }
+
+    /** 逗号分隔的池引用（ID / 接口标识 / 名称）解析为池 ID，保持配置顺序。 */
+    private function splitPoolIdList(array $router, string $raw): array
+    {
+        $ids = [];
+        foreach (explode(',', $raw) as $ref) {
+            $poolId = $this->resolvePoolIdByRef($router, $ref);
+            if ($poolId !== '' && !in_array($poolId, $ids, true)) {
+                $ids[] = $poolId;
+            }
+        }
+        return $ids;
+    }
+
+    /** 承载大众的服务池：它们被墙时产出的拉取者作为追猎种子。 */
+    private function huntServicePoolIds(array $router): array
+    {
+        return $this->splitPoolIdList(
+            $router,
+            (string) ($this->config['hunt_service_pool_ids'] ?? '')
+        );
+    }
+
+    /** 追猎槽：两两组成一条二分链。 */
+    private function huntSlotIds(array $router): array
+    {
+        $service = array_flip($this->huntServicePoolIds($router));
+        return array_values(array_filter(
+            $this->splitPoolIdList(
+                $router,
+                (string) ($this->config['hunt_slot_pool_ids'] ?? '')
+            ),
+            fn(string $poolId): bool => !isset($service[$poolId])
+                && !in_array(
+                    (string) ($router['pools'][$poolId]['type'] ?? ''),
+                    ['safe', 'danger', 'blacklist'],
+                    true
+                )
+        ));
+    }
+
+    /** 追猎接管的池子：服务池 + 追猎槽。 */
+    private function huntManagedPoolIds(array $router): array
+    {
+        return array_values(array_unique(array_merge(
+            $this->huntServicePoolIds($router),
+            $this->huntSlotIds($router)
+        )));
+    }
+
+    private function huntSlotPairs(array $router): array
+    {
+        return array_chunk($this->huntSlotIds($router), 2);
+    }
+
+    private function huntTargetId(array $router, string $poolId): string
+    {
+        $webhookId = (string) ($router['pools'][$poolId]['webhook_id'] ?? '');
+        return $webhookId !== '' ? $webhookId : $poolId;
+    }
+
+    private function huntRotateClient(): ?IpRotationClient
+    {
+        return IpRotationClient::fromConfig($this->config);
+    }
+
+    private function huntSlot(array &$router, string $poolId): array
+    {
+        if (!isset($router['hunt']['slots'][$poolId])) {
+            $router['hunt']['slots'][$poolId] = [
+                'chain_id' => '',
+                'members' => [],
+                'pending' => [],
+                'ip' => (string) ($router['pools'][$poolId]['host'] ?? ''),
+                'ip_at' => 0,
+                'awaiting_ip' => false,
+                'requested_at' => 0,
+            ];
+        }
+        return $router['hunt']['slots'][$poolId];
+    }
+
+    /**
+     * 主入口：某个被追猎接管的池子被墙了。
+     *
+     * @return array{handled:bool,phase:string,pullers:int,detail:array}
+     */
+    private function huntHandleWall(
+        array $campaign,
+        array &$router,
+        string $poolId,
+        string $oldIp,
+        string $newIp,
+        int $now
+    ): array {
+        $deadIp = $oldIp !== ''
+            ? $oldIp
+            : (string) ($router['pools'][$poolId]['host'] ?? '');
+        // webhook 给的新 IP 已经过国内验墙，可以直接上线。
+        $this->applyPoolHost($router, $poolId, $newIp);
+        $slot = $this->huntSlot($router, $poolId);
+        $router['hunt']['slots'][$poolId]['ip'] = $newIp;
+        $router['hunt']['slots'][$poolId]['ip_at'] = $now;
+        $router['hunt']['slots'][$poolId]['awaiting_ip'] = false;
+        $router['hunt']['slots'][$poolId]['requested_at'] = 0;
+
+        $pullers = $this->huntPullersOfDeadIp(
+            $campaign,
+            $router,
+            $poolId,
+            $deadIp
+        );
+
+        // 没有任何人拉过这个 IP 却被墙 —— 没人见过它，就没人能上报它。
+        // 这是「墙与泄露无关」的铁证，必须立刻叫出来。
+        if ($pullers === []) {
+            $this->huntRecordAnomaly($router, $poolId, $deadIp, $now);
+            return [
+                'handled' => true,
+                'phase' => 'walled_without_pullers',
+                'pullers' => 0,
+                'detail' => ['dead_ip' => $deadIp],
+            ];
+        }
+
+        $chainId = (string) ($slot['chain_id'] ?? '');
+        if ($chainId !== '' && isset($router['hunt']['chains'][$chainId])) {
+            return $this->huntAdvanceChain(
+                $router,
+                $chainId,
+                $poolId,
+                $pullers,
+                $now
+            );
+        }
+        return $this->huntSeedChain($router, $poolId, $pullers, $now);
+    }
+
+    /**
+     * 谁拉过这个死 IP。只认当前确实归属该池的人，避免把已经搬走的历史成员算进来。
+     */
+    private function huntPullersOfDeadIp(
+        array $campaign,
+        array $router,
+        string $poolId,
+        string $deadIp
+    ): array {
+        if ($deadIp === '') {
+            return [];
+        }
+        $ids = [];
+        foreach ($this->poolIpExposureLastMap($campaign, $poolId, $deadIp) as $uid => $ts) {
+            $uid = (int) $uid;
+            if ($uid <= 0) {
+                continue;
+            }
+            $curPool = $this->routerUserPoolId($router, $uid);
+            if ($curPool !== $poolId) {
+                continue;
+            }
+            $type = (string) ($router['pools'][$curPool]['type'] ?? '');
+            if (in_array($type, ['danger', 'blacklist'], true)) {
+                continue;
+            }
+            $ids[] = $uid;
+        }
+        sort($ids);
+        return $ids;
+    }
+
+    /** 服务池被墙：拿拉取者开一条新链。 */
+    private function huntSeedChain(
+        array &$router,
+        string $originPoolId,
+        array $pullers,
+        int $now
+    ): array {
+        // 已经在别的链里受测（含等新 IP 期间寄放回服务池的人）不能被重复抓走。
+        $busy = [];
+        foreach ((array) ($router['hunt']['slots'] ?? []) as $slot) {
+            foreach (array_merge(
+                (array) ($slot['members'] ?? []),
+                (array) ($slot['pending'] ?? [])
+            ) as $uid) {
+                $busy[(int) $uid] = true;
+            }
+        }
+        $pullers = array_values(array_filter(
+            $pullers,
+            fn(int $uid): bool => !isset($busy[$uid])
+        ));
+        if ($pullers === []) {
+            return [
+                'handled' => true,
+                'phase' => 'all_pullers_busy',
+                'pullers' => 0,
+                'detail' => [],
+            ];
+        }
+
+        $freePair = null;
+        foreach ($this->huntSlotPairs($router) as $pair) {
+            if (count($pair) !== 2) {
+                continue;
+            }
+            $busy = false;
+            foreach ($pair as $slotId) {
+                $slot = $this->huntSlot($router, $slotId);
+                if (
+                    ($slot['chain_id'] ?? '') !== ''
+                    || $slot['members'] !== []
+                    || $slot['pending'] !== []
+                ) {
+                    $busy = true;
+                    break;
+                }
+            }
+            if (!$busy) {
+                $freePair = $pair;
+                break;
+            }
+        }
+        if ($freePair === null) {
+            // 槽位全忙：本轮拉取者留在服务池，等有空链再抓。
+            return [
+                'handled' => true,
+                'phase' => 'no_free_chain',
+                'pullers' => count($pullers),
+                'detail' => [],
+            ];
+        }
+
+        $chainId = 'hunt-' . bin2hex(random_bytes(6));
+        $router['hunt']['chains'][$chainId] = [
+            'id' => $chainId,
+            'slots' => array_values($freePair),
+            'round' => 0,
+            'seed_size' => count($pullers),
+            'origin_pool_id' => $originPoolId,
+            'created_at' => $now,
+            'last_event_at' => $now,
+        ];
+        $router['hunt']['seeded_at'] = $now;
+        $result = $this->huntSplitInto(
+            $router,
+            $chainId,
+            $pullers,
+            $now
+        );
+        Log::warning('BaitSplit 追猎开链', [
+            'chain' => $chainId,
+            'origin' => $originPoolId,
+            'seed' => count($pullers),
+            'slots' => $freePair,
+        ]);
+        return [
+            'handled' => true,
+            'phase' => 'chain_seeded',
+            'pullers' => count($pullers),
+            'detail' => $result,
+        ];
+    }
+
+    /** 追猎槽被墙：洗清无关的人，把拉取者继续对半切。 */
+    private function huntAdvanceChain(
+        array &$router,
+        string $chainId,
+        string $walledSlotId,
+        array $pullers,
+        int $now
+    ): array {
+        $chain = $router['hunt']['chains'][$chainId];
+        $chain['round'] = (int) $chain['round'] + 1;
+        $chain['last_event_at'] = $now;
+        $router['hunt']['chains'][$chainId] = $chain;
+        $note = '追猎第' . $chain['round'] . '轮洗清（未拉取被墙IP）';
+
+        // 本槽里没拉过死 IP 的人 + 兄弟槽全员，本轮都洗清。
+        $clear = [];
+        foreach ($chain['slots'] as $slotId) {
+            $slot = $this->huntSlot($router, $slotId);
+            $inSlot = array_merge($slot['members'], $slot['pending']);
+            $clear = array_merge(
+                $clear,
+                $slotId === $walledSlotId
+                    ? array_values(array_diff($inSlot, $pullers))
+                    : $inSlot
+            );
+        }
+        $this->huntReleaseToService($router, $clear, $chain, $now, $note);
+
+        $convictAt = max(1, (int) ($this->config['decoy_convict_at'] ?? 1));
+        if (count($pullers) <= $convictAt) {
+            foreach ($pullers as $uid) {
+                $this->huntConvict($router, (int) $uid, $chain, $now);
+            }
+            $this->huntDissolveChain($router, $chainId, $now, 'convicted');
+            Log::warning('BaitSplit 追猎定罪', [
+                'chain' => $chainId,
+                'round' => $chain['round'],
+                'ids' => $pullers,
+            ]);
+            return [
+                'handled' => true,
+                'phase' => 'convicted',
+                'pullers' => count($pullers),
+                'detail' => ['ids' => $pullers],
+            ];
+        }
+
+        $result = $this->huntSplitInto(
+            $router,
+            $chainId,
+            $pullers,
+            $now,
+            $walledSlotId
+        );
+        return [
+            'handled' => true,
+            'phase' => 'chain_split',
+            'pullers' => count($pullers),
+            'detail' => $result,
+        ];
+    }
+
+    /**
+     * 把一批人对半切进链的两个槽。
+     *
+     * $freshSlotId 是刚因被墙换到全新 IP 的槽——那个 IP 刚过验墙、还没发给任何人，
+     * 所以可以直接承接一半，省掉一次换 IP 等待。另一半必须等新 IP，因为兄弟槽
+     * 当前的 IP 已经被上一批人看过了。
+     */
+    private function huntSplitInto(
+        array &$router,
+        string $chainId,
+        array $ids,
+        int $now,
+        string $freshSlotId = ''
+    ): array {
+        $ids = $this->normalizeIds($ids);
+        sort($ids);
+        $slots = $router['hunt']['chains'][$chainId]['slots'];
+        if ($freshSlotId !== '' && ($slots[1] ?? '') === $freshSlotId) {
+            $slots = [$slots[1], $slots[0]];
+        }
+        [$slotA, $slotB] = $slots;
+        $half = (int) ceil(count($ids) / 2);
+        $batchA = array_slice($ids, 0, $half);
+        $batchB = array_slice($ids, $half);
+
+        if ($freshSlotId === $slotA) {
+            $this->huntAdoptSlotBatch($router, $slotA, $chainId, $batchA, $now);
+        } else {
+            $this->huntStageSlotBatch($router, $slotA, $chainId, $batchA, $now);
+        }
+        $this->huntStageSlotBatch($router, $slotB, $chainId, $batchB, $now);
+
+        return [$slotA => count($batchA), $slotB => count($batchB)];
+    }
+
+    /** 槽的 IP 已经是全新的：直接把这批人搬进去。 */
+    private function huntAdoptSlotBatch(
+        array &$router,
+        string $slotId,
+        string $chainId,
+        array $batch,
+        int $now
+    ): void {
+        $this->huntSlot($router, $slotId);
+        $router['hunt']['slots'][$slotId]['chain_id'] = $chainId;
+        $router['hunt']['slots'][$slotId]['pending'] = $this->normalizeIds($batch);
+        $router['hunt']['slots'][$slotId]['awaiting_ip'] = false;
+        $router['hunt']['slots'][$slotId]['requested_at'] = 0;
+        $this->huntActivateSlot($router, $slotId, $now);
+    }
+
+    /**
+     * 把一批人挂到槽上等全新 IP。等待期间人先寄放回服务池，绝不能留在槽里，
+     * 否则他们会拿到上一批看过的脏 IP，归因就串批了。
+     */
+    private function huntStageSlotBatch(
+        array &$router,
+        string $slotId,
+        string $chainId,
+        array $batch,
+        int $now
+    ): void {
+        $batch = $this->normalizeIds($batch);
+        $this->huntSlot($router, $slotId);
+        $router['hunt']['slots'][$slotId]['members'] = [];
+        if ($batch === []) {
+            $router['hunt']['slots'][$slotId]['chain_id'] = '';
+            $router['hunt']['slots'][$slotId]['pending'] = [];
+            $router['hunt']['slots'][$slotId]['awaiting_ip'] = false;
+            $router['hunt']['slots'][$slotId]['requested_at'] = 0;
+            return;
+        }
+        $router['hunt']['slots'][$slotId]['chain_id'] = $chainId;
+        $router['hunt']['slots'][$slotId]['pending'] = $batch;
+        $router['hunt']['slots'][$slotId]['awaiting_ip'] = true;
+        $router['hunt']['slots'][$slotId]['requested_at'] = $now;
+
+        $chain = $router['hunt']['chains'][$chainId] ?? [];
+        $this->huntReleaseToService(
+            $router,
+            $batch,
+            $chain,
+            $now,
+            '追猎待测：等全新 IP 上线'
+        );
+
+        $client = $this->huntRotateClient();
+        if ($client === null) {
+            // 没配换 IP 接口就退化为直接搬入：能跑，但跨批污染的老问题会回来。
+            Log::warning('BaitSplit 追猎未配置换 IP 接口，退化为直接搬入', [
+                'slot' => $slotId,
+            ]);
+            $this->huntActivateSlot($router, $slotId, $now);
+            return;
+        }
+        if (!$client->requestReplace($this->huntTargetId($router, $slotId))) {
+            // 换 IP 没受理：保持 awaiting，由分钟级维护重试兜底。
+            Log::warning('BaitSplit 追猎换 IP 未受理，等分钟级重试', [
+                'slot' => $slotId,
+            ]);
+        }
+    }
+
+    /** 新 IP 已上线：把等待中的人正式搬进槽。 */
+    private function huntActivateSlot(
+        array &$router,
+        string $slotId,
+        int $now
+    ): int {
+        $slot = $this->huntSlot($router, $slotId);
+        $batch = $this->normalizeIds($slot['pending'] ?? []);
+        $router['hunt']['slots'][$slotId]['pending'] = [];
+        $router['hunt']['slots'][$slotId]['awaiting_ip'] = false;
+        $router['hunt']['slots'][$slotId]['requested_at'] = 0;
+        if ($batch === []) {
+            return 0;
+        }
+        $moved = $this->huntMoveUsers(
+            $router,
+            $batch,
+            $slotId,
+            $now,
+            '墙后二分追猎：进入测试槽'
+        );
+        $router['hunt']['slots'][$slotId]['members'] = $moved;
+        $router['hunt']['slots'][$slotId]['ip'] =
+            (string) ($router['pools'][$slotId]['host'] ?? '');
+        $router['hunt']['slots'][$slotId]['ip_at'] = $now;
+        return count($moved);
+    }
+
+    /** 无条件迁移（已确认内鬼和封禁的人不动）。 */
+    private function huntMoveUsers(
+        array &$router,
+        array $ids,
+        string $poolId,
+        int $now,
+        string $note
+    ): array {
+        if (!isset($router['pools'][$poolId])) {
+            return [];
+        }
+        $moved = [];
+        foreach ($this->normalizeIds($ids) as $uid) {
+            $key = (string) $uid;
+            $curPool = $this->routerUserPoolId($router, $uid);
+            $curType = (string) ($router['pools'][$curPool]['type'] ?? '');
+            if (in_array($curType, ['danger', 'blacklist'], true)) {
+                continue;
+            }
+            $router['assignments'][$key] = $poolId;
+            $router['overrides'][$key] = $this->normalizeOverride([
+                'pool_id' => $poolId,
+                'locked' => true,
+                'note' => $note,
+                'updated_at' => $now,
+            ]);
+            $router['untested_ids'] = array_values(array_diff(
+                $router['untested_ids'] ?? [],
+                [$uid]
+            ));
+            $moved[] = $uid;
+        }
+        return $moved;
+    }
+
+    /** 本轮洗清：放回服务池继续正常用。 */
+    private function huntReleaseToService(
+        array &$router,
+        array $ids,
+        array $chain,
+        int $now,
+        string $note
+    ): int {
+        $ids = $this->normalizeIds($ids);
+        if ($ids === []) {
+            return 0;
+        }
+        $target = (string) ($chain['origin_pool_id'] ?? '');
+        if ($target === '' || !isset($router['pools'][$target])) {
+            $target = (string) ($this->huntServicePoolIds($router)[0] ?? '');
+        }
+        if ($target === '') {
+            return 0;
+        }
+        return count($this->huntMoveUsers($router, $ids, $target, $now, $note));
+    }
+
+    private function huntConvict(
+        array &$router,
+        int $userId,
+        array $chain,
+        int $now
+    ): void {
+        $dangerPoolId = $this->resolveDecoyConfirmPoolId($router);
+        if ($dangerPoolId === '') {
+            return;
+        }
+        $key = (string) $userId;
+        $router['assignments'][$key] = $dangerPoolId;
+        $router['overrides'][$key] = $this->normalizeOverride([
+            'pool_id' => $dangerPoolId,
+            'locked' => true,
+            'note' => '墙后二分追猎确认内鬼（第'
+                . (int) ($chain['round'] ?? 0) . '轮收敛）',
+            'updated_at' => $now,
+        ]);
+        $router['hunt']['convicted'][] = [
+            'at' => $now,
+            'user_id' => $userId,
+            'rounds' => (int) ($chain['round'] ?? 0),
+            'seed_size' => (int) ($chain['seed_size'] ?? 0),
+        ];
+        $router['hunt']['convicted'] = array_slice(
+            $router['hunt']['convicted'],
+            -50
+        );
+    }
+
+    private function huntDissolveChain(
+        array &$router,
+        string $chainId,
+        int $now,
+        string $reason
+    ): int {
+        $chain = $router['hunt']['chains'][$chainId] ?? null;
+        if (!is_array($chain)) {
+            return 0;
+        }
+        $ids = [];
+        foreach ($chain['slots'] as $slotId) {
+            $slot = $this->huntSlot($router, $slotId);
+            $ids = array_merge($ids, $slot['members'], $slot['pending']);
+            unset($router['hunt']['slots'][$slotId]);
+        }
+        $released = $this->huntReleaseToService(
+            $router,
+            $ids,
+            $chain,
+            $now,
+            '追猎链解散（' . $reason . '）'
+        );
+        unset($router['hunt']['chains'][$chainId]);
+        return $released;
+    }
+
+    /** 写进 wall_log，复用控制台现有的墙记录展示。 */
+    private function huntLogWall(
+        array &$router,
+        string $poolId,
+        string $oldIp,
+        string $newIp,
+        array $wall,
+        int $now
+    ): void {
+        $detail = (array) ($wall['detail'] ?? []);
+        $movedIds = $this->normalizeIds($detail['ids'] ?? []);
+        $router['wall_log'][] = [
+            'at' => $now,
+            'reason' => 'blocked',
+            'mode' => 'hunt',
+            'phase' => (string) ($wall['phase'] ?? ''),
+            'old_ip' => $oldIp,
+            'new_ip' => $newIp,
+            'pools' => [[
+                'pool_id' => $poolId,
+                'name' => (string) ($router['pools'][$poolId]['name'] ?? ''),
+            ]],
+            'suspect_count' => (int) ($wall['pullers'] ?? 0),
+            'scored_count' => 0,
+            'threshold' => 0,
+            'moved_count' => count($movedIds),
+            'moved_ids' => $movedIds,
+            'hunt_detail' => $detail,
+            'observe_pool_id' => '',
+        ];
+        $router['wall_log'] = array_slice($router['wall_log'], -200);
+    }
+
+    private function huntRecordAnomaly(
+        array &$router,
+        string $poolId,
+        string $ip,
+        int $now
+    ): void {
+        $router['hunt']['anomalies'][] = [
+            'at' => $now,
+            'pool_id' => $poolId,
+            'ip' => $ip,
+            'kind' => 'walled_without_pullers',
+        ];
+        $router['hunt']['anomalies'] = array_slice(
+            $router['hunt']['anomalies'],
+            -50
+        );
+        Log::error('BaitSplit 铁证：IP 无人拉取却被墙，说明墙与订阅泄露无关', [
+            'pool_id' => $poolId,
+            'ip' => $ip,
+            'hint' => '优先排查 AWS IP 段被扫或节点协议特征被识别',
+        ]);
+    }
+
+    /**
+     * 我们主动请求的换 IP 落地了（不是墙）。搬人进槽，不做任何嫌疑计算。
+     */
+    private function huntConsumeRequestedRotation(
+        array &$router,
+        string $poolId,
+        string $newIp,
+        int $now
+    ): bool {
+        $slot = $router['hunt']['slots'][$poolId] ?? null;
+        if (!is_array($slot) || !($slot['awaiting_ip'] ?? false)) {
+            return false;
+        }
+        $this->applyPoolHost($router, $poolId, $newIp);
+        $this->huntActivateSlot($router, $poolId, $now);
+        Log::notice('BaitSplit 追猎槽已换上全新 IP', [
+            'slot' => $poolId,
+            'ip' => $newIp,
+        ]);
+        return true;
+    }
+
+    /**
+     * 分钟级维护：兜底轮询换 IP 状态（通知可能丢），并解散长时间无进展的链。
+     */
+    private function huntTick(array &$router, int $now): array
+    {
+        if (!$this->huntEnabled()) {
+            return ['activated' => 0, 'dissolved' => 0];
+        }
+        $activated = 0;
+        $client = $this->huntRotateClient();
+        foreach (array_keys((array) ($router['hunt']['slots'] ?? [])) as $slotId) {
+            $slotId = (string) $slotId;
+            $slot = $router['hunt']['slots'][$slotId];
+            if (!($slot['awaiting_ip'] ?? false) || $client === null) {
+                continue;
+            }
+            // 通知一般几十秒到几分钟到，超过 3 分钟才主动查，避免频繁打接口。
+            $waited = $now - (int) ($slot['requested_at'] ?? 0);
+            if ($waited < 180) {
+                continue;
+            }
+            $targetId = $this->huntTargetId($router, $slotId);
+            $info = $client->instance($targetId);
+            if (
+                $info !== null
+                && $info['online']
+                && $info['ip'] !== (string) ($slot['ip'] ?? '')
+            ) {
+                $this->applyPoolHost($router, $slotId, $info['ip']);
+                $activated += $this->huntActivateSlot($router, $slotId, $now);
+                continue;
+            }
+            // 等太久还没换上：可能上次请求没受理，重发一次并重置计时。
+            if ($waited >= 600) {
+                $client->requestReplace($targetId);
+                $router['hunt']['slots'][$slotId]['requested_at'] = $now;
+            }
+        }
+
+        $idleLimit = max(30, (int) ($this->config['hunt_chain_idle_minutes'] ?? 240)) * 60;
+        $dissolved = 0;
+        foreach (array_keys((array) ($router['hunt']['chains'] ?? [])) as $chainId) {
+            $chainId = (string) $chainId;
+            $chain = $router['hunt']['chains'][$chainId] ?? null;
+            if (!is_array($chain)) {
+                continue;
+            }
+            if ($now - (int) $chain['last_event_at'] < $idleLimit) {
+                continue;
+            }
+            // 长时间两边都不墙：内鬼当晚没动，放人回去，把槽腾出来。
+            $dissolved += $this->huntDissolveChain(
+                $router,
+                $chainId,
+                $now,
+                '长时间无墙'
+            );
+        }
+        return ['activated' => $activated, 'dissolved' => $dissolved];
+    }
+
     /** 诱捕窗口内 machine：来源池全员跟新 IP；武装期同步 armed_ip。 */
     private function handleDecoyMachineIp(
         array &$router,
@@ -7231,6 +8145,22 @@ class BaitSplitService
                 continue;
             }
             $router = &$campaign['router'];
+
+            // 追猎接管时只跑它自己的维护：兜底轮询换 IP、解散无进展的链。
+            if ($this->huntEnabled()) {
+                $tick = $this->huntTick($router, $now);
+                if ($tick['activated'] > 0 || $tick['dissolved'] > 0) {
+                    $router['config_version']++;
+                    $changed = true;
+                    $actions[] = [
+                        'campaign_id' => $id,
+                        'action' => 'hunt_tick',
+                    ] + $tick;
+                }
+                unset($router);
+                continue;
+            }
+
             $sourceIds = $this->resolveDecoySourcePoolIds($router);
             if ($sourceIds === []) {
                 unset($router);

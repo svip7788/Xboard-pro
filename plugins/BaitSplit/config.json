@@ -1,8 +1,8 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "5.3.0",
-    "description": "全量接管节点域名，支持用户池、分批筛查和单用户覆盖",
+    "version": "6.0.0",
+    "description": "全量接管节点域名，支持用户池、墙后二分追猎和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
     "require": {
@@ -59,6 +59,42 @@
             "default": "",
             "label": "跟墙隔离目标池 ID",
             "description": "留空自动选择名称含“观察3”的观察组"
+        },
+        "hunt_enabled": {
+            "type": "boolean",
+            "default": false,
+            "label": "墙后二分追猎（v6）",
+            "description": "开启后接管服务池与追猎槽的墙事件：没拉过被墙 IP 的人当轮洗清，拉过的人对半切进两个槽各配全新 IP，哪个槽再被墙人就在那一半，log2(N) 次墙定位到个人。开启即绕过旧的三车道逻辑"
+        },
+        "hunt_service_pool_ids": {
+            "type": "string",
+            "default": "",
+            "label": "服务池（逗号分隔）",
+            "description": "承载大众用户的池；它们被墙时，拉过该 IP 的人成为追猎种子。填接口标识或池 ID，例如 cs1,cs4"
+        },
+        "hunt_slot_pool_ids": {
+            "type": "string",
+            "default": "",
+            "label": "追猎槽（逗号分隔，按顺序两两成链）",
+            "description": "每两个槽组成一条独立二分链，所以要填偶数个。例如 cs2,cs3,cs5,gc1 就是两条并行链"
+        },
+        "hunt_rotate_api": {
+            "type": "string",
+            "default": "",
+            "label": "换 IP 服务地址",
+            "description": "外部换 IP 服务根地址，例如 http://95.40.222.102:12132。留空则退化为直接搬人（会有跨批污染风险）"
+        },
+        "hunt_rotate_token": {
+            "type": "string",
+            "default": "",
+            "label": "换 IP 服务 Token",
+            "description": "调用 replace-ip 与 instance 接口的 Bearer Token"
+        },
+        "hunt_chain_idle_minutes": {
+            "type": "number",
+            "default": 240,
+            "label": "追猎链空转上限（分钟）",
+            "description": "两个槽都长时间不被墙说明内鬼当轮没动，超过该时长解散链、放人回服务池并腾出槽位，默认 240"
         },
         "decoy_enabled": {
             "type": "boolean",
