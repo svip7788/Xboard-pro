@@ -70,7 +70,13 @@ class TrafficFetchJob implements ShouldQueue, ShouldBeUnique
         $now    = time();
         $recordAt = strtotime(date('Y-m-d'));
 
-        foreach ($this->data as $uid => $v) {
+        // v2_stat_user 的唯一索引是 (server_rate, user_id, record_at)，批内前后两列恒定，
+        // 所以按 user_id 升序排一次，VALUES 的顺序就和索引顺序一致：并发的各个 worker
+        // 都按同一方向拿锁，不会互相反向持锁（1213 的主因）。节点上报的顺序是任意的。
+        $data = $this->data;
+        ksort($data, SORT_NUMERIC);
+
+        foreach ($data as $uid => $v) {
             $uid = (int) $uid;
             if ($uid <= 0) continue;
 
@@ -106,17 +112,21 @@ class TrafficFetchJob implements ShouldQueue, ShouldBeUnique
         // 1) 扣费：更新 v2_user.u / v2_user.d
         // 多个节点并发上报时，不同 chunk 的用户 id 容易交叉，MySQL 偶发死锁（1213）。
         // 这里内联重试——死锁必然整条 UPDATE 回滚，重试不会导致重复扣费。
-        $this->updateWithDeadlockRetry(
+        $this->runWithDeadlockRetry(fn() => DB::update(
             "UPDATE v2_user
              SET u = CASE id {$sqlU} ELSE u END,
                  d = CASE id {$sqlD} ELSE d END,
                  t = {$now}
              WHERE id IN ({$inList})"
-        );
+        ));
 
         // 2) 日流量统计 upsert v2_stat_user（合并自原 StatUserJob）
+        // 同样要重试：死锁回滚的是整条 upsert，重试不会把流量算两遍。少了重试，
+        // 这一批统计就直接丢了，而每天有几千批因死锁失败。
         try {
-            $this->upsertStatUser($statRows, $now);
+            $this->runWithDeadlockRetry(
+                fn() => $this->upsertStatUser($statRows, $now)
+            );
         } catch (\Throwable $e) {
             // 统计失败不影响扣费；记录后不再抛出，避免 Job 整体失败。
             Log::error('TrafficFetchJob stat_user upsert failed: ' . $e->getMessage(), [
@@ -175,13 +185,14 @@ class TrafficFetchJob implements ShouldQueue, ShouldBeUnique
      * 死锁（SQLSTATE 40001 / 1213）小重试。
      *
      * 指数退避 + 抖动避免连环死锁。抛出其它错误时直接透出。
+     * 只能用来包单条语句：死锁会回滚整条语句，重试才不会重复累加。
      */
-    protected function updateWithDeadlockRetry(string $sql, int $maxAttempts = 4): void
+    protected function runWithDeadlockRetry(callable $operation, int $maxAttempts = 4): void
     {
         $attempt = 0;
         while (true) {
             try {
-                DB::update($sql);
+                $operation();
                 return;
             } catch (\Throwable $e) {
                 $attempt++;
