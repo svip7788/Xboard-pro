@@ -5252,6 +5252,11 @@ class BaitSplitService
     ): void {
         $dangerPoolId = $this->resolveDecoyConfirmPoolId($router);
         if ($dangerPoolId === '') {
+            // 收敛好几轮才换来的结论，没有落点也必须叫出来，不能悄悄丢
+            Log::error('BaitSplit 追猎已定位内鬼但没有确认内鬼池，结论无处安放', [
+                'user_id' => $userId,
+                'rounds' => (int) ($chain['round'] ?? 0),
+            ]);
             return;
         }
         $key = (string) $userId;
