@@ -1,7 +1,7 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "6.0.0",
+    "version": "6.0.1",
     "description": "全量接管节点域名，支持用户池、墙后二分追猎和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
