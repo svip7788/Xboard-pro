@@ -5016,8 +5016,12 @@ class BaitSplitService
     {
         // 优先消化积压换 IP，避免锁冲突导致永久丢事件
         $drain = $this->drainPendingIpRotates(80);
-        $decoyEnabled = (bool) ($this->config['decoy_enabled'] ?? false);
-        if (!$decoyEnabled) {
+        // 追猎的兜底轮询和空转链解散也挂在这个分钟级调度上，
+        // 所以旧诱捕关掉时不能整个跳过。
+        if (
+            !$this->huntEnabled()
+            && !(bool) ($this->config['decoy_enabled'] ?? false)
+        ) {
             return ['skipped' => 'disabled', 'drain' => $drain];
         }
         // 窗口外（白天收回）多等一会儿，保证 8 点必达
@@ -6924,7 +6928,7 @@ class BaitSplitService
         $router['hunt']['slots'][$poolId]['awaiting_ip'] = false;
         $router['hunt']['slots'][$poolId]['requested_at'] = 0;
 
-        $pullers = $this->huntPullersOfDeadIp(
+        [$pullers, $rawPullerCount] = $this->huntPullersOfDeadIp(
             $campaign,
             $router,
             $poolId,
@@ -6933,7 +6937,7 @@ class BaitSplitService
 
         // 没有任何人拉过这个 IP 却被墙 —— 没人见过它，就没人能上报它。
         // 这是「墙与泄露无关」的铁证，必须立刻叫出来。
-        if ($pullers === []) {
+        if ($rawPullerCount === 0) {
             $this->huntRecordAnomaly($router, $poolId, $deadIp, $now);
             return [
                 'handled' => true,
@@ -6943,8 +6947,40 @@ class BaitSplitService
             ];
         }
 
+        // 有人拉过，但都已经搬走了：这是迟到的墙，不是铁证，别误报。
+        if ($pullers === []) {
+            Log::warning('BaitSplit 追猎收到迟到的墙，拉取者已全部转移', [
+                'pool_id' => $poolId,
+                'dead_ip' => $deadIp,
+                'raw_pullers' => $rawPullerCount,
+            ]);
+            return [
+                'handled' => true,
+                'phase' => 'stale_wall',
+                'pullers' => 0,
+                'detail' => ['dead_ip' => $deadIp, 'raw' => $rawPullerCount],
+            ];
+        }
+
         $chainId = (string) ($slot['chain_id'] ?? '');
         if ($chainId !== '' && isset($router['hunt']['chains'][$chainId])) {
+            // 迟到的墙：这个 IP 早就换掉了，现在槽里是下一批人。
+            // 拉取者名单仍然准确（按精确 IP 记的），但绝不能拿它去洗清当前批。
+            $assignedIp = (string) ($slot['ip'] ?? '');
+            if ($assignedIp !== '' && $deadIp !== $assignedIp) {
+                Log::warning('BaitSplit 追猎收到迟到的墙，已忽略不动当前批', [
+                    'slot' => $poolId,
+                    'dead_ip' => $deadIp,
+                    'assigned_ip' => $assignedIp,
+                    'pullers' => count($pullers),
+                ]);
+                return [
+                    'handled' => true,
+                    'phase' => 'stale_wall',
+                    'pullers' => count($pullers),
+                    'detail' => ['dead_ip' => $deadIp],
+                ];
+            }
             return $this->huntAdvanceChain(
                 $router,
                 $chainId,
@@ -6958,6 +6994,11 @@ class BaitSplitService
 
     /**
      * 谁拉过这个死 IP。只认当前确实归属该池的人，避免把已经搬走的历史成员算进来。
+     *
+     * 同时回传未过滤的原始人数：区分「真的没人见过这个 IP」（非泄露铁证）
+     * 和「见过的人已经搬走了」（迟到的墙）——这两件事结论完全相反。
+     *
+     * @return array{0:array<int,int>,1:int}
      */
     private function huntPullersOfDeadIp(
         array $campaign,
@@ -6966,10 +7007,11 @@ class BaitSplitService
         string $deadIp
     ): array {
         if ($deadIp === '') {
-            return [];
+            return [[], 0];
         }
+        $raw = $this->poolIpExposureLastMap($campaign, $poolId, $deadIp);
         $ids = [];
-        foreach ($this->poolIpExposureLastMap($campaign, $poolId, $deadIp) as $uid => $ts) {
+        foreach ($raw as $uid => $ts) {
             $uid = (int) $uid;
             if ($uid <= 0) {
                 continue;
@@ -6985,7 +7027,7 @@ class BaitSplitService
             $ids[] = $uid;
         }
         sort($ids);
-        return $ids;
+        return [$ids, count($raw)];
     }
 
     /** 服务池被墙：拿拉取者开一条新链。 */
@@ -7096,10 +7138,15 @@ class BaitSplitService
         $note = '追猎第' . $chain['round'] . '轮洗清（未拉取被墙IP）';
 
         // 本槽里没拉过死 IP 的人 + 兄弟槽全员，本轮都洗清。
+        // 成员以「实际锁在该池的人」为准，不信 hunt 里存的快照——
+        // 后台手工挪过人时快照会失真。
         $clear = [];
         foreach ($chain['slots'] as $slotId) {
             $slot = $this->huntSlot($router, $slotId);
-            $inSlot = array_merge($slot['members'], $slot['pending']);
+            $inSlot = array_values(array_unique(array_merge(
+                $this->poolLockedMemberIds($router, $slotId),
+                $slot['pending']
+            )));
             $clear = array_merge(
                 $clear,
                 $slotId === $walledSlotId
@@ -7164,9 +7211,17 @@ class BaitSplitService
             $slots = [$slots[1], $slots[0]];
         }
         [$slotA, $slotB] = $slots;
-        $half = (int) ceil(count($ids) / 2);
-        $batchA = array_slice($ids, 0, $half);
-        $batchB = array_slice($ids, $half);
+        // 交错切而不是前后对半：ID 和注册时间强相关，前后切会让「老号」
+        // 全落一边，一旦墙其实和号龄有关就会把两个变量混在一起。
+        $batchA = [];
+        $batchB = [];
+        foreach ($ids as $i => $uid) {
+            if ($i % 2 === 0) {
+                $batchA[] = $uid;
+            } else {
+                $batchB[] = $uid;
+            }
+        }
 
         if ($freshSlotId === $slotA) {
             $this->huntAdoptSlotBatch($router, $slotA, $chainId, $batchA, $now);
@@ -7328,7 +7383,29 @@ class BaitSplitService
         if ($target === '') {
             return 0;
         }
-        return count($this->huntMoveUsers($router, $ids, $target, $now, $note));
+        // 回服务池只改 assignment 并删掉覆盖规则。写 locked 覆盖会让
+        // 8000 多人全被钉死，状态 blob 也会无止境膨胀。
+        $released = 0;
+        foreach ($this->normalizeIds($ids) as $uid) {
+            $key = (string) $uid;
+            $curType = (string) (
+                $router['pools'][$this->routerUserPoolId($router, $uid)]['type'] ?? ''
+            );
+            if (in_array($curType, ['danger', 'blacklist'], true)) {
+                continue;
+            }
+            unset($router['overrides'][$key]);
+            $router['assignments'][$key] = $target;
+            $released++;
+        }
+        if ($released > 0) {
+            Log::notice('BaitSplit 追猎放人回服务池', [
+                'target' => $target,
+                'count' => $released,
+                'reason' => $note,
+            ]);
+        }
+        return $released;
     }
 
     private function huntConvict(
@@ -7477,12 +7554,18 @@ class BaitSplitService
         }
         $activated = 0;
         $client = $this->huntRotateClient();
+        // 整个 tick 在状态锁里跑，每次最多打 2 个槽的接口，剩下的下一分钟再说。
+        $probeBudget = 2;
         foreach (array_keys((array) ($router['hunt']['slots'] ?? [])) as $slotId) {
             $slotId = (string) $slotId;
             $slot = $router['hunt']['slots'][$slotId];
             if (!($slot['awaiting_ip'] ?? false) || $client === null) {
                 continue;
             }
+            if ($probeBudget <= 0) {
+                break;
+            }
+            $probeBudget--;
             // 通知一般几十秒到几分钟到，超过 3 分钟才主动查，避免频繁打接口。
             $waited = $now - (int) ($slot['requested_at'] ?? 0);
             if ($waited < 180) {
@@ -8158,6 +8241,8 @@ class BaitSplitService
                     ] + $tick;
                 }
                 unset($router);
+                // $campaign 是副本，不写回 state 改动就丢了
+                $state['campaigns'][$id] = $campaign;
                 continue;
             }
 

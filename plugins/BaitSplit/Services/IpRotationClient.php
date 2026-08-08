@@ -14,10 +14,14 @@ use Illuminate\Support\Facades\Log;
  */
 class IpRotationClient
 {
+    /**
+     * 这些调用发生在持有状态锁的墙处理路径上，超时必须短。
+     * 请求没打出去不要紧，分钟级维护会重试。
+     */
     public function __construct(
         private readonly string $baseUrl,
         private readonly string $token,
-        private readonly int $timeout = 15
+        private readonly int $timeout = 8
     ) {
     }
 
@@ -112,6 +116,6 @@ class IpRotationClient
             ->acceptJson()
             ->asJson()
             ->timeout($this->timeout)
-            ->connectTimeout(min(10, $this->timeout));
+            ->connectTimeout(min(4, $this->timeout));
     }
 }
