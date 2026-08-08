@@ -3425,9 +3425,33 @@ class BaitSplitService
         $router = $campaign['router'];
         $override = $router['overrides'][(string) $userId] ?? null;
         if ($override && $this->overrideIsActive($override) && $override['pool_id'] !== '') {
-            return $override['pool_id'];
+            return $this->guardHuntSlot($router, (string) $override['pool_id'], true);
         }
-        return $router['assignments'][(string) $userId] ?? null;
+        $assigned = $router['assignments'][(string) $userId] ?? null;
+        return $assigned === null
+            ? null
+            : $this->guardHuntSlot($router, (string) $assigned, false);
+    }
+
+    /**
+     * 追猎槽只认追猎自己下的锁定覆盖。
+     *
+     * 槽里混进零星用户就会拿到测试 IP，二分出来的结论全是污染——过期用户续费后
+     * 旧归属复活就是这么漏的。所以非锁定来源指向槽时，一律退回服务池。
+     */
+    private function guardHuntSlot(
+        array $router,
+        string $poolId,
+        bool $locked
+    ): string {
+        if ($locked || $poolId === '' || !$this->huntEnabled()) {
+            return $poolId;
+        }
+        if (!in_array($poolId, $this->huntSlotIds($router), true)) {
+            return $poolId;
+        }
+        $service = $this->huntServicePoolIds($router);
+        return $service[0] ?? $this->poolIdByType($router, 'default');
     }
 
     private function overrideIsActive(array $override): bool
@@ -4558,7 +4582,7 @@ class BaitSplitService
         }
         $assigned = (string) ($router['assignments'][$key] ?? '');
         return $assigned !== ''
-            ? $assigned
+            ? $this->guardHuntSlot($router, $assigned, false)
             : $this->poolIdByType($router, 'default');
     }
 
