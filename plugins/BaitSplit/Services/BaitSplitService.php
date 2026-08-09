@@ -4384,24 +4384,39 @@ class BaitSplitService
     /**
      * 这次换 IP 到底算不算被墙。
      *
-     * reason 单独不可信：它只表示「换的是 IP 还是机器」。手动和外部接口触发的
-     * 换址同样标 blocked，而被墙逼出来的整机重建反倒标 machine。上游的 source
-     * 才是干净信号：
+     * reason 单独不可信：它只表示「换的是 IP 还是机器」。手动、外部接口和地址
+     * 自发漂移同样标 blocked，而被墙逼出来的整机重建反倒标 machine。上游的
+     * source 才是干净信号：
      *   auto     被墙检测触发的自动换 IP        —— 是墙
      *   rebuild  连续被墙达阈值后销毁重建的新机  —— 是墙
-     *   manual / external / launch / sync      —— 不是墙
-     * source 缺失（旧版发送端）时退回只看 reason，不改变原行为。
+     *   manual / external / launch / sync / drift —— 不是墙
+     *
+     * 认不出的 source 一律不当墙：上游还在扩充这张表，误判成墙会凭空开一条
+     * 追猎链去追不存在的人，代价比漏一次墙大得多。只有 source 整个缺失（旧版
+     * 发送端）才退回看 reason，保持改动前的行为。
      */
     private function rotationIsWall(string $reason, string $source): bool
     {
         $source = strtolower(trim($source));
+        if ($source === '') {
+            return $reason === 'blocked';
+        }
         if (in_array($source, ['auto', 'rebuild'], true)) {
             return true;
         }
-        if (in_array($source, ['manual', 'external', 'launch', 'sync'], true)) {
-            return false;
+        if (
+            !in_array(
+                $source,
+                ['manual', 'external', 'launch', 'sync', 'drift'],
+                true
+            )
+        ) {
+            Log::warning('BaitSplit 收到未知的换址来源，按非墙处理', [
+                'source' => $source,
+                'reason' => $reason,
+            ]);
         }
-        return $reason === 'blocked';
+        return false;
     }
 
     private function poolExposureLastMap(array $campaign, string $poolId): array
