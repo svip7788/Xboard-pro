@@ -953,12 +953,14 @@ class BaitSplitService
         string $oldIp,
         string $newIp,
         string $targetId = '',
-        string $reason = 'blocked'
+        string $reason = 'blocked',
+        string $source = ''
     ): array {
         $oldIp = trim($oldIp);
         $newIp = $this->normalizePublicIp($newIp);
         $targetId = trim($targetId);
         $reason = $this->normalizeRotationReason($reason);
+        $isWall = $this->rotationIsWall($reason, $source);
         if ($oldIp !== '') {
             $oldIp = $this->normalizePublicIp($oldIp);
         }
@@ -1018,7 +1020,7 @@ class BaitSplitService
                     'mode' => 'hunt',
                     'phase' => 'slot_ip_ready',
                 ];
-            } elseif ($reason === 'blocked') {
+            } elseif ($isWall) {
                 $wall = $this->huntHandleWall(
                     $campaign,
                     $router,
@@ -1028,13 +1030,16 @@ class BaitSplitService
                     $nowTs
                 );
                 $wall['mode'] = 'hunt';
+                $wall['source'] = $source;
                 $this->huntLogWall($router, $poolId, $oldIp, $newIp, $wall, $nowTs);
             } else {
+                // 扩容、手动、外部接口触发的换址：只把新 IP 换上，不产出嫌疑。
                 $this->applyPoolHost($router, $poolId, $newIp);
                 $wall = [
                     'reason' => $reason,
                     'mode' => 'hunt',
-                    'phase' => 'machine',
+                    'phase' => 'not_wall',
+                    'source' => $source,
                 ];
             }
             $router['config_version']++;
@@ -1044,6 +1049,7 @@ class BaitSplitService
                 'campaign_id' => $campaignId,
                 'target_id' => $targetId,
                 'reason' => $reason,
+                'source' => $source,
                 'old_ip' => $oldIp,
                 'new_ip' => $newIp,
                 'wall' => $wall,
@@ -1185,13 +1191,14 @@ class BaitSplitService
                 );
             }
         }
+        // 非追猎池同样只认真墙：手动/外部/扩容触发的换址不该记跟墙分。
         $wall = $this->processWallEvent(
             $campaign,
             $router,
             $targetPoolIds,
             $oldIp,
             $newIp,
-            $reason
+            $isWall ? 'blocked' : 'machine'
         );
         $router['config_version']++;
         $state['campaigns'][$campaignId] = $campaign;
@@ -1201,6 +1208,7 @@ class BaitSplitService
             'campaign_id' => $campaignId,
             'target_id' => $targetId,
             'reason' => $reason,
+            'source' => $source,
             'old_ip' => $oldIp,
             'new_ip' => $newIp,
             'wall' => $wall,
@@ -4246,6 +4254,7 @@ class BaitSplitService
                 'old_ip' => (string) ($data['old_ip'] ?? ''),
                 'new_ip' => (string) ($data['new_ip'] ?? ''),
                 'reason' => (string) ($data['reason'] ?? 'blocked'),
+                'source' => (string) ($data['source'] ?? ''),
                 'queued_at' => time(),
             ], JSON_UNESCAPED_UNICODE));
         } catch (\Throwable $e) {
@@ -4306,7 +4315,8 @@ class BaitSplitService
                             (string) ($data['old_ip'] ?? ''),
                             (string) $data['new_ip'],
                             (string) ($data['target_id'] ?? ''),
-                            (string) ($data['reason'] ?? 'blocked')
+                            (string) ($data['reason'] ?? 'blocked'),
+                            (string) ($data['source'] ?? '')
                         );
                         $result['event_id'] = (string) ($data['event_id'] ?? '');
                         $result['instance_id'] = (string) ($data['instance_id'] ?? '');
@@ -4369,6 +4379,29 @@ class BaitSplitService
             '挂壁', '机器', '机器挂壁', '宕机', '故障', '维护', '重启',
         ];
         return in_array($reason, $machineAliases, true) ? 'machine' : 'blocked';
+    }
+
+    /**
+     * 这次换 IP 到底算不算被墙。
+     *
+     * reason 单独不可信：它只表示「换的是 IP 还是机器」。手动和外部接口触发的
+     * 换址同样标 blocked，而被墙逼出来的整机重建反倒标 machine。上游的 source
+     * 才是干净信号：
+     *   auto     被墙检测触发的自动换 IP        —— 是墙
+     *   rebuild  连续被墙达阈值后销毁重建的新机  —— 是墙
+     *   manual / external / launch / sync      —— 不是墙
+     * source 缺失（旧版发送端）时退回只看 reason，不改变原行为。
+     */
+    private function rotationIsWall(string $reason, string $source): bool
+    {
+        $source = strtolower(trim($source));
+        if (in_array($source, ['auto', 'rebuild'], true)) {
+            return true;
+        }
+        if (in_array($source, ['manual', 'external', 'launch', 'sync'], true)) {
+            return false;
+        }
+        return $reason === 'blocked';
     }
 
     private function poolExposureLastMap(array $campaign, string $poolId): array

@@ -48,6 +48,8 @@ class WebhookController extends Controller
             'old_ip' => ['nullable', 'ipv4'],
             'new_ip' => ['required', 'ipv4'],
             'reason' => ['nullable', 'string', 'max:20'],
+            // 上游区分换址来源：只有 auto / rebuild 才是真被墙。
+            'source' => ['nullable', 'string', 'max:20'],
         ]);
         $eventKey = 'bait_split:ip_rotate_event:'
             . hash('sha256', $data['campaign_id'] . ':' . $data['event_id']);
@@ -67,7 +69,8 @@ class WebhookController extends Controller
                         $data['old_ip'] ?? '',
                         $data['new_ip'],
                         $data['target_id'] ?? '',
-                        $data['reason'] ?? 'blocked'
+                        $data['reason'] ?? 'blocked',
+                        $data['source'] ?? ''
                     );
                     $result['event_id'] = $data['event_id'];
                     $result['instance_id'] = $data['instance_id'] ?? '';
