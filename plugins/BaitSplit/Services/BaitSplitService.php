@@ -971,7 +971,7 @@ class BaitSplitService
             throw new InvalidArgumentException('新旧 IP 不能相同');
         }
 
-        $state = $this->state();
+        $state = $this->freshState();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $router = &$campaign['router'];
         // 换 IP 高频且可逆（再来一次 webhook），不做全量配置快照
@@ -1927,6 +1927,20 @@ class BaitSplitService
                 : null,
             'findings' => array_values($campaign['findings']),
         ];
+    }
+
+    /**
+     * 进锁之后必须用这个读，不能用 state()。
+     *
+     * Setting 是 scoped 绑定，一个请求内共用一份 loadedSettings；webhook 在验签
+     * 时就已经把快照钉住了，那时锁还没拿到。等真正进锁再调 state()，读回来的仍是
+     * 进锁之前的旧快照，于是后进来的那次写会把先落盘的那次整个盖掉——两条换 IP
+     * 通知只差一秒时必然发生。丢掉实例强制重载，锁才真正管用。
+     */
+    private function freshState(): array
+    {
+        app()->forgetInstance(Setting::class);
+        return $this->state();
     }
 
     private function state(): array
@@ -3717,7 +3731,7 @@ class BaitSplitService
         try {
             Cache::lock(self::STATE_LOCK, 15)
                 ->get(function () use (&$campaign, $userId): void {
-                    $state = $this->state();
+                    $state = $this->freshState();
                     $latest = $this->requireRouterCampaign(
                         $state,
                         $campaign['id']
@@ -4555,7 +4569,7 @@ class BaitSplitService
 
     private function runHuntLocked(): array
     {
-        $state = $this->state();
+        $state = $this->freshState();
         $now = time();
         $changed = false;
         $actions = [];
