@@ -22,6 +22,8 @@ class BaitSplitService
     private const STATE_LOCK = 'bait_split:admin_state';
     private const IP_PENDING_KEY = 'bait_split:ip_rotate_pending';
     private const UPSTREAM_SYNC_MARK = 'bait_split:upstream_sync_at';
+    private const WALL_EVIDENCE_KEY = 'bait_split:wall_evidence';
+    private const WALL_EVIDENCE_KEEP = 600;
     private const MIN_BUCKETS = 2;
     private const MAX_BUCKETS = 10;
 
@@ -4947,6 +4949,8 @@ class BaitSplitService
         $deadIp = $oldIp !== ''
             ? $oldIp
             : (string) ($router['pools'][$poolId]['host'] ?? '');
+        // 死 IP 的上线时刻，applyPoolHost 会把它覆盖成本次换址时间，先取走。
+        $deadIpAt = (int) ($router['pools'][$poolId]['last_rotation_at'] ?? 0);
         // webhook 给的新 IP 已经过国内验墙，可以直接上线。
         $this->applyPoolHost($router, $poolId, $newIp);
         $slot = $this->huntSlot($router, $poolId);
@@ -4955,11 +4959,23 @@ class BaitSplitService
         $router['hunt']['slots'][$poolId]['awaiting_ip'] = false;
         $router['hunt']['slots'][$poolId]['requested_at'] = 0;
 
-        [$pullers, $rawPullerCount] = $this->huntPullersOfDeadIp(
+        [$pullers, $rawPullerCount, $pullerLastAt] = $this->huntPullersOfDeadIp(
             $campaign,
             $router,
             $poolId,
             $deadIp
+        );
+
+        // 无论后面能不能开链，名单都先落盘。开不出链而被丢弃的墙同样是证据，
+        // 攒够之后可以离线做交集打分，不占任何槽位。
+        $this->huntRecordEvidence(
+            $router,
+            $poolId,
+            $deadIp,
+            $deadIpAt,
+            $pullerLastAt,
+            $rawPullerCount,
+            $now
         );
 
         // 没有任何人拉过这个 IP 却被墙 —— 没人见过它，就没人能上报它。
@@ -5025,7 +5041,9 @@ class BaitSplitService
      * 同时回传未过滤的原始人数：区分「真的没人见过这个 IP」（非泄露铁证）
      * 和「见过的人已经搬走了」（迟到的墙）——这两件事结论完全相反。
      *
-     * @return array{0:array<int,int>,1:int}
+     * 第三个返回值是同一批人的最后拉取时刻，留给证据落盘算「拉完多久墙就来了」。
+     *
+     * @return array{0:array<int,int>,1:int,2:array<int,int>}
      */
     private function huntPullersOfDeadIp(
         array $campaign,
@@ -5034,10 +5052,11 @@ class BaitSplitService
         string $deadIp
     ): array {
         if ($deadIp === '') {
-            return [[], 0];
+            return [[], 0, []];
         }
         $raw = $this->poolIpExposureLastMap($campaign, $poolId, $deadIp);
         $ids = [];
+        $lastAt = [];
         foreach ($raw as $uid => $ts) {
             $uid = (int) $uid;
             if ($uid <= 0) {
@@ -5052,9 +5071,10 @@ class BaitSplitService
                 continue;
             }
             $ids[] = $uid;
+            $lastAt[$uid] = (int) $ts;
         }
         sort($ids);
-        return [$ids, count($raw)];
+        return [$ids, count($raw), $lastAt];
     }
 
     /** 服务池被墙：拿拉取者开一条新链。 */
@@ -5529,6 +5549,55 @@ class BaitSplitService
             'observe_pool_id' => '',
         ];
         $router['wall_log'] = array_slice($router['wall_log'], -200);
+    }
+
+    /**
+     * 把一次墙的拉取者名单落盘。
+     *
+     * 每条记录存的是「这个 IP 从上线到被墙期间，谁拉过、最后一次拉在什么时候」。
+     * 有了拉取时刻才能算出「拉完多久墙就来了」——高频拉取的人总会出现在名单里，
+     * 光看出现次数会把他们全冤枉掉，必须靠时间差和对照组把频次的影响除掉。
+     *
+     * @param array<int,int> $pullerLastAt uid => 最后拉取时刻
+     */
+    private function huntRecordEvidence(
+        array $router,
+        string $poolId,
+        string $deadIp,
+        int $deadIpAt,
+        array $pullerLastAt,
+        int $rawPullerCount,
+        int $now
+    ): void {
+        if ($pullerLastAt === []) {
+            return;
+        }
+        try {
+            $record = [
+                'at' => $now,
+                'pool_id' => $poolId,
+                'pool' => (string) ($router['pools'][$poolId]['name'] ?? $poolId),
+                // huntSlot() 会给任何被墙的池惰性建槽记录，服务池也在内，
+                // 所以只能按配置判断，否则分不出自然墙和追猎诱发的墙
+                'is_slot' => in_array($poolId, $this->huntSlotIds($router), true),
+                'ip' => $deadIp,
+                'ip_at' => $deadIpAt,
+                'raw' => $rawPullerCount,
+                'pullers' => $pullerLastAt,
+            ];
+            Redis::lpush(self::WALL_EVIDENCE_KEY, json_encode(
+                $record,
+                JSON_UNESCAPED_UNICODE
+            ));
+            Redis::ltrim(self::WALL_EVIDENCE_KEY, 0, self::WALL_EVIDENCE_KEEP - 1);
+            Redis::expire(self::WALL_EVIDENCE_KEY, 86400 * 30);
+        } catch (\Throwable $exception) {
+            // 证据落盘失败不能影响追猎本身。
+            Log::warning('BaitSplit 墙证据落盘失败', [
+                'pool_id' => $poolId,
+                'error' => $exception->getMessage(),
+            ]);
+        }
     }
 
     private function huntRecordAnomaly(
