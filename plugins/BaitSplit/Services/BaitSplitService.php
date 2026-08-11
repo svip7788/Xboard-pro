@@ -5701,6 +5701,9 @@ class BaitSplitService
             if ($now - (int) $chain['last_event_at'] < $idleLimit) {
                 continue;
             }
+            // 已经收敛到很窄的链先把名单记下来。四轮才收敛到十来个人，
+            // 直接放回服务池等于把这几轮的成果全扔了，下次得从几千人重来。
+            $this->huntParkChain($router, $chainId, $now);
             // 长时间两边都不墙：内鬼当晚没动，放人回去，把槽腾出来。
             $dissolved += $this->huntDissolveChain(
                 $router,
@@ -5709,7 +5712,115 @@ class BaitSplitService
                 '长时间无墙'
             );
         }
-        return ['activated' => $activated, 'dissolved' => $dissolved];
+
+        $resumed = $this->huntResumeParked($router, $now);
+        return [
+            'activated' => $activated,
+            'dissolved' => $dissolved,
+            'resumed' => $resumed,
+        ];
+    }
+
+    /**
+     * 把收敛到很窄的链存档，等槽位空闲时再复活。
+     *
+     * 只存人不占槽：槽必须腾出来给新的墙，但这批人是几轮筛下来的，
+     * 名单本身比槽位值钱得多。
+     */
+    private function huntParkChain(array &$router, string $chainId, int $now): void
+    {
+        $chain = $router['hunt']['chains'][$chainId] ?? null;
+        if (!is_array($chain)) {
+            return;
+        }
+        $max = max(2, (int) ($this->config['hunt_park_max_members'] ?? 20));
+        $ids = [];
+        foreach ((array) ($chain['slots'] ?? []) as $slotId) {
+            $slot = $router['hunt']['slots'][(string) $slotId] ?? [];
+            $ids = array_merge(
+                $ids,
+                (array) ($slot['members'] ?? []),
+                (array) ($slot['pending'] ?? [])
+            );
+        }
+        $ids = $this->normalizeIds($ids);
+        // 人还太多说明没筛出什么，存了也没价值
+        if (count($ids) < 2 || count($ids) > $max) {
+            return;
+        }
+        $router['hunt']['parked'][] = [
+            'ids' => $ids,
+            'origin_pool_id' => (string) ($chain['origin_pool_id'] ?? ''),
+            'round' => (int) ($chain['round'] ?? 0),
+            'from' => $chainId,
+            'at' => $now,
+        ];
+        $router['hunt']['parked'] = array_slice(
+            (array) $router['hunt']['parked'],
+            -10
+        );
+        Log::warning('BaitSplit 追猎窄链已挂起，等槽位空闲再续', [
+            'chain' => $chainId,
+            'round' => $chain['round'] ?? 0,
+            'ids' => $ids,
+        ]);
+    }
+
+    /**
+     * 槽位空闲时复活挂起的窄链。
+     *
+     * 隔一段时间才复活：刚挂起就抢槽会把新墙挤成 no_free_chain，
+     * 而新墙的拉取者集合往往比这批陈旧的嫌疑人更值得查。
+     */
+    private function huntResumeParked(array &$router, int $now): int
+    {
+        $parked = array_values((array) ($router['hunt']['parked'] ?? []));
+        if ($parked === []) {
+            return 0;
+        }
+        $cooldown = max(10, (int) ($this->config['hunt_park_cooldown_minutes'] ?? 120)) * 60;
+        // 人少的先复活：越接近收敛，一次墙的信息量越大
+        usort($parked, fn(array $a, array $b): int
+            => count($a['ids']) <=> count($b['ids']));
+
+        $resumed = 0;
+        $keep = [];
+        foreach ($parked as $entry) {
+            $origin = (string) ($entry['origin_pool_id'] ?? '');
+            $ids = [];
+            foreach ($this->normalizeIds($entry['ids'] ?? []) as $uid) {
+                // 挂起期间被挪走的人（比如已经进危险组）不再参与
+                if ($this->routerUserPoolId($router, $uid) === $origin) {
+                    $ids[] = $uid;
+                }
+            }
+            if (count($ids) < 2) {
+                Log::notice('BaitSplit 挂起的窄链已失效，成员不在原池', [
+                    'from' => $entry['from'] ?? '',
+                ]);
+                continue;
+            }
+            if (
+                $resumed > 0
+                || $now - (int) ($entry['at'] ?? 0) < $cooldown
+            ) {
+                $keep[] = $entry;
+                continue;
+            }
+            $result = $this->huntSeedChain($router, $origin, $ids, $now);
+            if ((string) ($result['phase'] ?? '') !== 'chain_seeded') {
+                $keep[] = $entry;
+                continue;
+            }
+            $resumed++;
+            Log::warning('BaitSplit 挂起的窄链已复活', [
+                'from' => $entry['from'] ?? '',
+                'round' => $entry['round'] ?? 0,
+                'size' => count($ids),
+            ]);
+        }
+        $router['hunt']['parked'] = array_values($keep);
+        return $resumed;
     }
 
     /**
