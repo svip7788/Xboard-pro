@@ -21,6 +21,7 @@ class BaitSplitService
     private const STATE_KEY = 'bait_split_state';
     private const STATE_LOCK = 'bait_split:admin_state';
     private const IP_PENDING_KEY = 'bait_split:ip_rotate_pending';
+    private const UPSTREAM_SYNC_MARK = 'bait_split:upstream_sync_at';
     private const MIN_BUCKETS = 2;
     private const MAX_BUCKETS = 10;
 
@@ -4541,6 +4542,98 @@ class BaitSplitService
     }
 
     /**
+     * 通知丢失时的兜底：主动问上游每个目标的当前地址，本地对不上就补录。
+     *
+     * 只补地址，不产生墙事件。一次换址算不算墙，只有推送里的 source 说了算，
+     * 这里靠"地址变了"反推会凭空开出追猎链，把嫌疑记到无辜的人头上。
+     *
+     * 需要兜底本身就说明推送链路断了，所以每补一个都记 warning。
+     */
+    public function reconcileUpstreamHosts(int $interval = 300): array
+    {
+        $client = IpRotationClient::fromConfig($this->config);
+        if ($client === null) {
+            return ['skipped' => 'no_api'];
+        }
+        // add 只在键不存在时成功，天然实现"每 interval 秒最多跑一次"
+        if (!Cache::add(self::UPSTREAM_SYNC_MARK, time(), $interval)) {
+            return ['skipped' => 'throttled'];
+        }
+
+        $targets = [];
+        foreach ($this->state()['campaigns'] ?? [] as $campaignId => $campaign) {
+            if (empty($campaign['router']['enabled'])) {
+                continue;
+            }
+            foreach ($campaign['router']['pools'] ?? [] as $pool) {
+                $targetId = trim((string) ($pool['webhook_id'] ?? ''));
+                $host = trim((string) ($pool['host'] ?? ''));
+                // 域名池由别处维护，只认地址型的池
+                if (
+                    $targetId === ''
+                    || filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
+                        === false
+                ) {
+                    continue;
+                }
+                $targets[] = [
+                    'campaign_id' => (string) $campaignId,
+                    'target_id' => $targetId,
+                    'host' => $host,
+                ];
+            }
+        }
+
+        // 查询在锁外做，别让 HTTP 往返堵住墙处理
+        $deadline = microtime(true) + 20;
+        $drifted = [];
+        foreach ($targets as $target) {
+            if (microtime(true) >= $deadline) {
+                break;
+            }
+            $info = $client->instance($target['target_id']);
+            // online 为假说明新地址还在验墙，此刻补录会下发一个还没通的地址
+            if ($info === null || !$info['online'] || $info['ip'] === $target['host']) {
+                continue;
+            }
+            $drifted[] = $target + ['new_ip' => $info['ip']];
+        }
+        if (!$drifted) {
+            return ['checked' => count($targets), 'fixed' => 0];
+        }
+
+        $fixed = 0;
+        foreach ($drifted as $item) {
+            try {
+                Cache::lock(self::STATE_LOCK, 45)->block(
+                    10,
+                    fn() => $this->rotateCampaignIp(
+                        $item['campaign_id'],
+                        $item['host'],
+                        $item['new_ip'],
+                        $item['target_id'],
+                        'machine',
+                        'drift'
+                    )
+                );
+                $fixed++;
+                Log::warning('BaitSplit 上游地址已变但没收到通知，已兜底补录', [
+                    'target_id' => $item['target_id'],
+                    'old_ip' => $item['host'],
+                    'new_ip' => $item['new_ip'],
+                ]);
+            } catch (\Throwable $exception) {
+                Log::error('BaitSplit 兜底补录地址失败', [
+                    'target_id' => $item['target_id'],
+                    'new_ip' => $item['new_ip'],
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+        }
+        return ['checked' => count($targets), 'fixed' => $fixed];
+    }
+
+    /**
      * 分钟级维护：先消化积压的换 IP 事件，再跑追猎的兜底轮询与空转链解散。
      *
      * 方法名和 bait:decoy 命令名沿用旧称，只因调度里引用着它，改名收益不抵风险。
@@ -4549,8 +4642,15 @@ class BaitSplitService
     {
         // 优先消化积压换 IP，避免锁冲突导致永久丢事件
         $drain = $this->drainPendingIpRotates(80);
+        // 推送链路断掉时，这是唯一能让下发地址回到正确值的路径，
+        // 所以放在追猎开关之前，关了追猎也要跑
+        $upstream = $this->reconcileUpstreamHosts();
         if (!$this->huntEnabled()) {
-            return ['skipped' => 'disabled', 'drain' => $drain];
+            return [
+                'skipped' => 'disabled',
+                'drain' => $drain,
+                'upstream' => $upstream,
+            ];
         }
         try {
             $result = Cache::lock(self::STATE_LOCK, 45)->block(
@@ -4558,12 +4658,17 @@ class BaitSplitService
                 fn(): array => $this->runHuntLocked()
             );
             $result['drain'] = $drain;
+            $result['upstream'] = $upstream;
             return $result;
         } catch (LockTimeoutException) {
             Log::warning('BaitSplit bait:decoy 抢锁失败', [
                 'pending' => $drain['remaining'] ?? 0,
             ]);
-            return ['skipped' => 'locked', 'drain' => $drain];
+            return [
+                'skipped' => 'locked',
+                'drain' => $drain,
+                'upstream' => $upstream,
+            ];
         }
     }
 
