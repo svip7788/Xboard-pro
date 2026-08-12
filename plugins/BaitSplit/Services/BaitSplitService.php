@@ -4771,6 +4771,7 @@ class BaitSplitService
             'slots' => [],
             'anomalies' => [],
             'convicted' => [],
+            'parked' => [],
             'seeded_at' => 0,
         ];
     }
@@ -4838,11 +4839,29 @@ class BaitSplitService
                 ];
             }
         }
+        $parked = [];
+        foreach ((array) ($hunt['parked'] ?? []) as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $ids = $this->normalizeIds($item['ids'] ?? []);
+            if (count($ids) < 2) {
+                continue;
+            }
+            $parked[] = [
+                'ids' => $ids,
+                'origin_pool_id' => (string) ($item['origin_pool_id'] ?? ''),
+                'round' => max(0, (int) ($item['round'] ?? 0)),
+                'from' => (string) ($item['from'] ?? ''),
+                'at' => max(0, (int) ($item['at'] ?? 0)),
+            ];
+        }
         return [
             'chains' => $chains,
             'slots' => $slots,
             'anomalies' => array_slice($anomalies, -50),
             'convicted' => array_slice($convicted, -50),
+            'parked' => array_slice($parked, -10),
             'seeded_at' => max(0, (int) ($hunt['seeded_at'] ?? 0)),
         ];
     }
