@@ -4686,7 +4686,8 @@ class BaitSplitService
             }
             $router = &$campaign['router'];
             $tick = $this->huntTick($router, $now);
-            if ($tick['activated'] > 0 || $tick['dissolved'] > 0) {
+            // 漏掉任何一个计数都会让那一轮的改动不落盘，下一分钟原样重做一遍
+            if (array_sum(array_map('intval', $tick)) > 0) {
                 $router['config_version']++;
                 $changed = true;
                 $actions[] = [
