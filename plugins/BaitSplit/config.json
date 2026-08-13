@@ -1,7 +1,7 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "6.1.0",
+    "version": "6.2.0",
     "description": "全量接管节点域名，支持用户池、墙后二分追猎和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
@@ -94,7 +94,13 @@
             "type": "number",
             "default": 240,
             "label": "追猎链空转上限（分钟）",
-            "description": "两个槽都长时间不被墙说明内鬼当轮没动，超过该时长解散链、放人回服务池并腾出槽位，默认 240"
+            "description": "两个槽都长时间不被墙说明内鬼当轮没动，超过该时长解散链、放人回服务池并腾出槽位。从槽内成员全部拉到当前 IP 起算，默认 240"
+        },
+        "hunt_chain_max_minutes": {
+            "type": "number",
+            "default": 720,
+            "label": "追猎链占槽上限（分钟）",
+            "description": "成员迟迟不来拉订阅时的兜底，超过该时长无论有没有拉齐都收链腾槽，默认 720"
         },
         "decoy_candidate_pool_id": {
             "type": "string",

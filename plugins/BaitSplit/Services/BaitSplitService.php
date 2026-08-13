@@ -4685,7 +4685,12 @@ class BaitSplitService
                 continue;
             }
             $router = &$campaign['router'];
-            $tick = $this->huntTick($router, $now);
+            // 只取算曝光键要用的两个字段，避免把带引用的 $campaign 整个复制进去
+            $exposureCtx = [
+                'id' => (string) ($campaign['id'] ?? $id),
+                'router' => ['generation' => (int) ($router['generation'] ?? 0)],
+            ];
+            $tick = $this->huntTick($router, $exposureCtx, $now);
             // 漏掉任何一个计数都会让那一轮的改动不落盘，下一分钟原样重做一遍
             if (array_sum(array_map('intval', $tick)) > 0) {
                 $router['config_version']++;
@@ -5668,7 +5673,7 @@ class BaitSplitService
     /**
      * 分钟级维护：兜底轮询换 IP 状态（通知可能丢），并解散长时间无进展的链。
      */
-    private function huntTick(array &$router, int $now): array
+    private function huntTick(array &$router, array $campaign, int $now): array
     {
         if (!$this->huntEnabled()) {
             return ['activated' => 0, 'dissolved' => 0];
@@ -5711,6 +5716,11 @@ class BaitSplitService
         }
 
         $idleLimit = max(30, (int) ($this->config['hunt_chain_idle_minutes'] ?? 240)) * 60;
+        // 成员迟迟不来拉订阅时的兜底，再值钱的名单也不能永久占着槽
+        $maxLife = max(
+            $idleLimit,
+            max(60, (int) ($this->config['hunt_chain_max_minutes'] ?? 720)) * 60
+        );
         $dissolved = 0;
         foreach (array_keys((array) ($router['hunt']['chains'] ?? [])) as $chainId) {
             $chainId = (string) $chainId;
@@ -5718,7 +5728,18 @@ class BaitSplitService
             if (!is_array($chain)) {
                 continue;
             }
-            if ($now - (int) $chain['last_event_at'] < $idleLimit) {
+            $armedAt = $this->huntChainArmedAt($router, $campaign, $chain);
+            if ($armedAt > 0) {
+                $since = max((int) $chain['last_event_at'], $armedAt);
+                if ($now - $since < $idleLimit) {
+                    continue;
+                }
+            } elseif (
+                $now - max(
+                    (int) ($chain['created_at'] ?? 0),
+                    (int) $chain['last_event_at']
+                ) < $maxLife
+            ) {
                 continue;
             }
             // 已经收敛到很窄的链先把名单记下来。四轮才收敛到十来个人，
@@ -5739,6 +5760,44 @@ class BaitSplitService
             'dissolved' => $dissolved,
             'resumed' => $resumed,
         ];
+    }
+
+    /**
+     * 链上两个槽的人全部拉到当前 IP 的时刻，还没拉齐返回 0。
+     *
+     * 「多久没墙」必须从这一刻起算。按 IP 上线时间算的话，成员几小时不来拉
+     * 订阅，超时就先到了——一个人都没看过这个地址，却判定成两边都不墙。
+     */
+    private function huntChainArmedAt(
+        array $router,
+        array $campaign,
+        array $chain
+    ): int {
+        $armedAt = 0;
+        foreach ((array) ($chain['slots'] ?? []) as $slotId) {
+            $slotId = (string) $slotId;
+            $slot = $router['hunt']['slots'][$slotId] ?? [];
+            // 还在等新 IP，或上一轮切进来的人还没落位，实验都没就绪
+            if (!empty($slot['awaiting_ip']) || !empty($slot['pending'])) {
+                return 0;
+            }
+            $members = $this->normalizeIds($slot['members'] ?? []);
+            if ($members === []) {
+                continue;
+            }
+            $seen = $this->poolIpExposureLastMap(
+                $campaign,
+                $slotId,
+                (string) ($router['pools'][$slotId]['host'] ?? '')
+            );
+            foreach ($members as $userId) {
+                if (!isset($seen[$userId])) {
+                    return 0;
+                }
+                $armedAt = max($armedAt, (int) $seen[$userId]);
+            }
+        }
+        return $armedAt;
     }
 
     /**
