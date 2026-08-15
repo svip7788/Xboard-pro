@@ -1,7 +1,7 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "6.2.0",
+    "version": "6.3.0",
     "description": "全量接管节点域名，支持用户池、墙后二分追猎和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
@@ -101,6 +101,18 @@
             "default": 720,
             "label": "追猎链占槽上限（分钟）",
             "description": "成员迟迟不来拉订阅时的兜底，超过该时长无论有没有拉齐都收链腾槽，默认 720"
+        },
+        "hunt_preempt_min_minutes": {
+            "type": "number",
+            "default": 60,
+            "label": "抢占槽位的最小链龄（分钟）",
+            "description": "槽位全忙时，允许新墙顶掉「至今无人拉过槽内 IP」的旧链，但旧链至少要活过这个时长，避免墙一密就互相踢，默认 60"
+        },
+        "hunt_preempt_max_pullers": {
+            "type": "number",
+            "default": 200,
+            "label": "允许抢占的最大拉取者数",
+            "description": "新墙拉取者超过该数量就不抢占：几千人的链要切十几轮，拿它换掉已经窄下来的链不划算，默认 200"
         },
         "decoy_candidate_pool_id": {
             "type": "string",

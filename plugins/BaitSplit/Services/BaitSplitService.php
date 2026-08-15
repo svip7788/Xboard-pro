@@ -5057,7 +5057,7 @@ class BaitSplitService
                 $now
             );
         }
-        return $this->huntSeedChain($router, $poolId, $pullers, $now);
+        return $this->huntSeedChain($router, $campaign, $poolId, $pullers, $now);
     }
 
     /**
@@ -5102,12 +5102,83 @@ class BaitSplitService
         return [$ids, count($raw), $lastAt];
     }
 
+    /** 两个槽都彻底空闲的一对，没有返回 null。 */
+    private function huntFindFreePair(array &$router): ?array
+    {
+        foreach ($this->huntSlotPairs($router) as $pair) {
+            if (count($pair) !== 2) {
+                continue;
+            }
+            $busy = false;
+            foreach ($pair as $slotId) {
+                $slot = $this->huntSlot($router, $slotId);
+                if (
+                    ($slot['chain_id'] ?? '') !== ''
+                    || $slot['members'] !== []
+                    || $slot['pending'] !== []
+                ) {
+                    $busy = true;
+                    break;
+                }
+            }
+            if (!$busy) {
+                return $pair;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 槽位全忙时，挑一条可以让位的链：成员至今没人拉过槽内 IP，
+     * 即它一个人都还没测到，继续占着只是在丢新墙。
+     *
+     * 挑最老的那条。新墙的拉取者太多则不抢——几千人的链要切十几轮，
+     * 拿它换一条已经窄下来的链不划算。
+     */
+    private function huntPreemptableChain(
+        array &$router,
+        array $campaign,
+        int $incomingPullers,
+        int $now
+    ): string {
+        $maxSeed = max(2, (int) ($this->config['hunt_preempt_max_pullers'] ?? 200));
+        if ($incomingPullers > $maxSeed) {
+            return '';
+        }
+        // 刚开的链还没来得及被拉，给它一段缓冲，否则墙一密就互相踢
+        $minAge = max(10, (int) ($this->config['hunt_preempt_min_minutes'] ?? 60)) * 60;
+        $victim = '';
+        $oldest = PHP_INT_MAX;
+        foreach ((array) ($router['hunt']['chains'] ?? []) as $chainId => $chain) {
+            if (!is_array($chain)) {
+                continue;
+            }
+            $since = max(
+                (int) ($chain['created_at'] ?? 0),
+                (int) ($chain['last_event_at'] ?? 0)
+            );
+            if ($now - $since < $minAge) {
+                continue;
+            }
+            if ($this->huntChainArmedAt($router, $campaign, $chain) > 0) {
+                continue;
+            }
+            if ($since < $oldest) {
+                $oldest = $since;
+                $victim = (string) $chainId;
+            }
+        }
+        return $victim;
+    }
+
     /** 服务池被墙：拿拉取者开一条新链。 */
     private function huntSeedChain(
         array &$router,
+        array $campaign,
         string $originPoolId,
         array $pullers,
-        int $now
+        int $now,
+        bool $allowPreempt = true
     ): array {
         // 已经在别的链里受测（含等新 IP 期间寄放回服务池的人）不能被重复抓走。
         $busy = [];
@@ -5132,26 +5203,25 @@ class BaitSplitService
             ];
         }
 
-        $freePair = null;
-        foreach ($this->huntSlotPairs($router) as $pair) {
-            if (count($pair) !== 2) {
-                continue;
-            }
-            $busy = false;
-            foreach ($pair as $slotId) {
-                $slot = $this->huntSlot($router, $slotId);
-                if (
-                    ($slot['chain_id'] ?? '') !== ''
-                    || $slot['members'] !== []
-                    || $slot['pending'] !== []
-                ) {
-                    $busy = true;
-                    break;
-                }
-            }
-            if (!$busy) {
-                $freePair = $pair;
-                break;
+        $freePair = $this->huntFindFreePair($router);
+        if ($freePair === null && $allowPreempt) {
+            // 一条从没人拉过槽内 IP 的链是零信息量的，它占着槽的每一小时
+            // 都在丢新墙。名单挂起后不会丢，所以让位给新墙净赚。
+            $victim = $this->huntPreemptableChain(
+                $router,
+                $campaign,
+                count($pullers),
+                $now
+            );
+            if ($victim !== '') {
+                $this->huntParkChain($router, $victim, $now);
+                $this->huntDissolveChain(
+                    $router,
+                    $victim,
+                    $now,
+                    '让位给新墙（久未武装）'
+                );
+                $freePair = $this->huntFindFreePair($router);
             }
         }
         if ($freePair === null) {
@@ -5754,7 +5824,7 @@ class BaitSplitService
             );
         }
 
-        $resumed = $this->huntResumeParked($router, $now);
+        $resumed = $this->huntResumeParked($router, $campaign, $now);
         return [
             'activated' => $activated,
             'dissolved' => $dissolved,
@@ -5851,8 +5921,11 @@ class BaitSplitService
      * 隔一段时间才复活：刚挂起就抢槽会把新墙挤成 no_free_chain，
      * 而新墙的拉取者集合往往比这批陈旧的嫌疑人更值得查。
      */
-    private function huntResumeParked(array &$router, int $now): int
-    {
+    private function huntResumeParked(
+        array &$router,
+        array $campaign,
+        int $now
+    ): int {
         $parked = array_values((array) ($router['hunt']['parked'] ?? []));
         if ($parked === []) {
             return 0;
@@ -5886,7 +5959,16 @@ class BaitSplitService
                 $keep[] = $entry;
                 continue;
             }
-            $result = $this->huntSeedChain($router, $origin, $ids, $now);
+            // 复活挂起的链不许抢占：它本来就是没槽才被挂起的，
+            // 允许抢占会让两条冷链互相踢来踢去
+            $result = $this->huntSeedChain(
+                $router,
+                $campaign,
+                $origin,
+                $ids,
+                $now,
+                false
+            );
             if ((string) ($result['phase'] ?? '') !== 'chain_seeded') {
                 $keep[] = $entry;
                 continue;
