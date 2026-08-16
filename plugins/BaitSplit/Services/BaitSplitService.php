@@ -5147,10 +5147,16 @@ class BaitSplitService
         }
         // 刚开的链还没来得及被拉，给它一段缓冲，否则墙一密就互相踢
         $minAge = max(10, (int) ($this->config['hunt_preempt_min_minutes'] ?? 60)) * 60;
+        // 已经收敛到很窄的链离定罪只差一两次墙，再大的新墙也不值得拿它换
+        $keep = max(2, (int) ($this->config['hunt_preempt_keep_members'] ?? 8));
         $victim = '';
-        $oldest = PHP_INT_MAX;
+        $worst = -1;
         foreach ((array) ($router['hunt']['chains'] ?? []) as $chainId => $chain) {
             if (!is_array($chain)) {
+                continue;
+            }
+            // 推进过轮次说明它已经在产出信息，别打断
+            if ((int) ($chain['round'] ?? 0) > 0) {
                 continue;
             }
             $since = max(
@@ -5160,11 +5166,21 @@ class BaitSplitService
             if ($now - $since < $minAge) {
                 continue;
             }
+            $size = 0;
+            foreach ((array) ($chain['slots'] ?? []) as $slotId) {
+                $slot = $router['hunt']['slots'][(string) $slotId] ?? [];
+                $size += count((array) ($slot['members'] ?? []))
+                    + count((array) ($slot['pending'] ?? []));
+            }
+            if ($size <= $keep) {
+                continue;
+            }
             if ($this->huntChainArmedAt($router, $campaign, $chain) > 0) {
                 continue;
             }
-            if ($since < $oldest) {
-                $oldest = $since;
+            // 顶人最多的那条：它离收敛最远，单个成员的嫌疑度也最低
+            if ($size > $worst) {
+                $worst = $size;
                 $victim = (string) $chainId;
             }
         }
@@ -5904,9 +5920,10 @@ class BaitSplitService
             'from' => $chainId,
             'at' => $now,
         ];
+        // 抢占会持续产出挂起名单，上限太小会把筛过几轮的窄名单静默丢掉
         $router['hunt']['parked'] = array_slice(
             (array) $router['hunt']['parked'],
-            -10
+            -(max(10, (int) ($this->config['hunt_park_keep'] ?? 30)))
         );
         Log::warning('BaitSplit 追猎窄链已挂起，等槽位空闲再续', [
             'chain' => $chainId,
