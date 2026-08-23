@@ -97,6 +97,48 @@ class AdminController extends PluginController
         return $this->success($config);
     }
 
+    /**
+     * 凌晨收敛的开关、牺牲池与窗口。
+     *
+     * 牺牲池存池 ID 而不是接口标识：池改名或换绑 webhook 时不用回来改配置。
+     */
+    public function saveNightConverge(Request $request): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        $data = $request->validate([
+            'enabled' => ['required', 'boolean'],
+            'pool_ids' => ['array'],
+            'pool_ids.*' => ['string', 'max:64'],
+            'start' => ['required', 'integer', 'min:0', 'max:23'],
+            'end' => ['required', 'integer', 'min:1', 'max:24'],
+        ]);
+        if ((int) $data['start'] === (int) $data['end']) {
+            return $this->fail([422, '起始与结束整点不能相同']);
+        }
+        $poolIds = array_values(array_unique(array_filter(
+            $data['pool_ids'] ?? [],
+            fn($id): bool => is_string($id) && $id !== ''
+        )));
+        if ($data['enabled'] && $poolIds === []) {
+            return $this->fail([422, '开启收敛必须至少选一个牺牲池']);
+        }
+        $service = app(\App\Services\Plugin\PluginConfigService::class);
+        $config = $service->getDbConfig('bait_split');
+        $config['night_converge_enabled'] = (bool) $data['enabled'];
+        $config['night_converge_pool_ids'] = implode(',', $poolIds);
+        $config['night_converge_start'] = (int) $data['start'];
+        $config['night_converge_end'] = (int) $data['end'];
+        $service->updateConfig('bait_split', $config);
+        return $this->success([
+            'enabled' => $config['night_converge_enabled'],
+            'pool_ids' => $poolIds,
+            'start' => $config['night_converge_start'],
+            'end' => $config['night_converge_end'],
+        ]);
+    }
+
     public function createPing(Request $request): JsonResponse
     {
         if ($response = $this->ensureEnabled()) {

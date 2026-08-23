@@ -4019,6 +4019,17 @@ class BaitSplitService
                 'lookback_seconds' => max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600)),
                 'fresh_max_seconds' => max(300, (int) ($this->config['wall_fresh_max_seconds'] ?? 7200)),
             ],
+            'night_converge' => [
+                'enabled' => $this->configBool('night_converge_enabled', false),
+                // 配置里存的可能是池 ID、接口标识或池名，解析成 ID 交给前端勾选
+                'pool_ids' => $this->splitPoolIdList(
+                    $router,
+                    (string) ($this->config['night_converge_pool_ids'] ?? '')
+                ),
+                'start' => (int) ($this->config['night_converge_start'] ?? 1),
+                'end' => (int) ($this->config['night_converge_end'] ?? 9),
+                'in_window' => $this->inNightConvergeWindow(),
+            ],
             'pending_ip_rotates' => $this->pendingIpRotateCount(),
         ];
     }
