@@ -2943,22 +2943,11 @@ class BaitSplitService
             'untested_ids' => array_values($userIds),
             'investigation_nodes' => [],
             'wall_log' => [],
-            'search_origin' => [],
-            'queue_strategy_version' => 2,
-            'fresh_suspects' => [],
-            'dormant_suspects' => [],
-            'suspect_queue' => [],
-            'clean_rounds' => [],
-            'positive_rounds' => [],
-            'candidate_users' => [],
         ];
     }
 
     private function normalizeRouter(array $router): array
     {
-        $queueStrategyVersion = array_key_exists('queue_strategy_version', $router)
-            ? max(1, (int) $router['queue_strategy_version'])
-            : 1;
         $defaults = $this->newRouter([]);
         $router = array_merge($defaults, $router);
         unset(
@@ -3015,89 +3004,19 @@ class BaitSplitService
         $router['untested_ids'] = $this->normalizeIds($router['untested_ids']);
         // 跟墙记分已废弃，落地时直接丢掉，顺带给状态减重
         unset($router['wall_hits'], $router['wall_score'], $router['wall_last']);
-        $searchOrigin = [];
-        foreach ((array) ($router['search_origin'] ?? []) as $userId => $poolId) {
-            $key = (string) (int) $userId;
-            if ((int) $userId <= 0 || (string) $poolId === '') {
-                continue;
-            }
-            $searchOrigin[$key] = (string) $poolId;
-        }
-        $router['search_origin'] = $searchOrigin;
-        $router['queue_strategy_version'] = $queueStrategyVersion;
-        $router['fresh_suspects'] = $this->normalizeIds(
-            $router['fresh_suspects'] ?? []
+        // 旧诱捕的嫌疑队列（fresh/dormant/suspect_queue/candidate_users 等）自
+        // 三车道退役起就没人读了，只是每次保存都原样搬一遍。落地时一并丢掉。
+        unset(
+            $router['search_origin'],
+            $router['queue_strategy_version'],
+            $router['fresh_suspects'],
+            $router['dormant_suspects'],
+            $router['suspect_queue'],
+            $router['clean_rounds'],
+            $router['positive_rounds'],
+            $router['candidate_users'],
+            $router['wall_evidence_version'],
         );
-        $queuedUsers = array_fill_keys($router['fresh_suspects'], true);
-        $suspectQueue = [];
-        foreach ((array) ($router['suspect_queue'] ?? []) as $item) {
-            if (!is_array($item)) {
-                continue;
-            }
-            $ids = array_values(array_filter(
-                $this->normalizeIds($item['ids'] ?? []),
-                function (int $uid) use (&$queuedUsers): bool {
-                    if (isset($queuedUsers[$uid])) {
-                        return false;
-                    }
-                    $queuedUsers[$uid] = true;
-                    return true;
-                }
-            ));
-            if ($ids === []) {
-                continue;
-            }
-            $suspectQueue[] = [
-                'ids' => $ids,
-                'origin' => (string) ($item['origin'] ?? ''),
-                'at' => (int) ($item['at'] ?? 0),
-            ];
-        }
-        // 批次过多时合并最老部分，不得截掉 FIFO 队首或永久丢失候选。
-        if (count($suspectQueue) > 500) {
-            $mergeCount = count($suspectQueue) - 499;
-            $oldest = array_slice($suspectQueue, 0, $mergeCount);
-            $mergedIds = [];
-            foreach ($oldest as $item) {
-                $mergedIds = array_merge($mergedIds, $item['ids']);
-            }
-            $suspectQueue = array_merge([[
-                'ids' => $this->normalizeIds($mergedIds),
-                'origin' => (string) ($oldest[0]['origin'] ?? ''),
-                'at' => (int) ($oldest[0]['at'] ?? 0),
-            ]], array_slice($suspectQueue, $mergeCount));
-        }
-        $router['suspect_queue'] = $suspectQueue;
-        $dormantSuspects = [];
-        foreach ((array) ($router['dormant_suspects'] ?? []) as $userId => $at) {
-            $uid = (int) $userId;
-            if ($uid > 0) {
-                $dormantSuspects[(string) $uid] = max(0, (int) $at);
-            }
-        }
-        $router['dormant_suspects'] = $dormantSuspects;
-        foreach (['clean_rounds', 'positive_rounds'] as $counterKey) {
-            $normalized = [];
-            foreach ((array) ($router[$counterKey] ?? []) as $userId => $count) {
-                if ((int) $userId > 0 && (int) $count > 0) {
-                    $normalized[(string) (int) $userId] = (int) $count;
-                }
-            }
-            $router[$counterKey] = $normalized;
-        }
-        unset($router['wall_evidence_version']);
-        $candidateUsers = [];
-        foreach ((array) ($router['candidate_users'] ?? []) as $userId => $item) {
-            if ((int) $userId <= 0 || !is_array($item)) {
-                continue;
-            }
-            $candidateUsers[(string) (int) $userId] = [
-                'entered_at' => (int) ($item['entered_at'] ?? 0),
-                'baseline_pulls' => max(-1, (int) ($item['baseline_pulls'] ?? -1)),
-                'ready_at' => (int) ($item['ready_at'] ?? 0),
-            ];
-        }
-        $router['candidate_users'] = $candidateUsers;
         $router['wall_log'] = is_array($router['wall_log'] ?? null)
             ? array_slice(array_values($router['wall_log']), -200)
             : [];

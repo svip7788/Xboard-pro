@@ -181,7 +181,7 @@
 
         <section class="card wide">
             <div class="topbar">
-                <h2>跟墙检测（被墙自动隔离）</h2>
+                <h2>换 IP 事件（只留档）</h2>
                 <div class="actions"><span id="wallPending" class="pill off">换IP队列 0</span><button id="refreshWall" class="secondary">刷新</button></div>
             </div>
             <div class="hint">换 IP 事件只留档，不再据此挪人：墙压倒性落在凌晨、白天近乎为零，是按地址批量探测，"拉过死 IP"和泄露之间没有因果关系。防护靠插件配置里的凌晨收敛。</div>
