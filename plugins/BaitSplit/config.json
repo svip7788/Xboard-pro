@@ -1,8 +1,8 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "6.3.1",
-    "description": "全量接管节点域名，支持用户池、墙后二分追猎和单用户覆盖",
+    "version": "7.0.0",
+    "description": "全量接管节点域名，支持用户池、凌晨收敛和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
     "require": {
@@ -30,119 +30,53 @@
             "label": "AWS IP 轮换接口密钥",
             "description": "至少 32 位随机字符串，用于校验 AWS 换 IP 脚本的 HMAC 签名"
         },
-        "wall_auto_isolate": {
-            "type": "boolean",
-            "default": false,
-            "label": "被墙自动隔离（旧跟墙记分）",
-            "description": "reason=blocked 换 IP 时，累计跟墙分达标的用户自动移入观察3。墙后二分追猎已是自动挪人的唯一权威，两套并存会互相抢人，还会把人工建的排查树静默拆散，默认关闭"
+        "ip_rotate_api": {
+            "type": "string",
+            "default": "",
+            "label": "换 IP 服务地址",
+            "description": "外部换 IP 服务根地址，例如 http://95.40.222.102:12132。推送丢失时靠它主动对账当前地址，留空则只能等推送"
         },
-        "wall_hit_threshold": {
-            "type": "number",
-            "default": 2,
-            "label": "跟墙隔离阈值（次）",
-            "description": "跟墙命中累计达到该次数后自动隔离，默认 2"
+        "ip_rotate_token": {
+            "type": "string",
+            "default": "",
+            "label": "换 IP 服务 Token",
+            "description": "调用 instance 与 replace-ip 接口的 Bearer Token"
         },
         "wall_lookback_seconds": {
             "type": "number",
             "default": 3600,
             "label": "被墙前回溯窗口（秒）",
-            "description": "判定死 IP 存活期内拉取过的用户为受害者/嫌疑，默认 3600"
+            "description": "留档时统计死 IP 存活期内拉过订阅的用户，默认 3600"
         },
         "wall_fresh_max_seconds": {
             "type": "number",
             "default": 7200,
             "label": "IP 新鲜阈值（秒）",
-            "description": "IP 存活超过此秒数才被墙视为老 IP 首墙，只换 IP 不记分（避免误伤白天正常用户），默认 7200"
+            "description": "IP 存活超过此秒数才被墙，视为老 IP 首墙，曝光窗口不可信，只记事件不统计人，默认 7200"
         },
-        "wall_observe_pool_id": {
-            "type": "string",
-            "default": "",
-            "label": "跟墙隔离目标池 ID",
-            "description": "留空自动选择名称含“观察3”的观察组"
-        },
-        "hunt_enabled": {
+        "night_converge_enabled": {
             "type": "boolean",
             "default": false,
-            "label": "墙后二分追猎（v6）",
-            "description": "开启后接管服务池与追猎槽的墙事件：没拉过被墙 IP 的人当轮洗清，拉过的人对半切进两个槽各配全新 IP，哪个槽再被墙人就在那一半，log2(N) 次墙定位到个人。开启即绕过旧的三车道逻辑"
+            "label": "凌晨收敛",
+            "description": "墙压倒性落在凌晨且白天近乎为零，形态是批量主动探测；探测只找得到有流量的地址。开启后窗口内把普通用户挤到牺牲池，拿一两个 IP 换其余几个的存活。人工锁定的用户不参与"
         },
-        "hunt_service_pool_ids": {
+        "night_converge_pool_ids": {
             "type": "string",
             "default": "",
-            "label": "服务池（逗号分隔）",
-            "description": "承载大众用户的池；它们被墙时，拉过该 IP 的人成为追猎种子。填接口标识或池 ID，例如 cs1,cs4"
+            "label": "牺牲池（逗号分隔）",
+            "description": "窗口内承载全部普通用户的池，填接口标识或池 ID。填多个按用户 ID 定死分摊，避免单个中转扛不住凌晨带宽。留空则收敛不生效"
         },
-        "hunt_slot_pool_ids": {
-            "type": "string",
-            "default": "",
-            "label": "追猎槽（逗号分隔，按顺序两两成链）",
-            "description": "每两个槽组成一条独立二分链，所以要填偶数个。例如 cs2,cs3,cs5,gc1 就是两条并行链"
-        },
-        "hunt_rotate_api": {
-            "type": "string",
-            "default": "",
-            "label": "换 IP 服务地址",
-            "description": "外部换 IP 服务根地址，例如 http://95.40.222.102:12132。留空则退化为直接搬人（会有跨批污染风险）"
-        },
-        "hunt_rotate_token": {
-            "type": "string",
-            "default": "",
-            "label": "换 IP 服务 Token",
-            "description": "调用 replace-ip 与 instance 接口的 Bearer Token"
-        },
-        "hunt_chain_idle_minutes": {
-            "type": "number",
-            "default": 240,
-            "label": "追猎链空转上限（分钟）",
-            "description": "两个槽都长时间不被墙说明内鬼当轮没动，超过该时长解散链、放人回服务池并腾出槽位。从槽内成员全部拉到当前 IP 起算，默认 240"
-        },
-        "hunt_chain_max_minutes": {
-            "type": "number",
-            "default": 720,
-            "label": "追猎链占槽上限（分钟）",
-            "description": "成员迟迟不来拉订阅时的兜底，超过该时长无论有没有拉齐都收链腾槽，默认 720"
-        },
-        "hunt_preempt_min_minutes": {
-            "type": "number",
-            "default": 60,
-            "label": "抢占槽位的最小链龄（分钟）",
-            "description": "槽位全忙时，允许新墙顶掉「至今无人拉过槽内 IP」的旧链，但旧链至少要活过这个时长，避免墙一密就互相踢，默认 60"
-        },
-        "hunt_preempt_keep_members": {
-            "type": "number",
-            "default": 8,
-            "label": "免于被抢占的链人数上限",
-            "description": "链收敛到该人数以内就不再让位：离定罪只差一两次墙，拿它换新墙是亏的。推进过轮次的链同样免疫，默认 8"
-        },
-        "hunt_park_keep": {
-            "type": "number",
-            "default": 30,
-            "label": "挂起名单保留条数",
-            "description": "超出后丢弃最早的挂起名单。抢占会持续产出挂起项，太小会把筛过几轮的窄名单静默丢掉，默认 30"
-        },
-        "hunt_preempt_max_pullers": {
-            "type": "number",
-            "default": 200,
-            "label": "允许抢占的最大拉取者数",
-            "description": "新墙拉取者超过该数量就不抢占：几千人的链要切十几轮，拿它换掉已经窄下来的链不划算，默认 200"
-        },
-        "decoy_candidate_pool_id": {
-            "type": "string",
-            "default": "",
-            "label": "候选清白池 ID",
-            "description": "留空自动选择观察1；两次独立阴性后进入，72 小时且实际拉取 3 次无墙后仅标记待人工转安全组"
-        },
-        "decoy_confirm_pool_id": {
-            "type": "string",
-            "default": "",
-            "label": "确认内鬼隔离池 ID",
-            "description": "批缩到收敛下限仍被墙，整批永久移入该池；留空自动用危险组"
-        },
-        "decoy_convict_at": {
+        "night_converge_start": {
             "type": "number",
             "default": 1,
-            "label": "拆到几人定罪",
-            "description": "搜索槽拆到该人数仍被墙即判定内鬼移入危险组，默认 1（精确到个人，不冤枉同组）"
+            "label": "收敛起始整点",
+            "description": "含该点，默认 1"
+        },
+        "night_converge_end": {
+            "type": "number",
+            "default": 9,
+            "label": "收敛结束整点",
+            "description": "不含该点，默认 9。起始大于结束按跨零点处理"
         }
     }
 }

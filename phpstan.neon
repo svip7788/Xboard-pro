@@ -11,7 +11,10 @@ parameters:
     level: 5
 
     ignoreErrors:
-        - '#Negated boolean expression is always false\.#'
+        -
+            message: '#Negated boolean expression is always false\.#'
+            reportUnmatched: false
 
-#    excludePaths:
-#        - ./*/*/FileToBeExcluded.php
+    excludePaths:
+        # 插件测试里有 Laravel 门面的替身，会被误当成真类来做类型推断
+        - plugins/*/tests/*

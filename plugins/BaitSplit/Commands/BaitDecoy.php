@@ -9,7 +9,7 @@ class BaitDecoy extends Command
 {
     protected $signature = 'bait:decoy';
 
-    protected $description = '分钟级维护：消化积压换 IP，轮询追猎槽新 IP 上线，解散空转追猎链';
+    protected $description = '分钟级维护：消化积压换 IP，并跟上游对一遍当前地址';
 
     public function handle(): int
     {
@@ -27,17 +27,10 @@ class BaitDecoy extends Command
                     (int) ($d['remaining'] ?? 0)
                 ));
             }
-            if (isset($result['skipped'])) {
-                $this->info('追猎维护跳过：' . $result['skipped']);
-                // locked 时仍算成功：pending 可能已消化一部分，下分钟再试
-                return self::SUCCESS;
-            }
-            foreach ($result['actions'] ?? [] as $action) {
-                $this->info(json_encode($action, JSON_UNESCAPED_UNICODE));
-            }
-            if (($result['actions'] ?? []) === []) {
-                $this->info('无动作');
-            }
+            $this->info('上游对账: ' . json_encode(
+                $result['upstream'] ?? ['skipped' => 'none'],
+                JSON_UNESCAPED_UNICODE
+            ));
             return self::SUCCESS;
         } catch (\Throwable $exception) {
             $this->error($exception->getMessage());

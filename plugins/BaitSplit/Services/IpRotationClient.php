@@ -27,8 +27,13 @@ class IpRotationClient
 
     public static function fromConfig(array $config): ?self
     {
-        $baseUrl = rtrim(trim((string) ($config['hunt_rotate_api'] ?? '')), '/');
-        $token = trim((string) ($config['hunt_rotate_token'] ?? ''));
+        // 旧键是追猎时代留下的，线上存量配置还在用，读取时一并认
+        $baseUrl = rtrim(trim((string) (
+            $config['ip_rotate_api'] ?? $config['hunt_rotate_api'] ?? ''
+        )), '/');
+        $token = trim((string) (
+            $config['ip_rotate_token'] ?? $config['hunt_rotate_token'] ?? ''
+        ));
         if ($baseUrl === '' || $token === '') {
             return null;
         }

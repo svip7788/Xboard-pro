@@ -67,28 +67,14 @@ class AdminController extends PluginController
             return $response;
         }
         $data = $request->validate([
-            'wall_auto_isolate' => ['required', 'boolean'],
-            'wall_hit_threshold' => ['required', 'integer', 'min:1', 'max:50'],
             'wall_lookback_seconds' => ['required', 'integer', 'min:60', 'max:86400'],
             'wall_fresh_max_seconds' => ['required', 'integer', 'min:300', 'max:86400'],
-            'wall_observe_pool_id' => ['nullable', 'string', 'max:64'],
-            'decoy_confirm_pool_id' => ['nullable', 'string', 'max:64'],
-            'decoy_candidate_pool_id' => ['nullable', 'string', 'max:64'],
         ]);
         $service = app(\App\Services\Plugin\PluginConfigService::class);
         $config = $service->getDbConfig('bait_split');
-        $config['wall_auto_isolate'] = (bool) $data['wall_auto_isolate'];
-        $config['wall_hit_threshold'] = (int) $data['wall_hit_threshold'];
         $config['wall_lookback_seconds'] = (int) $data['wall_lookback_seconds'];
         $config['wall_fresh_max_seconds'] = (int) $data['wall_fresh_max_seconds'];
-        $config['wall_observe_pool_id'] = trim((string) ($data['wall_observe_pool_id'] ?? ''));
-        $config['decoy_confirm_pool_id'] = trim((string) ($data['decoy_confirm_pool_id'] ?? ''));
-        if (array_key_exists('decoy_candidate_pool_id', $data)) {
-            $config['decoy_candidate_pool_id'] = trim(
-                (string) ($data['decoy_candidate_pool_id'] ?? '')
-            );
-        }
-        // 三车道诱捕退役，残留键一并清掉，避免面板配置页继续显示
+        // 诱捕与追猎都已退役，残留键一并清掉，避免面板配置页继续显示
         foreach ([
             'decoy_enabled', 'decoy_monitor_24h', 'decoy_source_pool_ids',
             'decoy_source_pool_id', 'decoy_pool_ids', 'decoy_isolate_pool_id',
@@ -96,6 +82,14 @@ class AdminController extends PluginController
             'decoy_hot_batch_size', 'decoy_verify_batch_size', 'decoy_min_batch',
             'decoy_observe_minutes', 'decoy_cooldown_minutes',
             'decoy_risk_start', 'decoy_risk_end', 'decoy_start', 'decoy_end',
+            'decoy_candidate_pool_id', 'decoy_confirm_pool_id', 'decoy_convict_at',
+            'wall_auto_isolate', 'wall_hit_threshold', 'wall_observe_pool_id',
+            'hunt_enabled', 'hunt_service_pool_ids', 'hunt_slot_pool_ids',
+            'hunt_chain_idle_minutes', 'hunt_chain_max_minutes',
+            'hunt_unarmed_max_minutes', 'hunt_park_max_revives',
+            'hunt_resume_after_starve_minutes', 'hunt_preempt_min_minutes',
+            'hunt_preempt_keep_members', 'hunt_park_keep',
+            'hunt_preempt_max_pullers',
         ] as $stale) {
             unset($config[$stale]);
         }

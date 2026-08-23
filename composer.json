@@ -66,6 +66,9 @@
             "database/seeders",
             "database/factories"
         ],
+        "exclude-from-classmap": [
+            "plugins/*/tests/"
+        ],
         "files": [
             "app/Helpers/Functions.php"
         ]
