@@ -181,6 +181,14 @@
 
         <section class="card wide">
             <div class="topbar">
+                <h2>已生效的单用户规则</h2>
+                <div class="actions"><button id="refreshOverrides" class="secondary">刷新</button></div>
+            </div>
+            <div class="scroll" style="max-height:280px"><table><thead><tr><th>用户</th><th>用户池</th><th>指定域名/IP</th><th>锁定</th><th>备注</th><th>操作</th></tr></thead><tbody id="overrideRows"></tbody></table></div>
+        </section>
+
+        <section class="card wide">
+            <div class="topbar">
                 <h2>换 IP 事件（只留档）</h2>
                 <div class="actions"><span id="wallPending" class="pill off">换IP队列 0</span><button id="refreshWall" class="secondary">刷新</button></div>
             </div>
@@ -417,6 +425,7 @@ function renderWall(){const events=$('wallEvents');if(!events)return;const pendi
 events.textContent='';(wallData.events||[]).forEach(ev=>{const row=events.insertRow();const timeCell=row.insertCell();timeCell.textContent=formatTime(ev.at);if(ev.mode==='manual_fix')timeCell.innerHTML+=' <span class="pill warn">补</span>';if((ev.pools||[]).some(p=>p&&p.stale))timeCell.innerHTML+=' <span class="pill off" title="老 IP 首墙，曝光窗口不可信">跳过</span>';const reasonCell=row.insertCell();reasonCell.innerHTML=`<span class="pill ${ev.reason==='blocked'?'bad':'off'}">${wallReasonLabel(ev.reason)}</span>`;row.insertCell().textContent=`${ev.old_ip||'-'} → ${ev.new_ip||'-'}`;row.insertCell().textContent=(ev.pools||[]).map(p=>typeof p==='string'?p:p.pool_name).join('、')||'-';row.insertCell().textContent=ev.suspect_count||0});if(!(wallData.events||[]).length){const row=events.insertRow();row.insertCell().colSpan=5;row.cells[0].className='empty';row.cells[0].textContent='暂无换 IP 事件记录'}}
 async function loadWallLog(){const campaignId=current?.id;if(!campaignId||!router()){wallData=null;renderWall();return}const data=await request(api('/wall-log?limit=100'));if(current?.id!==campaignId)return;wallData=data;renderWall()}
 $('refreshWall').onclick=()=>loadWallLog().catch(error=>toast(error.message,'error'));
+$('refreshOverrides').onclick=()=>loadOverrides().catch(error=>toast(error.message,'error'));
 $('saveWallSettings').onclick=async()=>{try{const body={wall_lookback_seconds:Number($('wallLookback').value)||3600,wall_fresh_max_seconds:Number($('wallFresh').value)||7200};await request('/wall-settings',{method:'POST',body:JSON.stringify(body)});toast('留档设置已保存');await loadWallLog()}catch(error){toast(error.message,'error')}};
 $('campaignSelect').onchange=async event=>{const selectedId=event.target.value;try{loading(true,'正在切换任务…');await refresh(false);current=campaigns.find(item=>item.id===selectedId)||blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent();await loadOverrides();await loadWallLog().catch(()=>{})}catch(error){toast(error.message,'error')}finally{loading(false)}};
 $('newCampaign').onclick=()=>{current=blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent()};
