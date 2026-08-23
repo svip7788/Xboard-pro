@@ -2756,12 +2756,8 @@ class BaitSplitService
         $userId = (int) $user->id;
         $override = $router['overrides'][(string) $userId] ?? null;
         $override = $override && $this->overrideIsActive($override) ? $override : null;
-        $poolIds = $this->nightConvergePoolIds(
-            $router,
-            $this->routingPoolIds($campaign, $userId, $override),
-            $override,
-            $userId
-        );
+        $poolIds = $this->routingPoolIds($campaign, $userId, $override);
+        $convergeTargets = $this->nightConvergeTargets($router, $override);
         $result = [];
         $deliveredPoolIds = [];
         $managedServerIds = array_flip($campaign['target_server_ids']);
@@ -2776,7 +2772,13 @@ class BaitSplitService
                 ? $this->hostFromRule($override, $serverId)
                 : '';
             $selectedPool = null;
-            foreach ($poolIds as $poolId) {
+            $tryPoolIds = $convergeTargets === []
+                ? $poolIds
+                : array_merge(
+                    [$this->convergeTargetForServer($convergeTargets, $userId, $serverId)],
+                    $poolIds
+                );
+            foreach ($tryPoolIds as $poolId) {
                 $candidate = $router['pools'][$poolId] ?? null;
                 if (!$candidate || !$this->poolIsUsable($candidate)) {
                     continue;
@@ -2845,27 +2847,26 @@ class BaitSplitService
     }
 
     /**
-     * 凌晨窗口把普通用户挤到牺牲池。
+     * 凌晨窗口的牺牲池列表，空数组表示本次不收敛。
      *
      * 墙压倒性落在凌晨、白天近乎为零，且窗口内没流量的地址不会死——所以拿一两个
      * 池换其余几个的存活是划算的。人工锁定的用户不参与。
+     *
+     * 只返回候选，由调用方按节点分摊，不在这里按 uid 定死：整份订阅压在单个地址
+     * 上时，那个地址一被墙，用户手里就没有一个能连的节点了。
      */
-    private function nightConvergePoolIds(
-        array $router,
-        array $poolIds,
-        ?array $override,
-        int $userId
-    ): array {
+    private function nightConvergeTargets(array $router, ?array $override): array
+    {
         if (!$this->configBool('night_converge_enabled', false)) {
-            return $poolIds;
+            return [];
         }
         if ($override && (string) ($override['pool_id'] ?? '') !== '') {
-            return $poolIds;
+            return [];
         }
         if (!$this->inNightConvergeWindow()) {
-            return $poolIds;
+            return [];
         }
-        $targets = array_values(array_filter(
+        return array_values(array_filter(
             $this->splitPoolIdList(
                 $router,
                 (string) ($this->config['night_converge_pool_ids'] ?? '')
@@ -2873,13 +2874,23 @@ class BaitSplitService
             fn(string $poolId): bool => isset($router['pools'][$poolId])
                 && $this->poolIsUsable($router['pools'][$poolId])
         ));
-        if ($targets === []) {
-            return $poolIds;
-        }
-        // 按 uid 定死落哪个池：同一个人在窗口内反复拉订阅不能来回换地址，
-        // 多留几个牺牲池是为了分摊凌晨的带宽。
-        array_unshift($poolIds, $targets[$userId % count($targets)]);
-        return array_values(array_unique($poolIds));
+    }
+
+    /**
+     * 收敛窗口内某个节点该落哪个牺牲池。
+     *
+     * 按节点分摊而非按人分摊：一个地址被墙时，落在另一个牺牲池的那半边节点还活着，
+     * 客户端的自动选择组能切过去，不至于整份订阅一起断。
+     *
+     * uid 一起参与取模，避免所有人的同一个节点都压在同一个地址上；同一个人同一个
+     * 节点的结果是定死的，窗口内反复拉订阅不会来回换地址。
+     */
+    private function convergeTargetForServer(
+        array $targets,
+        int $userId,
+        int $serverId
+    ): string {
+        return $targets[($userId + $serverId) % count($targets)];
     }
 
     private function inNightConvergeWindow(): bool

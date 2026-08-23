@@ -49,66 +49,72 @@ function svc(array $extra = []): RouterTestService
     ], $extra));
 }
 
-/** nightConvergePoolIds 是私有的，且不吃引用，用 callValue 打进去。 */
-function converge(RouterTestService $s, ?array $override = null, int $uid = 2): array
+/** 两个方法都是私有的，用 callValue 打进去。 */
+function targets(RouterTestService $s, ?array $override = null): array
 {
-    return $s->callValue(
-        'nightConvergePoolIds',
-        router(),
-        ['p_cs1', 'p_cs2'],
-        $override,
-        $uid
-    );
+    return $s->callValue('nightConvergeTargets', router(), $override);
+}
+
+function pick(RouterTestService $s, array $t, int $uid, int $serverId): string
+{
+    return $s->callValue('convergeTargetForServer', $t, $uid, $serverId);
 }
 
 $hour = (int) date('G');
 $inWindow = $hour >= 1 && $hour < 9;
-
-T::case('开关关掉时原样返回');
-T::same(
-    ['p_cs1', 'p_cs2'],
-    converge(svc(['night_converge_enabled' => false])),
-    '不收敛'
-);
-
-T::case('牺牲池没填时原样返回');
-T::same(
-    ['p_cs1', 'p_cs2'],
-    converge(svc(['night_converge_pool_ids' => ''])),
-    '留空不生效'
-);
-
-T::case('牺牲池全不可用时原样返回');
-T::same(
-    ['p_cs1', 'p_cs2'],
-    converge(svc(['night_converge_pool_ids' => 'dead'])),
-    '停用的池不能当牺牲池'
-);
-
-T::case('人工锁定的用户不参与');
-T::same(
-    ['p_cs1', 'p_cs2'],
-    converge(svc(['night_converge_start' => 0, 'night_converge_end' => 24]),
-        ['pool_id' => 'p_cs1']),
-    '有 pool_id 覆盖就跳过'
-);
-
-T::case('窗口内牺牲池插到最前');
 $full = svc(['night_converge_start' => 0, 'night_converge_end' => 24]);
-$got = converge($full, null, 2);
-T::same('p_cs4', $got[0] ?? '', 'uid=2 落 cs4（2 % 2 = 0）');
-T::same('p_cs5', converge($full, null, 3)[0] ?? '', 'uid=3 落 cs5（3 % 2 = 1）');
-T::ok(
-    in_array('p_cs1', $got, true) && in_array('p_cs2', $got, true),
-    '原有池仍然保留在后面兜底'
+
+T::case('不该收敛的情形一律返回空');
+T::same([], targets(svc(['night_converge_enabled' => false])), '开关关掉');
+T::same([], targets(svc(['night_converge_pool_ids' => ''])), '牺牲池留空');
+T::same([], targets(svc(['night_converge_pool_ids' => 'dead'])), '牺牲池已停用');
+T::same([], targets($full, ['pool_id' => 'p_cs1']), '人工锁定的用户不参与');
+
+T::case('窗口内返回全部可用牺牲池');
+T::same(['p_cs4', 'p_cs5'], targets($full), '两个池都要给出来，供按节点分摊');
+T::same(
+    ['p_cs5'],
+    targets(svc([
+        'night_converge_pool_ids' => 'dead,cs5',
+        'night_converge_start' => 0,
+        'night_converge_end' => 24,
+    ])),
+    '停用的池被过滤掉，可用的留下'
 );
 
-T::case('同一个人反复拉订阅落同一个池');
+T::case('同一个人的节点分散到两个牺牲池');
+$t = ['p_cs4', 'p_cs5'];
+$spread = [];
+for ($serverId = 1; $serverId <= 50; $serverId++) {
+    $spread[pick($full, $t, 2367, $serverId)][] = $serverId;
+}
+T::same(2, count($spread), '50 个节点落在两个地址上，一个被墙另一半还活着');
+T::ok(
+    count($spread['p_cs4']) >= 20 && count($spread['p_cs5']) >= 20,
+    '两边大致均分：cs4 拿 ' . count($spread['p_cs4']) . ' 个，cs5 拿 ' . count($spread['p_cs5']) . ' 个'
+);
+
+T::case('同一个人同一个节点的落点是定死的');
 $seen = [];
 for ($i = 0; $i < 5; $i++) {
-    $seen[] = converge($full, null, 12345)[0] ?? '';
+    $seen[] = pick($full, $t, 12345, 77);
 }
-T::same(1, count(array_unique($seen)), '五次结果一致，窗口内不会来回换地址');
+T::same(1, count(array_unique($seen)), '反复拉订阅不会来回换地址');
+
+T::case('不同用户的同一个节点不会全压在一个地址上');
+$byUser = [];
+for ($uid = 1; $uid <= 40; $uid++) {
+    $byUser[pick($full, $t, $uid, 77)][] = $uid;
+}
+T::same(2, count($byUser), '同一个节点在不同用户之间也分摊');
+
+T::case('只配一个牺牲池时退化为单地址');
+$one = ['p_cs5'];
+$all = [];
+for ($serverId = 1; $serverId <= 10; $serverId++) {
+    $all[] = pick($full, $one, 2367, $serverId);
+}
+T::same(['p_cs5'], array_values(array_unique($all)), '全部落同一个池，不报错');
 
 T::case('窗口边界');
 $win = fn(int $start, int $end): bool => (bool) svc([
@@ -124,17 +130,15 @@ T::same(
     $win(22, 2),
     '跨零点窗口按当前 ' . $hour . ' 点判定'
 );
-T::same($inWindow, $win(1, 9), '默认 1-9 窗口与当前时间一致');
+T::same($inWindow, $win(1, 9), '1-9 窗口与当前时间一致');
 
-T::case('线上默认配置在窗口内外的实际表现');
-$live = svc();
+T::case('线上配置（0-10 点）在当前时刻的实际表现');
+$live = svc(['night_converge_start' => 0, 'night_converge_end' => 10]);
+$nowIn = $hour >= 0 && $hour < 10;
 T::same(
-    $inWindow,
-    ($converged = converge($live, null, 2)) !== ['p_cs1', 'p_cs2'],
-    '当前 ' . $hour . ' 点' . ($inWindow ? '应当收敛' : '应当不收敛')
+    $nowIn ? ['p_cs4', 'p_cs5'] : [],
+    targets($live),
+    '当前 ' . $hour . ' 点' . ($nowIn ? '应当收敛' : '应当不收敛')
 );
-if ($inWindow) {
-    T::same('p_cs4', $converged[0] ?? '', '窗口内落牺牲池');
-}
 
 exit(T::summary());
