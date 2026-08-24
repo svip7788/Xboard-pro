@@ -55,9 +55,9 @@ function targets(RouterTestService $s, ?array $override = null): array
     return $s->callValue('nightConvergeTargets', router(), $override);
 }
 
-function pick(RouterTestService $s, array $t, int $uid, int $serverId): string
+function pick(RouterTestService $s, array $t, int $uid): string
 {
-    return $s->callValue('convergeTargetForServer', $t, $uid, $serverId);
+    return $s->callValue('convergeTargetForUser', $t, $uid);
 }
 
 $hour = (int) date('G');
@@ -71,7 +71,7 @@ T::same([], targets(svc(['night_converge_pool_ids' => 'dead'])), '牺牲池已�
 T::same([], targets($full, ['pool_id' => 'p_cs1']), '人工锁定的用户不参与');
 
 T::case('窗口内返回全部可用牺牲池');
-T::same(['p_cs4', 'p_cs5'], targets($full), '两个池都要给出来，供按节点分摊');
+T::same(['p_cs4', 'p_cs5'], targets($full), '两个池都要给出来，供按 uid 分摊');
 T::same(
     ['p_cs5'],
     targets(svc([
@@ -82,37 +82,43 @@ T::same(
     '停用的池被过滤掉，可用的留下'
 );
 
-T::case('同一个人的节点分散到两个牺牲池');
+// 这一组是 8/24 那次事故的回归用例：当时按节点分摊，每个人同时占住两个牺牲地址，
+// 招墙的一个人就把两个一起带走，一夜三十六次墙里十五组成对、多组间隔仅 1 秒。
+T::case('一个人只占一个牺牲地址');
 $t = ['p_cs4', 'p_cs5'];
-$spread = [];
-for ($serverId = 1; $serverId <= 50; $serverId++) {
-    $spread[pick($full, $t, 2367, $serverId)][] = $serverId;
-}
-T::same(2, count($spread), '50 个节点落在两个地址上，一个被墙另一半还活着');
-T::ok(
-    count($spread['p_cs4']) >= 20 && count($spread['p_cs5']) >= 20,
-    '两边大致均分：cs4 拿 ' . count($spread['p_cs4']) . ' 个，cs5 拿 ' . count($spread['p_cs5']) . ' 个'
+T::same(
+    1,
+    count(array_unique([
+        pick($full, $t, 2367),
+        pick($full, $t, 2367),
+        pick($full, $t, 2367),
+    ])),
+    '同一个人反复取只会拿到同一个池，不会横跨两个地址'
 );
 
-T::case('同一个人同一个节点的落点是定死的');
+T::case('落点是定死的');
 $seen = [];
 for ($i = 0; $i < 5; $i++) {
-    $seen[] = pick($full, $t, 12345, 77);
+    $seen[] = pick($full, $t, 12345);
 }
 T::same(1, count(array_unique($seen)), '反复拉订阅不会来回换地址');
 
-T::case('不同用户的同一个节点不会全压在一个地址上');
+T::case('不同用户分摊到两个牺牲池');
 $byUser = [];
 for ($uid = 1; $uid <= 40; $uid++) {
-    $byUser[pick($full, $t, $uid, 77)][] = $uid;
+    $byUser[pick($full, $t, $uid)][] = $uid;
 }
-T::same(2, count($byUser), '同一个节点在不同用户之间也分摊');
+T::same(2, count($byUser), '人被分成两半，哪个池死就说明人在哪半边');
+T::ok(
+    count($byUser['p_cs4']) >= 15 && count($byUser['p_cs5']) >= 15,
+    '两边大致均分：cs4 拿 ' . count($byUser['p_cs4']) . ' 人，cs5 拿 ' . count($byUser['p_cs5']) . ' 人'
+);
 
 T::case('只配一个牺牲池时退化为单地址');
 $one = ['p_cs5'];
 $all = [];
-for ($serverId = 1; $serverId <= 10; $serverId++) {
-    $all[] = pick($full, $one, 2367, $serverId);
+for ($uid = 1; $uid <= 10; $uid++) {
+    $all[] = pick($full, $one, $uid);
 }
 T::same(['p_cs5'], array_values(array_unique($all)), '全部落同一个池，不报错');
 

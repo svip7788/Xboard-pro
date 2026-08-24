@@ -2775,7 +2775,7 @@ class BaitSplitService
             $tryPoolIds = $convergeTargets === []
                 ? $poolIds
                 : array_merge(
-                    [$this->convergeTargetForServer($convergeTargets, $userId, $serverId)],
+                    [$this->convergeTargetForUser($convergeTargets, $userId)],
                     $poolIds
                 );
             foreach ($tryPoolIds as $poolId) {
@@ -2852,8 +2852,7 @@ class BaitSplitService
      * 墙压倒性落在凌晨、白天近乎为零，且窗口内没流量的地址不会死——所以拿一两个
      * 池换其余几个的存活是划算的。人工锁定的用户不参与。
      *
-     * 只返回候选，由调用方按节点分摊，不在这里按 uid 定死：整份订阅压在单个地址
-     * 上时，那个地址一被墙，用户手里就没有一个能连的节点了。
+     * 只返回候选，由调用方按 uid 分摊到其中一个。
      */
     private function nightConvergeTargets(array $router, ?array $override): array
     {
@@ -2877,20 +2876,18 @@ class BaitSplitService
     }
 
     /**
-     * 收敛窗口内某个节点该落哪个牺牲池。
+     * 收敛窗口内这个人整份订阅落哪个牺牲池。
      *
-     * 按节点分摊而非按人分摊：一个地址被墙时，落在另一个牺牲池的那半边节点还活着，
-     * 客户端的自动选择组能切过去，不至于整份订阅一起断。
+     * 按人分摊，不按节点分摊。曾经按节点分摊过一夜，指望一个地址被墙时另一半节点
+     * 还能连，结果是每个人同时占住所有牺牲地址，招墙的一个人就把它们一起带走：
+     * 8/23 十八次墙里只有两组成对，改成按节点分摊的 8/24 变成三十六次里十五组成对，
+     * 其中多组间隔只有 1 秒——同一批检测里一起判掉的。
      *
-     * uid 一起参与取模，避免所有人的同一个节点都压在同一个地址上；同一个人同一个
-     * 节点的结果是定死的，窗口内反复拉订阅不会来回换地址。
+     * 按人分摊还留下了唯一的定位信号：哪个池死、哪个池活，直接说明人在哪半边。
      */
-    private function convergeTargetForServer(
-        array $targets,
-        int $userId,
-        int $serverId
-    ): string {
-        return $targets[($userId + $serverId) % count($targets)];
+    private function convergeTargetForUser(array $targets, int $userId): string
+    {
+        return $targets[$userId % count($targets)];
     }
 
     private function inNightConvergeWindow(): bool
