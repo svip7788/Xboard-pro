@@ -19,7 +19,7 @@ class BaitNightRegroup extends Command
         {--suspect= : 可疑名单，逗号分隔的 uid}
         {--from= : 从 JSON 文件读 uids 字段当可疑名单}
         {--to=cs4 : 可疑的人挪进哪个池，填接口标识或池名}
-        {--rest= : 其余人挪进哪个池，留空则不动他们}
+        {--rest= : 其余人挪进哪个池，留空则让他们留在原组}
         {--scope= : 只在这些池的现有成员里重排，逗号分隔；留空则等于 to 和 rest}
         {--half : 把 scope 里的人对半分到 to 和 rest，忽略可疑名单，用于逐轮二分}
         {--dry : 只看会怎么动，不写入}';
@@ -31,10 +31,10 @@ class BaitNightRegroup extends Command
         try {
             $service = BaitSplitService::fromDatabase();
             $campaignId = $this->campaignId($service);
-            $to = (string) $this->option('to');
-            $rest = (string) $this->option('rest');
-
+            $to = trim((string) $this->option('to'));
+            $rest = trim((string) $this->option('rest'));
             $scope = $this->scopePools($to, $rest);
+            $this->guard($to, $rest, $scope);
             $members = [];
             foreach ($scope as $ref) {
                 foreach ($service->poolMembers($campaignId, $ref) as $uid) {
@@ -58,13 +58,13 @@ class BaitNightRegroup extends Command
             ));
 
             if ($this->option('dry')) {
-                $this->preview($hit, $miss);
+                $this->preview($to, $rest, $hit, $miss);
                 $this->warn('这是预演，没有写入。去掉 --dry 才真的改');
                 return self::SUCCESS;
             }
 
             $plan = [$to => $hit];
-            if ($rest !== '' && $rest !== $to) {
+            if ($rest !== '') {
                 $plan[$rest] = $miss;
             }
             foreach ($service->reassignUsers($campaignId, $plan) as $result) {
@@ -100,9 +100,36 @@ class BaitNightRegroup extends Command
     {
         $raw = (string) $this->option('scope');
         if ($raw !== '') {
-            return array_values(array_filter(array_map('trim', explode(',', $raw))));
+            return array_values(array_unique(array_filter(array_map('trim', explode(',', $raw)))));
         }
-        return array_values(array_filter([$to, $rest]));
+        return array_values(array_unique(array_filter([$to, $rest])));
+    }
+
+    /**
+     * 挡住那些跑完才发现白跑一趟的组合。
+     *
+     * @param string[] $scope
+     */
+    private function guard(string $to, string $rest, array $scope): void
+    {
+        if ($to === '') {
+            throw new \RuntimeException('--to 不能为空');
+        }
+        if ($rest === $to) {
+            throw new \RuntimeException('--to 和 --rest 是同一个池，挪了等于没挪');
+        }
+        if ($this->option('half') && $rest === '') {
+            throw new \RuntimeException('--half 要把人分到两个池，得同时给 --rest');
+        }
+        if ($this->option('half') || $this->suspectIds() !== []) {
+            return;
+        }
+        // 既没名单也不是二分，那就是整批挪走，范围必须是别的池，否则原地打转
+        if ($scope === [$to]) {
+            throw new \RuntimeException(
+                '整批挪走要用 --scope 指定挪哪个池的人，比如 --scope=cs2 --to=aq1'
+            );
+        }
     }
 
     /**
@@ -117,7 +144,12 @@ class BaitNightRegroup extends Command
             $mid = (int) ceil(count($members) / 2);
             return [array_slice($members, 0, $mid), array_slice($members, $mid)];
         }
-        $suspect = array_flip($this->suspectIds());
+        $ids = $this->suspectIds();
+        if ($ids === []) {
+            // 没给名单就是整批挪走：一个组整晚没被墙，直接搬去正常分组
+            return [$members, []];
+        }
+        $suspect = array_flip($ids);
         $hit = $miss = [];
         foreach ($members as $uid) {
             if (isset($suspect[$uid])) {
@@ -142,11 +174,7 @@ class BaitNightRegroup extends Command
             }
             return $this->parse(implode(',', $data['uids']));
         }
-        $ids = $this->parse((string) $this->option('suspect'));
-        if ($ids === []) {
-            throw new \RuntimeException('没给可疑名单，用 --suspect / --from，或者用 --half 做二分');
-        }
-        return $ids;
+        return $this->parse((string) $this->option('suspect'));
     }
 
     /** @return int[] */
@@ -167,10 +195,14 @@ class BaitNightRegroup extends Command
      * @param int[] $hit
      * @param int[] $miss
      */
-    private function preview(array $hit, array $miss): void
+    private function preview(string $to, string $rest, array $hit, array $miss): void
     {
         $rows = [];
-        foreach ([['进 to 组', $hit], ['进 rest 组', $miss]] as [$label, $ids]) {
+        $groups = [["进 {$to}", $hit]];
+        if ($rest !== '') {
+            $groups[] = ["进 {$rest}", $miss];
+        }
+        foreach ($groups as [$label, $ids]) {
             $emails = User::query()
                 ->whereIn('id', array_slice($ids, 0, 5))
                 ->orderBy('id')
