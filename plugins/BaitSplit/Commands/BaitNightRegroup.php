@@ -63,9 +63,19 @@ class BaitNightRegroup extends Command
                 return self::SUCCESS;
             }
 
-            $this->apply($service, $campaignId, $hit, $to);
-            if ($rest !== '') {
-                $this->apply($service, $campaignId, $miss, $rest);
+            $plan = [$to => $hit];
+            if ($rest !== '' && $rest !== $to) {
+                $plan[$rest] = $miss;
+            }
+            foreach ($service->reassignUsers($campaignId, $plan) as $result) {
+                $this->line(sprintf(
+                    '  %s：挪入 %d 人，本来就在 %d 人%s%s',
+                    $result['pool_name'],
+                    $result['moved'],
+                    $result['already'],
+                    $result['locked'] > 0 ? sprintf('，跳过人工锁定 %d 人', $result['locked']) : '',
+                    $result['invalid'] > 0 ? sprintf('，无效 %d 人', $result['invalid']) : ''
+                ));
             }
             $this->info('重排完成，面板刷新后人数即为新的分组');
             return self::SUCCESS;
@@ -151,27 +161,6 @@ class BaitNightRegroup extends Command
         }
         sort($ids);
         return array_values($ids);
-    }
-
-    /** @param int[] $userIds */
-    private function apply(
-        BaitSplitService $service,
-        string $campaignId,
-        array $userIds,
-        string $poolRef
-    ): void {
-        if ($userIds === []) {
-            return;
-        }
-        $r = $service->reassignUsers($campaignId, $userIds, $poolRef);
-        $this->line(sprintf(
-            '  %s：挪入 %d 人，本来就在 %d 人%s%s',
-            $r['pool_name'],
-            $r['moved'],
-            $r['already'],
-            $r['locked'] > 0 ? sprintf('，跳过人工锁定 %d 人', $r['locked']) : '',
-            $r['invalid'] > 0 ? sprintf('，无效 %d 人', $r['invalid']) : ''
-        ));
     }
 
     /**

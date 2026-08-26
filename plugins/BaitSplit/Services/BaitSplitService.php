@@ -4058,52 +4058,58 @@ class BaitSplitService
      *
      * 人工锁定（override 指定了池）的用户跳过——锁定的意思就是不要自动动他。
      *
-     * @param int[] $userIds
-     * @return array{pool_name: string, moved: int, already: int, locked: int, invalid: int}
+     * 一次把所有去向都传进来，读一遍状态改完一起存：分多次调用的话，后一次读到的
+     * 若是存盘前的状态，前一次挪的人就被写回去了。
+     *
+     * @param array<string, int[]> $plan 池（接口标识或池 ID）=> 要挪进去的 uid
+     * @return array<string, array{pool_name: string, moved: int, already: int, locked: int, invalid: int}>
      */
-    public function reassignUsers(
-        string $campaignId,
-        array $userIds,
-        string $poolRef
-    ): array {
+    public function reassignUsers(string $campaignId, array $plan): array
+    {
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $router = $campaign['router'];
-        $poolId = $this->splitPoolIdList($router, $poolRef)[0] ?? '';
-        if ($poolId === '' || !isset($router['pools'][$poolId])) {
-            throw new InvalidArgumentException("找不到用户池：{$poolRef}");
-        }
         $eligible = $this->eligibleUserIdSet($campaign['target_group_ids']);
-        $result = ['pool_name' => $router['pools'][$poolId]['name'], 'moved' => 0,
-            'already' => 0, 'locked' => 0, 'invalid' => 0];
-        foreach ($userIds as $userId) {
-            $userId = (int) $userId;
-            if ($userId <= 0 || !isset($eligible[$userId])) {
-                $result['invalid']++;
-                continue;
+        $results = [];
+        $moved = 0;
+        foreach ($plan as $poolRef => $userIds) {
+            $poolId = $this->splitPoolIdList($router, (string) $poolRef)[0] ?? '';
+            if ($poolId === '' || !isset($router['pools'][$poolId])) {
+                throw new InvalidArgumentException("找不到用户池：{$poolRef}");
             }
-            $override = $router['overrides'][(string) $userId] ?? null;
-            if (
-                $override
-                && $this->overrideIsActive($override)
-                && (string) ($override['pool_id'] ?? '') !== ''
-            ) {
-                $result['locked']++;
-                continue;
+            $result = ['pool_name' => $router['pools'][$poolId]['name'], 'moved' => 0,
+                'already' => 0, 'locked' => 0, 'invalid' => 0];
+            foreach ($userIds as $userId) {
+                $userId = (int) $userId;
+                if ($userId <= 0 || !isset($eligible[$userId])) {
+                    $result['invalid']++;
+                    continue;
+                }
+                $override = $router['overrides'][(string) $userId] ?? null;
+                if (
+                    $override
+                    && $this->overrideIsActive($override)
+                    && (string) ($override['pool_id'] ?? '') !== ''
+                ) {
+                    $result['locked']++;
+                    continue;
+                }
+                if ((string) ($router['assignments'][(string) $userId] ?? '') === $poolId) {
+                    $result['already']++;
+                    continue;
+                }
+                $router['assignments'][(string) $userId] = $poolId;
+                $result['moved']++;
             }
-            if ((string) ($router['assignments'][(string) $userId] ?? '') === $poolId) {
-                $result['already']++;
-                continue;
-            }
-            $router['assignments'][(string) $userId] = $poolId;
-            $result['moved']++;
+            $moved += $result['moved'];
+            $results[(string) $poolRef] = $result;
         }
-        if ($result['moved'] > 0) {
+        if ($moved > 0) {
             $campaign['router'] = $router;
             $state['campaigns'][$campaignId] = $campaign;
             $this->saveState($state);
         }
-        return $result;
+        return $results;
     }
 
     /**
