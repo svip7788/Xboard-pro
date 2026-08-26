@@ -25,6 +25,9 @@ class BaitSplitService
     private const MIN_BUCKETS = 2;
     private const MAX_BUCKETS = 10;
 
+    /** @var array<int,true>|null 解析后的夜间高危 uid，null 表示还没解析过 */
+    private ?array $nightRiskUids = null;
+
     public function __construct(private readonly array $config)
     {
     }
@@ -2883,11 +2886,41 @@ class BaitSplitService
      * 8/23 十八次墙里只有两组成对，改成按节点分摊的 8/24 变成三十六次里十五组成对，
      * 其中多组间隔只有 1 秒——同一批检测里一起判掉的。
      *
-     * 按人分摊还留下了唯一的定位信号：哪个池死、哪个池活，直接说明人在哪半边。
+     * 配了高危名单就改按名单分：名单里的人全压第一个池，其余人进第二个池。
+     * uid 取模是均分，两边人群同质，8/25 与 8/26 两晚都是两个池各自被打穿——
+     * 死哪个都说明不了问题。按名单分之后「只死高危池」才是可读的结果：高危池
+     * 死、低危池活，说明招墙的人确实在名单里，下一步对名单再对半分就能收敛。
+     *
+     * 名单为空时退回取模，保持改动前的行为。
      */
     private function convergeTargetForUser(array $targets, int $userId): string
     {
-        return $targets[$userId % count($targets)];
+        $risk = $this->nightRiskUidMap();
+        if ($risk === [] || count($targets) < 2) {
+            return $targets[$userId % count($targets)];
+        }
+        return isset($risk[$userId]) ? $targets[0] : $targets[1];
+    }
+
+    /**
+     * 夜间高危 uid 名单。
+     *
+     * 订阅接口每次拉取都会走到这里，所以解析一次就缓存住，别每次拆字符串。
+     */
+    private function nightRiskUidMap(): array
+    {
+        if ($this->nightRiskUids !== null) {
+            return $this->nightRiskUids;
+        }
+        $map = [];
+        $raw = (string) ($this->config['night_risk_uids'] ?? '');
+        foreach (explode(',', $raw) as $piece) {
+            $uid = (int) trim($piece);
+            if ($uid > 0) {
+                $map[$uid] = true;
+            }
+        }
+        return $this->nightRiskUids = $map;
     }
 
     private function inNightConvergeWindow(): bool
@@ -4026,6 +4059,8 @@ class BaitSplitService
                 'start' => (int) ($this->config['night_converge_start'] ?? 1),
                 'end' => (int) ($this->config['night_converge_end'] ?? 9),
                 'in_window' => $this->inNightConvergeWindow(),
+                // 名单非空时第一个池装高危、第二个装其余；为空则按 uid 均分
+                'risk_uid_count' => count($this->nightRiskUidMap()),
             ],
             'pending_ip_rotates' => $this->pendingIpRotateCount(),
         ];
