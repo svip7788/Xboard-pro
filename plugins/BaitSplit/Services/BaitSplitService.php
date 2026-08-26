@@ -4048,6 +4048,53 @@ class BaitSplitService
         return $stats;
     }
 
+    /**
+     * 窗口内每个牺牲池实际会装多少人。
+     *
+     * 池子那栏的人数是静态归属，白天夜里都一样，看不出收敛把谁分到哪去了——
+     * 归属牺牲组的一千五百人在窗口内是按高危名单重新劈成两半的，得单独算。
+     * 口径跟池子人数一致：只算生效用户，人工锁定的不参与收敛也不计入。
+     *
+     * @return array<string, int> 池 ID => 窗口内人数
+     */
+    private function nightConvergeCounts(array $campaign): array
+    {
+        $router = $campaign['router'];
+        $targets = array_values(array_filter(
+            $this->splitPoolIdList(
+                $router,
+                (string) ($this->config['night_converge_pool_ids'] ?? '')
+            ),
+            fn(string $poolId): bool => isset($router['pools'][$poolId])
+                && $this->poolIsUsable($router['pools'][$poolId])
+        ));
+        if ($targets === [] || !$this->configBool('night_converge_enabled', false)) {
+            return [];
+        }
+        $eligible = $this->eligibleUserIdSet($campaign['target_group_ids']);
+        $membersOnly = $this->configBool('night_converge_members_only', true);
+        $counts = array_fill_keys($targets, 0);
+        foreach ($router['assignments'] as $userId => $poolId) {
+            $userId = (int) $userId;
+            if (!isset($eligible[$userId])) {
+                continue;
+            }
+            $override = $router['overrides'][(string) $userId] ?? null;
+            if (
+                $override
+                && $this->overrideIsActive($override)
+                && (string) ($override['pool_id'] ?? '') !== ''
+            ) {
+                continue;
+            }
+            if ($membersOnly && !in_array((string) $poolId, $targets, true)) {
+                continue;
+            }
+            $counts[$this->convergeTargetForUser($targets, $userId)]++;
+        }
+        return $counts;
+    }
+
     public function wallReport(string $campaignId, int $limit = 100): array
     {
         $state = $this->state();
@@ -4075,6 +4122,7 @@ class BaitSplitService
                 // 名单非空时第一个池装高危、第二个装其余；为空则按 uid 均分
                 'risk_uid_count' => count($this->nightRiskUidMap()),
                 'members_only' => $this->configBool('night_converge_members_only', true),
+                'pool_counts' => $this->nightConvergeCounts($campaign),
             ],
             'pending_ip_rotates' => $this->pendingIpRotateCount(),
         ];
