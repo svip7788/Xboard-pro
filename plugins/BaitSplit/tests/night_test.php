@@ -175,53 +175,12 @@ for ($uid = 1; $uid <= 10; $uid++) {
 }
 T::same(['p_cs5'], array_values(array_unique($all)), '全部落同一个池，不报错');
 
-// uid 取模是均分，两边人群同质，8/25 和 8/26 两晚都是两个池各自被打穿，
-// 死哪个都读不出信息。配上高危名单后「只死第一个池」才是可读的结果。
-T::case('配了高危名单就按名单分，不再按 uid 均分');
-$risk = svc([
-    'night_converge_start' => 0,
-    'night_converge_end' => 24,
-    'night_risk_uids' => '7, 12,12 ,99,0,-3,abc',
-]);
-T::same('p_cs4', pick($risk, $t, 7), '名单里的人进第一个牺牲池');
-T::same('p_cs4', pick($risk, $t, 12), '重复项不影响');
-T::same('p_cs4', pick($risk, $t, 99), '名单里的人进第一个牺牲池');
-T::same('p_cs5', pick($risk, $t, 8), '名单外的人进第二个');
-T::same('p_cs5', pick($risk, $t, 100), '名单外的人进第二个');
-T::same('p_cs5', pick($risk, $t, 0), '0 不是合法 uid，不算在名单里');
-T::same(
-    1,
-    count(array_unique([pick($risk, $t, 7), pick($risk, $t, 7), pick($risk, $t, 7)])),
-    '名单里的人反复拉订阅落点不变'
-);
-
-T::case('名单人群完整落在第一个池，其余完整落在第二个');
-$byPool = [];
-for ($uid = 1; $uid <= 120; $uid++) {
-    $byPool[pick($risk, $t, $uid)][] = $uid;
+// 限定只收自己人时 targets 只剩他归属的那一个，取模必然落在它身上——
+// 这条链路是「面板上挪了人，夜里就跟着变」的全部依据。
+T::case('限定收自己人时落点等于面板上的组');
+foreach ([4 => 'p_cs4', 8 => 'p_cs4', 6 => 'p_cs5', 10 => 'p_cs5'] as $uid => $expect) {
+    T::same($expect, pick($full, targets($full, null, $uid), $uid), "uid {$uid} 落 {$expect}");
 }
-T::same([7, 12, 99], $byPool['p_cs4'], '第一个池只装名单里的三个人');
-T::same(117, count($byPool['p_cs5']), '其余 117 人全在第二个池');
-
-T::case('名单为空或只有一个牺牲池时退回均分');
-$blank = svc([
-    'night_converge_start' => 0,
-    'night_converge_end' => 24,
-    'night_risk_uids' => ' , ,0',
-]);
-$byUser = [];
-for ($uid = 1; $uid <= 40; $uid++) {
-    $byUser[pick($blank, $t, $uid)][] = $uid;
-}
-T::same(2, count($byUser), '名单里没有合法 uid 时按 uid 均分');
-T::same(
-    ['p_cs5'],
-    array_values(array_unique([
-        pick($risk, $one, 7),
-        pick($risk, $one, 8),
-    ])),
-    '只有一个牺牲池时名单不生效，都落这个池'
-);
 
 T::case('窗口边界');
 $win = fn(int $start, int $end): bool => (bool) svc([

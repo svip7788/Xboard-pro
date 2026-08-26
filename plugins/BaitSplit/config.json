@@ -64,13 +64,7 @@
             "type": "string",
             "default": "",
             "label": "牺牲池（逗号分隔）",
-            "description": "窗口内承载全部普通用户的池，填接口标识或池 ID。填多个按用户 ID 定死分摊，避免单个中转扛不住凌晨带宽。留空则收敛不生效"
-        },
-        "night_risk_uids": {
-            "type": "string",
-            "default": "",
-            "label": "夜间高危名单（uid，逗号分隔）",
-            "description": "填了之后牺牲池不再按 uid 均分：名单里的人全压第一个牺牲池，其余人进第二个。这样「只死第一个池」才说明招墙的人在名单里。留空则退回均分"
+            "description": "窗口内承载用户的池，填接口标识或池 ID。限定只收自己人时，人落在自己归属的那个牺牲池，面板上挪了人夜里就跟着变；放开收全站时按用户 ID 在多个池之间定死分摊。留空则收敛不生效"
         },
         "night_converge_members_only": {
             "type": "boolean",

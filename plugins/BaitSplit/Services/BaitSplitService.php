@@ -25,9 +25,6 @@ class BaitSplitService
     private const MIN_BUCKETS = 2;
     private const MAX_BUCKETS = 10;
 
-    /** @var array<int,true>|null 解析后的夜间高危 uid，null 表示还没解析过 */
-    private ?array $nightRiskUids = null;
-
     public function __construct(private readonly array $config)
     {
     }
@@ -2871,7 +2868,24 @@ class BaitSplitService
         if (!$this->inNightConvergeWindow()) {
             return [];
         }
-        $targets = array_values(array_filter(
+        return $this->convergeTargetsForUser(
+            $this->nightConvergePoolIds($router),
+            $router,
+            $userId
+        );
+    }
+
+    /**
+     * 配置里选中且当前可用的牺牲池，与具体用户无关。
+     *
+     * 单独拆出来是因为面板统计要对上万条归属逐个判定，每人重新拆一遍配置字符串
+     * 太浪费。
+     *
+     * @return string[]
+     */
+    private function nightConvergePoolIds(array $router): array
+    {
+        return array_values(array_filter(
             $this->splitPoolIdList(
                 $router,
                 (string) ($this->config['night_converge_pool_ids'] ?? '')
@@ -2879,18 +2893,31 @@ class BaitSplitService
             fn(string $poolId): bool => isset($router['pools'][$poolId])
                 && $this->poolIsUsable($router['pools'][$poolId])
         ));
+    }
+
+    /**
+     * 这个人在窗口内的候选池。
+     *
+     * 只收敛本来就归属牺牲池的人：放开收全站时凌晨每个拉订阅的人都会被塞进这几个
+     * 地址，主组、安静组的人跟着一起进来，牺牲池被墙也读不出是谁招的。
+     *
+     * 限定收自己人时只返回他归属的那一个，落点等于面板上看到的组。排查靠的就是
+     * 这条链路：把一个牺牲组整批挪走、再对剩下的人对半分，一轮轮缩到招墙的人身上。
+     *
+     * @param string[] $targets
+     * @return string[]
+     */
+    private function convergeTargetsForUser(
+        array $targets,
+        array $router,
+        int $userId
+    ): array {
         if (
             $targets === []
             || !$this->configBool('night_converge_members_only', true)
         ) {
             return $targets;
         }
-        // 只收敛本来就归属牺牲池的人。放开收全站时凌晨每个拉订阅的人都会被塞进
-        // 这两个地址，主组、安静组的人跟着一起进来，牺牲池被墙也读不出是谁招的。
-        //
-        // 落点直接用静态归属，不再按名单重分：排查是在面板上做的——把一个牺牲组
-        // 的人整批挪走、再对剩下的人对半分，靠的是看得见摸得着的分组。名单在这里
-        // 二次分配会把人挪回去，面板显示的组和夜里的实际落点就对不上了。
         $assigned = (string) ($router['assignments'][(string) $userId] ?? '');
         return in_array($assigned, $targets, true) ? [$assigned] : [];
     }
@@ -2903,41 +2930,12 @@ class BaitSplitService
      * 8/23 十八次墙里只有两组成对，改成按节点分摊的 8/24 变成三十六次里十五组成对，
      * 其中多组间隔只有 1 秒——同一批检测里一起判掉的。
      *
-     * 配了高危名单就改按名单分：名单里的人全压第一个池，其余人进第二个池。
-     * uid 取模是均分，两边人群同质，8/25 与 8/26 两晚都是两个池各自被打穿——
-     * 死哪个都说明不了问题。按名单分之后「只死高危池」才是可读的结果：高危池
-     * 死、低危池活，说明招墙的人确实在名单里，下一步对名单再对半分就能收敛。
-     *
-     * 名单为空时退回取模，保持改动前的行为。
+     * 限定只收牺牲池自己人时 targets 只有他归属的那一个，取模落在它身上；放开收
+     * 全站时人不是按归属来的，才需要在多个池之间均分。
      */
     private function convergeTargetForUser(array $targets, int $userId): string
     {
-        $risk = $this->nightRiskUidMap();
-        if ($risk === [] || count($targets) < 2) {
-            return $targets[$userId % count($targets)];
-        }
-        return isset($risk[$userId]) ? $targets[0] : $targets[1];
-    }
-
-    /**
-     * 夜间高危 uid 名单。
-     *
-     * 订阅接口每次拉取都会走到这里，所以解析一次就缓存住，别每次拆字符串。
-     */
-    private function nightRiskUidMap(): array
-    {
-        if ($this->nightRiskUids !== null) {
-            return $this->nightRiskUids;
-        }
-        $map = [];
-        $raw = (string) ($this->config['night_risk_uids'] ?? '');
-        foreach (explode(',', $raw) as $piece) {
-            $uid = (int) trim($piece);
-            if ($uid > 0) {
-                $map[$uid] = true;
-            }
-        }
-        return $this->nightRiskUids = $map;
+        return $targets[$userId % count($targets)];
     }
 
     private function inNightConvergeWindow(): bool
@@ -4138,15 +4136,11 @@ class BaitSplitService
     private function nightConvergeCounts(array $campaign): array
     {
         $router = $campaign['router'];
-        $targets = array_values(array_filter(
-            $this->splitPoolIdList(
-                $router,
-                (string) ($this->config['night_converge_pool_ids'] ?? '')
-            ),
-            fn(string $poolId): bool => isset($router['pools'][$poolId])
-                && $this->poolIsUsable($router['pools'][$poolId])
-        ));
-        if ($targets === [] || !$this->configBool('night_converge_enabled', false)) {
+        if (!$this->configBool('night_converge_enabled', false)) {
+            return [];
+        }
+        $targets = $this->nightConvergePoolIds($router);
+        if ($targets === []) {
             return [];
         }
         $eligible = $this->eligibleUserIdSet($campaign['target_group_ids']);
@@ -4157,11 +4151,15 @@ class BaitSplitService
                 continue;
             }
             $override = $router['overrides'][(string) $userId] ?? null;
-            $override = $override && $this->overrideIsActive($override)
-                ? $override
-                : null;
-            // 走与下发同一条判定，免得面板上的人数和夜里的实际落点各算各的
-            $userTargets = $this->nightConvergeTargets($router, $override, $userId);
+            if (
+                $override
+                && $this->overrideIsActive($override)
+                && (string) ($override['pool_id'] ?? '') !== ''
+            ) {
+                continue;
+            }
+            // 与下发共用同一条判定，免得面板人数和夜里的实际落点各算各的
+            $userTargets = $this->convergeTargetsForUser($targets, $router, $userId);
             if ($userTargets === []) {
                 continue;
             }
@@ -4194,8 +4192,6 @@ class BaitSplitService
                 'start' => (int) ($this->config['night_converge_start'] ?? 1),
                 'end' => (int) ($this->config['night_converge_end'] ?? 9),
                 'in_window' => $this->inNightConvergeWindow(),
-                // 名单非空时第一个池装高危、第二个装其余；为空则按 uid 均分
-                'risk_uid_count' => count($this->nightRiskUidMap()),
                 'members_only' => $this->configBool('night_converge_members_only', true),
                 'pool_counts' => $this->nightConvergeCounts($campaign),
             ],
