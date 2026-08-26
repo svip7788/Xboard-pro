@@ -72,6 +72,12 @@
             "label": "夜间高危名单（uid，逗号分隔）",
             "description": "填了之后牺牲池不再按 uid 均分：名单里的人全压第一个牺牲池，其余人进第二个。这样「只死第一个池」才说明招墙的人在名单里。留空则退回均分"
         },
+        "night_converge_members_only": {
+            "type": "boolean",
+            "default": true,
+            "label": "只收敛牺牲池自己的人",
+            "description": "开启后只有本来就归属牺牲池的用户在窗口内被收敛，主组、安静组的人凌晨保持原 IP。关掉则全站凌晨都塞进牺牲池——那样牺牲池被墙也读不出是谁招的"
+        },
         "night_converge_start": {
             "type": "number",
             "default": 1,

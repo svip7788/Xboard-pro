@@ -2760,7 +2760,7 @@ class BaitSplitService
         $override = $router['overrides'][(string) $userId] ?? null;
         $override = $override && $this->overrideIsActive($override) ? $override : null;
         $poolIds = $this->routingPoolIds($campaign, $userId, $override);
-        $convergeTargets = $this->nightConvergeTargets($router, $override);
+        $convergeTargets = $this->nightConvergeTargets($router, $override, $userId);
         $result = [];
         $deliveredPoolIds = [];
         $managedServerIds = array_flip($campaign['target_server_ids']);
@@ -2857,8 +2857,11 @@ class BaitSplitService
      *
      * 只返回候选，由调用方按 uid 分摊到其中一个。
      */
-    private function nightConvergeTargets(array $router, ?array $override): array
-    {
+    private function nightConvergeTargets(
+        array $router,
+        ?array $override,
+        int $userId
+    ): array {
         if (!$this->configBool('night_converge_enabled', false)) {
             return [];
         }
@@ -2868,7 +2871,7 @@ class BaitSplitService
         if (!$this->inNightConvergeWindow()) {
             return [];
         }
-        return array_values(array_filter(
+        $targets = array_values(array_filter(
             $this->splitPoolIdList(
                 $router,
                 (string) ($this->config['night_converge_pool_ids'] ?? '')
@@ -2876,6 +2879,16 @@ class BaitSplitService
             fn(string $poolId): bool => isset($router['pools'][$poolId])
                 && $this->poolIsUsable($router['pools'][$poolId])
         ));
+        if (
+            $targets === []
+            || !$this->configBool('night_converge_members_only', true)
+        ) {
+            return $targets;
+        }
+        // 只收敛本来就归属牺牲池的人。放开收全站时凌晨每个拉订阅的人都会被塞进
+        // 这两个地址，主组、安静组的人跟着一起进来，牺牲池被墙也读不出是谁招的。
+        $assigned = (string) ($router['assignments'][(string) $userId] ?? '');
+        return in_array($assigned, $targets, true) ? $targets : [];
     }
 
     /**
@@ -4061,6 +4074,7 @@ class BaitSplitService
                 'in_window' => $this->inNightConvergeWindow(),
                 // 名单非空时第一个池装高危、第二个装其余；为空则按 uid 均分
                 'risk_uid_count' => count($this->nightRiskUidMap()),
+                'members_only' => $this->configBool('night_converge_members_only', true),
             ],
             'pending_ip_rotates' => $this->pendingIpRotateCount(),
         ];

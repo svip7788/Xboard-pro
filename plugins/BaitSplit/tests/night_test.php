@@ -16,7 +16,12 @@ require __DIR__ . '/bootstrap.php';
 use Plugin\BaitSplit\Tests\RouterTestService;
 use Plugin\BaitSplit\Tests\T;
 
-/** 五个池：三个主组、两个牺牲池，另有一个停用的。 */
+/**
+ * 五个池：三个主组、两个牺牲池，另有一个停用的。
+ *
+ * 归属表定死：偶数 uid 归牺牲池（4 的倍数进 cs4，其余进 cs5），奇数归主组 cs1。
+ * 只有归属牺牲池的人才参与收敛，所以奇数 uid 用来验证「其他组凌晨不受影响」。
+ */
 function router(): array
 {
     $pools = [];
@@ -36,8 +41,17 @@ function router(): array
             'status' => $status === 'blocked' ? 'blocked' : 'active',
         ];
     }
-    return ['pools' => $pools];
+    $assignments = [];
+    for ($uid = 0; $uid <= 200; $uid++) {
+        $assignments[(string) $uid] = $uid % 2 === 1
+            ? 'p_cs1'
+            : ($uid % 4 === 0 ? 'p_cs4' : 'p_cs5');
+    }
+    return ['pools' => $pools, 'assignments' => $assignments];
 }
+
+/** 归属牺牲池的 uid，用来跑那些跟归属无关的分摊断言。 */
+const MEMBER_UID = 12;
 
 function svc(array $extra = []): RouterTestService
 {
@@ -50,9 +64,12 @@ function svc(array $extra = []): RouterTestService
 }
 
 /** 两个方法都是私有的，用 callValue 打进去。 */
-function targets(RouterTestService $s, ?array $override = null): array
-{
-    return $s->callValue('nightConvergeTargets', router(), $override);
+function targets(
+    RouterTestService $s,
+    ?array $override = null,
+    int $uid = MEMBER_UID
+): array {
+    return $s->callValue('nightConvergeTargets', router(), $override, $uid);
 }
 
 function pick(RouterTestService $s, array $t, int $uid): string
@@ -74,12 +91,34 @@ T::case('窗口内返回全部可用牺牲池');
 T::same(['p_cs4', 'p_cs5'], targets($full), '两个池都要给出来，供按 uid 分摊');
 T::same(
     ['p_cs5'],
-    targets(svc([
-        'night_converge_pool_ids' => 'dead,cs5',
-        'night_converge_start' => 0,
-        'night_converge_end' => 24,
-    ])),
+    targets(
+        svc([
+            'night_converge_pool_ids' => 'dead,cs5',
+            'night_converge_start' => 0,
+            'night_converge_end' => 24,
+        ]),
+        null,
+        6 // 归属 cs5，剩下的唯一可用牺牲池就是他自己那个
+    ),
     '停用的池被过滤掉，可用的留下'
+);
+
+// 放开收全站时，凌晨每个拉订阅的人都被塞进这两个地址，主组、安静组的人跟着进来，
+// 牺牲池被墙也读不出是谁招的——面板上牺牲组明明只有一千五百人，实际却在扛两千人。
+T::case('只收敛归属牺牲池的人');
+T::same(['p_cs4', 'p_cs5'], targets($full, null, 4), '归属 cs4 的人参与收敛');
+T::same(['p_cs4', 'p_cs5'], targets($full, null, 6), '归属 cs5 的人参与收敛');
+T::same([], targets($full, null, 7), '归属主组的人凌晨保持原 IP');
+T::same([], targets($full, null, 999999), '归属表里没有的人不参与');
+$openAll = svc([
+    'night_converge_start' => 0,
+    'night_converge_end' => 24,
+    'night_converge_members_only' => false,
+]);
+T::same(
+    ['p_cs4', 'p_cs5'],
+    targets($openAll, null, 7),
+    '关掉开关后退回全站收敛，主组的人也被收进来'
 );
 
 // 这一组是 8/24 那次事故的回归用例：当时按节点分摊，每个人同时占住两个牺牲地址，
@@ -194,5 +233,6 @@ T::same(
     targets($live),
     '当前 ' . $hour . ' 点' . ($nowIn ? '应当收敛' : '应当不收敛')
 );
+T::same([], targets($live, null, 7), '主组的人任何时刻都不被收敛');
 
 exit(T::summary());
