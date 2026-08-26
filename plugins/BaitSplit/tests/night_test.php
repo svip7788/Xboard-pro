@@ -87,8 +87,14 @@ T::same([], targets(svc(['night_converge_pool_ids' => ''])), '牺牲池留空');
 T::same([], targets(svc(['night_converge_pool_ids' => 'dead'])), '牺牲池已停用');
 T::same([], targets($full, ['pool_id' => 'p_cs1']), '人工锁定的用户不参与');
 
-T::case('窗口内返回全部可用牺牲池');
-T::same(['p_cs4', 'p_cs5'], targets($full), '两个池都要给出来，供按 uid 分摊');
+// 排查靠的是面板上看得见的分组：一组整晚没被墙就整批挪走，再对剩下的对半分。
+// 所以夜里的落点必须等于面板上的归属，否则挪了人夜里还是按老样子下发。
+T::case('落点就是静态归属');
+T::same(['p_cs4'], targets($full, null, 4), '归属 cs4 的人夜里落 cs4');
+T::same(['p_cs5'], targets($full, null, 6), '归属 cs5 的人夜里落 cs5');
+T::same(['p_cs4'], targets($full, null, MEMBER_UID), '同一个人始终落自己那组');
+T::same([], targets($full, null, 7), '归属主组的人凌晨保持原 IP');
+T::same([], targets($full, null, 999999), '归属表里没有的人不参与');
 T::same(
     ['p_cs5'],
     targets(
@@ -98,18 +104,26 @@ T::same(
             'night_converge_end' => 24,
         ]),
         null,
-        6 // 归属 cs5，剩下的唯一可用牺牲池就是他自己那个
+        6
     ),
     '停用的池被过滤掉，可用的留下'
 );
+T::same(
+    [],
+    targets(
+        svc([
+            'night_converge_pool_ids' => 'dead,cs5',
+            'night_converge_start' => 0,
+            'night_converge_end' => 24,
+        ]),
+        null,
+        4 // 归属 cs4，但 cs4 这轮没被选为牺牲池
+    ),
+    '归属的池没被选中就不收敛'
+);
 
-// 放开收全站时，凌晨每个拉订阅的人都被塞进这两个地址，主组、安静组的人跟着进来，
-// 牺牲池被墙也读不出是谁招的——面板上牺牲组明明只有一千五百人，实际却在扛两千人。
-T::case('只收敛归属牺牲池的人');
-T::same(['p_cs4', 'p_cs5'], targets($full, null, 4), '归属 cs4 的人参与收敛');
-T::same(['p_cs4', 'p_cs5'], targets($full, null, 6), '归属 cs5 的人参与收敛');
-T::same([], targets($full, null, 7), '归属主组的人凌晨保持原 IP');
-T::same([], targets($full, null, 999999), '归属表里没有的人不参与');
+// 名单只在放开收全站时还有意义：那时人不是按归属来的，得有个口径决定谁进哪个池。
+T::case('关掉归属限制后退回全站收敛');
 $openAll = svc([
     'night_converge_start' => 0,
     'night_converge_end' => 24,
@@ -118,7 +132,7 @@ $openAll = svc([
 T::same(
     ['p_cs4', 'p_cs5'],
     targets($openAll, null, 7),
-    '关掉开关后退回全站收敛，主组的人也被收进来'
+    '主组的人也被收进来，两个池都是候选'
 );
 
 // 这一组是 8/24 那次事故的回归用例：当时按节点分摊，每个人同时占住两个牺牲地址，
@@ -229,9 +243,9 @@ T::case('线上配置（0-10 点）在当前时刻的实际表现');
 $live = svc(['night_converge_start' => 0, 'night_converge_end' => 10]);
 $nowIn = $hour >= 0 && $hour < 10;
 T::same(
-    $nowIn ? ['p_cs4', 'p_cs5'] : [],
+    $nowIn ? ['p_cs4'] : [],
     targets($live),
-    '当前 ' . $hour . ' 点' . ($nowIn ? '应当收敛' : '应当不收敛')
+    '当前 ' . $hour . ' 点' . ($nowIn ? '应当收敛到自己那组' : '应当不收敛')
 );
 T::same([], targets($live, null, 7), '主组的人任何时刻都不被收敛');
 

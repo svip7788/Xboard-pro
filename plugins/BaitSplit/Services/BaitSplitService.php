@@ -2887,8 +2887,12 @@ class BaitSplitService
         }
         // 只收敛本来就归属牺牲池的人。放开收全站时凌晨每个拉订阅的人都会被塞进
         // 这两个地址，主组、安静组的人跟着一起进来，牺牲池被墙也读不出是谁招的。
+        //
+        // 落点直接用静态归属，不再按名单重分：排查是在面板上做的——把一个牺牲组
+        // 的人整批挪走、再对剩下的人对半分，靠的是看得见摸得着的分组。名单在这里
+        // 二次分配会把人挪回去，面板显示的组和夜里的实际落点就对不上了。
         $assigned = (string) ($router['assignments'][(string) $userId] ?? '');
-        return in_array($assigned, $targets, true) ? $targets : [];
+        return in_array($assigned, $targets, true) ? [$assigned] : [];
     }
 
     /**
@@ -4049,6 +4053,80 @@ class BaitSplitService
     }
 
     /**
+     * 按名单重排静态归属，把人整批挪进指定用户池。
+     *
+     * 排查靠的是面板上看得见的分组：一个牺牲组整晚没被墙，就把它整批挪去正常组，
+     * 再对剩下那组对半分，一轮轮缩到招墙的人身上。手动一个个点不现实，上千人。
+     *
+     * 人工锁定（override 指定了池）的用户跳过——锁定的意思就是不要自动动他。
+     *
+     * @param int[] $userIds
+     * @return array{pool_name: string, moved: int, already: int, locked: int, invalid: int}
+     */
+    public function reassignUsers(
+        string $campaignId,
+        array $userIds,
+        string $poolRef
+    ): array {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $router = $campaign['router'];
+        $poolId = $this->splitPoolIdList($router, $poolRef)[0] ?? '';
+        if ($poolId === '' || !isset($router['pools'][$poolId])) {
+            throw new InvalidArgumentException("找不到用户池：{$poolRef}");
+        }
+        $eligible = $this->eligibleUserIdSet($campaign['target_group_ids']);
+        $result = ['pool_name' => $router['pools'][$poolId]['name'], 'moved' => 0,
+            'already' => 0, 'locked' => 0, 'invalid' => 0];
+        foreach ($userIds as $userId) {
+            $userId = (int) $userId;
+            if ($userId <= 0 || !isset($eligible[$userId])) {
+                $result['invalid']++;
+                continue;
+            }
+            $override = $router['overrides'][(string) $userId] ?? null;
+            if (
+                $override
+                && $this->overrideIsActive($override)
+                && (string) ($override['pool_id'] ?? '') !== ''
+            ) {
+                $result['locked']++;
+                continue;
+            }
+            if ((string) ($router['assignments'][(string) $userId] ?? '') === $poolId) {
+                $result['already']++;
+                continue;
+            }
+            $router['assignments'][(string) $userId] = $poolId;
+            $result['moved']++;
+        }
+        if ($result['moved'] > 0) {
+            $campaign['router'] = $router;
+            $state['campaigns'][$campaignId] = $campaign;
+            $this->saveState($state);
+        }
+        return $result;
+    }
+
+    /**
+     * 某个用户池当前的成员，用来做「整组挪走」和「对半分」。
+     *
+     * @return int[]
+     */
+    public function poolMembers(string $campaignId, string $poolRef): array
+    {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $poolId = $this->splitPoolIdList($campaign['router'], $poolRef)[0] ?? '';
+        if ($poolId === '' || !isset($campaign['router']['pools'][$poolId])) {
+            throw new InvalidArgumentException("找不到用户池：{$poolRef}");
+        }
+        $ids = $this->poolMemberIds($campaign, $poolId);
+        sort($ids);
+        return $ids;
+    }
+
+    /**
      * 窗口内每个牺牲池实际会装多少人。
      *
      * 池子那栏的人数是静态归属，白天夜里都一样，看不出收敛把谁分到哪去了——
@@ -4072,25 +4150,22 @@ class BaitSplitService
             return [];
         }
         $eligible = $this->eligibleUserIdSet($campaign['target_group_ids']);
-        $membersOnly = $this->configBool('night_converge_members_only', true);
         $counts = array_fill_keys($targets, 0);
-        foreach ($router['assignments'] as $userId => $poolId) {
+        foreach (array_keys($router['assignments']) as $userId) {
             $userId = (int) $userId;
             if (!isset($eligible[$userId])) {
                 continue;
             }
             $override = $router['overrides'][(string) $userId] ?? null;
-            if (
-                $override
-                && $this->overrideIsActive($override)
-                && (string) ($override['pool_id'] ?? '') !== ''
-            ) {
+            $override = $override && $this->overrideIsActive($override)
+                ? $override
+                : null;
+            // 走与下发同一条判定，免得面板上的人数和夜里的实际落点各算各的
+            $userTargets = $this->nightConvergeTargets($router, $override, $userId);
+            if ($userTargets === []) {
                 continue;
             }
-            if ($membersOnly && !in_array((string) $poolId, $targets, true)) {
-                continue;
-            }
-            $counts[$this->convergeTargetForUser($targets, $userId)]++;
+            $counts[$this->convergeTargetForUser($userTargets, $userId)]++;
         }
         return $counts;
     }
