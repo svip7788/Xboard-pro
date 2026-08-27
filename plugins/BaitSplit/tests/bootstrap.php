@@ -47,8 +47,85 @@ namespace Illuminate\Support\Facades {
         }
     }
 
+    /**
+     * 够用的内存版 Redis。
+     *
+     * 自动隔离的判定全靠计数攒够次数，返回 null 的空壳会让它永远不触发，用例也就
+     * 永远是绿的。这里只实现用到的几个命令，语义跟真 Redis 一致：incr 从 0 起、
+     * hgetall 返回字符串值。
+     */
     class Redis
     {
+        /** @var array<string, mixed> */
+        public static array $store = [];
+
+        public static function reset(): void
+        {
+            self::$store = [];
+        }
+
+        public static function get(string $key): ?string
+        {
+            return isset(self::$store[$key]) ? (string) self::$store[$key] : null;
+        }
+
+        public static function set(string $key, mixed $value): bool
+        {
+            self::$store[$key] = $value;
+            return true;
+        }
+
+        public static function incr(string $key): int
+        {
+            return self::incrby($key, 1);
+        }
+
+        public static function incrby(string $key, int $by): int
+        {
+            self::$store[$key] = (int) (self::$store[$key] ?? 0) + $by;
+            return self::$store[$key];
+        }
+
+        public static function hincrby(string $key, string $field, int $by): int
+        {
+            $hash = (array) (self::$store[$key] ?? []);
+            $hash[$field] = (int) ($hash[$field] ?? 0) + $by;
+            self::$store[$key] = $hash;
+            return $hash[$field];
+        }
+
+        public static function hset(string $key, string $field, mixed $value): int
+        {
+            $hash = (array) (self::$store[$key] ?? []);
+            $hash[$field] = $value;
+            self::$store[$key] = $hash;
+            return 1;
+        }
+
+        /** @return array<string, string> */
+        public static function hgetall(string $key): array
+        {
+            $out = [];
+            foreach ((array) (self::$store[$key] ?? []) as $field => $value) {
+                $out[(string) $field] = (string) $value;
+            }
+            return $out;
+        }
+
+        public static function sadd(string $key, string $member): int
+        {
+            $set = (array) (self::$store[$key] ?? []);
+            $set[$member] = true;
+            self::$store[$key] = $set;
+            return 1;
+        }
+
+        /** @return list<string> */
+        public static function smembers(string $key): array
+        {
+            return array_map('strval', array_keys((array) (self::$store[$key] ?? [])));
+        }
+
         public static function __callStatic(string $m, array $args): mixed
         {
             return null;
@@ -80,12 +157,46 @@ namespace Plugin\BaitSplit\Tests {
         /** @var array<string, array<int,int>> poolId|ip => [uid => ts] */
         public array $exposure = [];
 
+        /** 有效用户；null 表示不设限，任何 uid 都算有效。 */
+        public ?array $eligible = null;
+
         protected function poolIpExposureLastMap(
             array $campaign,
             string $poolId,
             string $ip
         ): array {
             return $this->exposure[$poolId . '|' . $ip] ?? [];
+        }
+
+        /** 线上要查数据库，测试里直接摆好谁是有效用户。 */
+        protected function eligibleUserIdSet(array $groupIds): array
+        {
+            if ($this->eligible !== null) {
+                return $this->eligible;
+            }
+            $ids = [];
+            for ($uid = 0; $uid <= 200; $uid++) {
+                $ids[$uid] = true;
+            }
+            return $ids;
+        }
+
+        /**
+         * 自动隔离按引用改归属，但引用是第二个参数，跟 call() 的约定不同。
+         *
+         * @param array<string, int[]> $suspectsByPool
+         * @return array{moved: int[], walls: array<string, int>}
+         */
+        public function isolate(array $campaign, array &$router, array $suspectsByPool): array
+        {
+            $fn = \Closure::bind(
+                function (array $c, array &$r, array $s): array {
+                    return $this->autoIsolateFollowers($c, $r, $s);
+                },
+                $this,
+                BaitSplitService::class
+            );
+            return $fn($campaign, $router, $suspectsByPool);
         }
 
         /** 记下某批人拉过某个池的当前 IP。 */

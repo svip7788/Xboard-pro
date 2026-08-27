@@ -83,6 +83,30 @@
             "default": 9,
             "label": "收敛结束整点",
             "description": "不含该点，默认 9。起始大于结束按跨零点处理"
+        },
+        "night_auto_isolate_enabled": {
+            "type": "boolean",
+            "default": false,
+            "label": "自动隔离跟墙用户",
+            "description": "窗口内每次墙都记下谁实际拿到过那个死地址，攒够次数后把每次都在场的人自动改归属到第一个牺牲池。单次曝光判不了人（一个地址被墙时拿到过它的常有上百个），攒够才有区分度：一晚被墙六次能从五十八人收敛到四个"
+        },
+        "night_auto_isolate_min_walls": {
+            "type": "number",
+            "default": 3,
+            "label": "自动隔离最少墙次数",
+            "description": "同一个池当晚攒够这么多次墙才开始判定，默认 3。只墙一两次时在场名单等于全部曝光者，没有信息量"
+        },
+        "night_auto_isolate_min_rate": {
+            "type": "number",
+            "default": 100,
+            "label": "自动隔离在场率（百分比）",
+            "description": "在场次数占当晚墙次数的比例达到该值才隔离，默认 100 即每次都在场。降低会明显放大误伤"
+        },
+        "night_auto_isolate_daily_cap": {
+            "type": "number",
+            "default": 20,
+            "label": "自动隔离单晚上限（人）",
+            "description": "一晚最多自动挪这么多人，在场次数多的优先。默认 20，防止判据失灵时整组被搬空"
         }
     }
 }

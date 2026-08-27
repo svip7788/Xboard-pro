@@ -204,10 +204,11 @@
 
         <section class="card wide">
             <div class="topbar">
-                <h2>换 IP 事件（只留档）</h2>
-                <div class="actions"><span id="wallPending" class="pill off">换IP队列 0</span><button id="refreshWall" class="secondary">刷新</button></div>
+                <h2>换 IP 事件与自动隔离</h2>
+                <div class="actions"><span id="autoIsoState" class="pill off">隔离未开启</span><span id="wallPending" class="pill off">换IP队列 0</span><button id="refreshWall" class="secondary">刷新</button></div>
             </div>
-            <div class="hint">换 IP 事件只留档，不再据此挪人：墙压倒性落在凌晨、白天近乎为零，是按地址批量探测，"拉过死 IP"和泄露之间没有因果关系。防护靠插件配置里的凌晨收敛。</div>
+            <div class="hint">单次曝光判不了人：一个地址被墙时拿到过它的常有上百个，那是按地址批量探测的必然结果。但同一批信号攒够次数就有区分度——一晚被墙六次，每次都在场的能从五十八人收敛到四个。开启插件配置里的「自动隔离跟墙用户」后，攒够墙次数且在场率达标的人会被自动改归属到第一个牺牲池，面板上立刻能看见、能整组搬走。</div>
+            <div id="autoIsoNote" class="hint" style="margin-top:8px"></div>
             <div class="split" style="margin-top:12px">
                 <div class="field"><label>被墙前回溯窗口（秒）</label><input id="wallLookback" type="number" min="60" max="86400" value="3600"></div>
                 <div class="field"><label>IP 新鲜阈值（秒，超过视为老 IP 首墙）</label><input id="wallFresh" type="number" min="300" max="86400" value="7200"></div>
@@ -216,7 +217,7 @@
             <button id="saveWallSettings">保存留档设置</button>
 
             <h3 style="margin-top:20px">换 IP 事件日志（最近 100 条）</h3>
-            <div class="scroll" style="max-height:320px"><table><thead><tr><th>时间</th><th>类型</th><th>旧IP→新IP</th><th>受影响池</th><th>窗口内拉取</th></tr></thead><tbody id="wallEvents"></tbody></table></div>
+            <div class="scroll" style="max-height:320px"><table><thead><tr><th>时间</th><th>类型</th><th>旧IP→新IP</th><th>受影响池</th><th>窗口内拉取</th><th>拿到过该地址</th><th>自动隔离</th></tr></thead><tbody id="wallEvents"></tbody></table></div>
         </section>
     </div>
 </main>
@@ -445,8 +446,19 @@ list.forEach(pool=>{const label=document.createElement('label');label.style.cssT
 if(counts[pool.id]!==undefined){const tag=document.createElement('span');tag.className='pill warn';tag.textContent=`夜间 ${counts[pool.id]} 人`;tag.title='窗口内实际落到这个池的人数，与上方用户池的归属人数不是一回事';label.appendChild(tag)}
 box.appendChild(label)});
 const note=$('convergeNote');if(note){if(!nc||!nc.enabled){note.textContent=''}else{const total=Object.values(counts).reduce((a,b)=>a+b,0);note.textContent=nc.members_only?`窗口内共收敛 ${total} 人，落点跟着上方的用户池归属走，其他组保持原 IP`:`窗口内共收敛 ${total} 人，全站按 uid 均分到各牺牲池，其他组的人也会被塞进来`}}}
-function renderWall(){renderNightConverge();const events=$('wallEvents');if(!events)return;const pendingPill=$('wallPending');if(!wallData){if(pendingPill){pendingPill.textContent='换IP队列 0';pendingPill.className='pill off'}events.textContent='';return}const settings=wallData.settings||{};if(document.activeElement!==$('wallLookback'))$('wallLookback').value=settings.lookback_seconds||3600;if(document.activeElement!==$('wallFresh'))$('wallFresh').value=settings.fresh_max_seconds||7200;const pending=Number(wallData.pending_ip_rotates||0);if(pendingPill){pendingPill.textContent=`换IP队列 ${pending}`;pendingPill.className=`pill ${pending>0?'bad':'off'}`;pendingPill.title=pending>0?'有换 IP 事件排队等待写入，每分钟自动消化':'无积压换 IP 事件'}
-events.textContent='';(wallData.events||[]).forEach(ev=>{const row=events.insertRow();const timeCell=row.insertCell();timeCell.textContent=formatTime(ev.at);if(ev.mode==='manual_fix')timeCell.innerHTML+=' <span class="pill warn">补</span>';if((ev.pools||[]).some(p=>p&&p.stale))timeCell.innerHTML+=' <span class="pill off" title="老 IP 首墙，曝光窗口不可信">跳过</span>';const reasonCell=row.insertCell();reasonCell.innerHTML=`<span class="pill ${ev.reason==='blocked'?'bad':'off'}">${wallReasonLabel(ev.reason)}</span>`;row.insertCell().textContent=`${ev.old_ip||'-'} → ${ev.new_ip||'-'}`;row.insertCell().textContent=(ev.pools||[]).map(p=>typeof p==='string'?p:p.pool_name).join('、')||'-';row.insertCell().textContent=ev.suspect_count||0});if(!(wallData.events||[]).length){const row=events.insertRow();row.insertCell().colSpan=5;row.cells[0].className='empty';row.cells[0].textContent='暂无换 IP 事件记录'}}
+// 开了开关一晚没动静时，得能分清是判据太严还是根本没在攒
+function renderAutoIsolate(){const note=$('autoIsoNote'),pill=$('autoIsoState');const ai=wallData?.auto_isolate||null;
+if(pill){if(!ai||!ai.enabled){pill.textContent='隔离未开启';pill.className='pill off';pill.title='每次墙只留档，不改归属'}else{const armed=(ai.pools||[]).filter(p=>p.armed).length;pill.textContent=`今晚已挪 ${ai.moved}/${ai.cap}`;pill.className=`pill ${ai.moved>0?'bad':armed?'warn':'off'}`;pill.title=`攒够 ${ai.min_walls} 次墙、在场率 ${ai.min_rate}% 才挪人`}}
+if(!note)return;
+if(!ai||!ai.enabled){note.textContent='自动隔离未开启。到插件配置页勾选「自动隔离跟墙用户」后，窗口内的墙才会累积在场次数。';return}
+const parts=(ai.pools||[]).map(p=>p.armed?`${p.pool_name} 已墙 ${p.walls} 次，${p.qualified} 人在场 ≥${p.need_seen} 次`:`${p.pool_name} 已墙 ${p.walls} 次，还差 ${ai.min_walls-p.walls} 次才开始判定`);
+note.textContent=`${ai.night} 这一晚：攒够 ${ai.min_walls} 次墙、在场率 ${ai.min_rate}% 才挪，已挪 ${ai.moved} 人（上限 ${ai.cap}）。`+(parts.length?parts.join('；'):'今晚窗口内还没有池被墙。');}
+function renderWall(){renderNightConverge();renderAutoIsolate();const events=$('wallEvents');if(!events)return;const pendingPill=$('wallPending');if(!wallData){if(pendingPill){pendingPill.textContent='换IP队列 0';pendingPill.className='pill off'}events.textContent='';return}const settings=wallData.settings||{};if(document.activeElement!==$('wallLookback'))$('wallLookback').value=settings.lookback_seconds||3600;if(document.activeElement!==$('wallFresh'))$('wallFresh').value=settings.fresh_max_seconds||7200;const pending=Number(wallData.pending_ip_rotates||0);if(pendingPill){pendingPill.textContent=`换IP队列 ${pending}`;pendingPill.className=`pill ${pending>0?'bad':'off'}`;pendingPill.title=pending>0?'有换 IP 事件排队等待写入，每分钟自动消化':'无积压换 IP 事件'}
+events.textContent='';(wallData.events||[]).forEach(ev=>{const row=events.insertRow();const timeCell=row.insertCell();timeCell.textContent=formatTime(ev.at);if(ev.mode==='manual_fix')timeCell.innerHTML+=' <span class="pill warn">补</span>';if((ev.pools||[]).some(p=>p&&p.stale))timeCell.innerHTML+=' <span class="pill off" title="老 IP 首墙，曝光窗口不可信">跳过</span>';const reasonCell=row.insertCell();reasonCell.innerHTML=`<span class="pill ${ev.reason==='blocked'?'bad':'off'}">${wallReasonLabel(ev.reason)}</span>`;row.insertCell().textContent=`${ev.old_ip||'-'} → ${ev.new_ip||'-'}`;row.insertCell().textContent=(ev.pools||[]).map(p=>typeof p==='string'?p:p.pool_name).join('、')||'-';row.insertCell().textContent=ev.suspect_count||0;
+// 「窗口内拉取」是池级口径，会把归属池被墙后回落到主组的人算进来；判定只认这一列
+const exact=(ev.pools||[]).reduce((sum,p)=>sum+Number(p&&p.exact_count||0),0);const exactCell=row.insertCell();exactCell.textContent=exact;exactCell.title='实际拿到过这个死地址的人数，自动隔离只按这个数累积';
+const iso=(ev.isolated||[]).length,isoCell=row.insertCell();isoCell.innerHTML=iso?`<span class="pill bad" title="uid ${(ev.isolated||[]).join('、')}">挪走 ${iso} 人</span>`:'-'});
+if(!(wallData.events||[]).length){const row=events.insertRow();row.insertCell().colSpan=7;row.cells[0].className='empty';row.cells[0].textContent='暂无换 IP 事件记录'}}
 async function loadWallLog(){const campaignId=current?.id;if(!campaignId||!router()){wallData=null;renderWall();return}const data=await request(api('/wall-log?limit=100'));if(current?.id!==campaignId)return;wallData=data;renderWall()}
 $('refreshWall').onclick=()=>loadWallLog().catch(error=>toast(error.message,'error'));
 $('refreshOverrides').onclick=()=>loadOverrides().catch(error=>toast(error.message,'error'));

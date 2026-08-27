@@ -13,6 +13,8 @@ declare(strict_types=1);
 
 require __DIR__ . '/bootstrap.php';
 
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Redis;
 use Plugin\BaitSplit\Tests\RouterTestService;
 use Plugin\BaitSplit\Tests\T;
 
@@ -207,5 +209,135 @@ T::same(
     '当前 ' . $hour . ' 点' . ($nowIn ? '应当收敛到自己那组' : '应当不收敛')
 );
 T::same([], targets($live, null, 7), '主组的人任何时刻都不被收敛');
+
+// ── 自动隔离跟墙用户
+//
+// 判据只有一条：攒够墙次数后，每次都实际拿到过死地址的人被挪进第一个牺牲池。
+// 上一版按单次曝光挪人被废掉了，因为一个地址被墙时拿到过它的常有上百人。这里
+// 要守住的就是「攒不够不动手」和「在场率不到不动手」，松一格就是当年那个误伤。
+
+/** 自动隔离要跑在窗口内，用例统一开全天窗口。 */
+function isoSvc(array $extra = []): RouterTestService
+{
+    return svc(array_merge([
+        'night_converge_start' => 0,
+        'night_converge_end' => 24,
+        'night_auto_isolate_enabled' => true,
+        'night_auto_isolate_min_walls' => 3,
+        'night_auto_isolate_min_rate' => 100,
+        'night_auto_isolate_daily_cap' => 20,
+    ], $extra));
+}
+
+const CAMPAIGN = ['id' => 'legacy', 'target_group_ids' => [1]];
+
+/**
+ * 连开 $walls 次墙，每次的在场名单由 $per 给出。
+ *
+ * @param array<int, int[]> $per 第几次墙 => 该次在场的 uid
+ * @return array{0: array, 1: int[]} 改动后的 router、累计被挪走的 uid
+ */
+function runWalls(RouterTestService $s, array $per, string $poolId = 'p_cs4'): array
+{
+    Redis::reset();
+    $router = router();
+    $moved = [];
+    foreach ($per as $uids) {
+        $out = $s->isolate(CAMPAIGN, $router, [$poolId => $uids]);
+        $moved = array_merge($moved, $out['moved']);
+    }
+    return [$router, $moved];
+}
+
+T::case('攒不够墙次数不动手');
+$s = isoSvc();
+// 归属主组的奇数 uid：只有真被挪走才会变成 p_cs4
+[$router, $moved] = runWalls($s, [[7, 9], [7, 9]]);
+T::same([], $moved, '两次墙还差一次，一个人都不挪');
+T::same('p_cs1', $router['assignments']['7'], '归属没被改动');
+
+T::case('攒够次数且每次都在场才挪');
+$s = isoSvc();
+[$router, $moved] = runWalls($s, [[7, 9, 11], [7, 9, 13], [7, 15, 17]]);
+T::same([7], $moved, '三次墙里只有 uid 7 次次在场');
+T::same('p_cs4', $router['assignments']['7'], '归属被改到第一个牺牲池');
+T::same('p_cs1', $router['assignments']['9'], '2/3 次在场的人留在原组');
+T::ok(Log::has('自动隔离'), '挪人留了日志，事后能核对是谁在哪一晚被挪的');
+
+T::case('在场率阈值');
+$s = isoSvc(['night_auto_isolate_min_rate' => 60]);
+[, $moved] = runWalls($s, [[7, 9], [7, 9], [7, 11]]);
+sort($moved);
+T::same([7, 9], $moved, '放到 60% 后 2/3 在场的人也进来');
+$s = isoSvc();
+[, $moved] = runWalls($s, [[7, 9], [7, 9], [7, 11]]);
+T::same([7], $moved, '同样的数据在 100% 下只挪全中的那个');
+
+T::case('关掉开关和窗口外都不动手');
+[, $moved] = runWalls(isoSvc(['night_auto_isolate_enabled' => false]), [[7], [7], [7]]);
+T::same([], $moved, '开关关掉');
+[, $moved] = runWalls(
+    isoSvc(['night_converge_start' => 3, 'night_converge_end' => 4]),
+    [[7], [7], [7]]
+);
+T::same($hour === 3 ? [7] : [], $moved, '窗口外不判定（当前 ' . $hour . ' 点）');
+[, $moved] = runWalls(isoSvc(['night_converge_pool_ids' => '']), [[7], [7], [7]]);
+T::same([], $moved, '没配牺牲池时无处可挪');
+
+T::case('已经在牺牲池里的人不重复挪');
+$s = isoSvc();
+// uid 4 归属就是 p_cs4
+[$router, $moved] = runWalls($s, [[4], [4], [4]]);
+T::same([], $moved, '归属已经是目标池，跳过');
+T::same('p_cs4', $router['assignments']['4'], '归属保持不变');
+
+T::case('人工锁定的用户不被自动挪走');
+Redis::reset();
+$s = isoSvc();
+$router = router();
+$router['overrides']['7'] = ['pool_id' => 'p_cs1', 'locked' => true, 'expires_at' => 0];
+for ($i = 0; $i < 3; $i++) {
+    $out = $s->isolate(CAMPAIGN, $router, ['p_cs4' => [7]]);
+}
+T::same([], $out['moved'], '锁定的人交给人工处置，自动化不插手');
+T::same('p_cs1', $router['assignments']['7'], '归属没变');
+
+T::case('单晚上限');
+$s = isoSvc(['night_auto_isolate_daily_cap' => 2]);
+[$router, $moved] = runWalls($s, [[7, 9, 11], [7, 9, 11], [7, 9, 11]]);
+T::same(2, count($moved), '三个全中的人只挪走两个，剩下的等明晚');
+$s = isoSvc(['night_auto_isolate_daily_cap' => 0]);
+[, $moved] = runWalls($s, [[7], [7], [7]]);
+T::same([], $moved, '上限设 0 等于停用');
+
+T::case('无效用户不挪');
+$s = isoSvc();
+$s->eligible = [9 => true];
+[, $moved] = runWalls($s, [[7, 9], [7, 9], [7, 9]]);
+T::same([9], $moved, '已过期/封禁的人不在归属表里折腾');
+
+T::case('多个池各自独立攒次数');
+Redis::reset();
+$s = isoSvc();
+$router = router();
+// cs5 连墙三次，cs1 只墙一次
+$s->isolate(CAMPAIGN, $router, ['p_cs5' => [7], 'p_cs1' => [9]]);
+$s->isolate(CAMPAIGN, $router, ['p_cs5' => [7]]);
+$out = $s->isolate(CAMPAIGN, $router, ['p_cs5' => [7]]);
+T::same([7], $out['moved'], '攒够的池出人');
+T::same('p_cs1', $router['assignments']['9'], '只墙一次的池不出人');
+T::same(3, $out['walls']['p_cs5'], '各池的墙次数分开记');
+
+T::case('跨零点窗口算作同一晚');
+$night = fn(int $start, int $end): string => isoSvc([
+    'night_converge_start' => $start,
+    'night_converge_end' => $end,
+])->callValue('convergeNightKey');
+T::same(date('Y-m-d'), $night(0, 10), '不跨零点就是当天');
+T::same(
+    $hour < 6 ? date('Y-m-d', time() - 86400) : date('Y-m-d'),
+    $night(22, 6),
+    '跨零点窗口在凌晨算前一天，计数不会在零点断成两半'
+);
 
 exit(T::summary());
