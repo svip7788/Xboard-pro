@@ -124,18 +124,23 @@ T::same(
     '归属的池没被选中就不收敛'
 );
 
-// 名单只在放开收全站时还有意义：那时人不是按归属来的，得有个口径决定谁进哪个池。
-T::case('关掉归属限制后退回全站收敛');
+// 8/27 的回归用例。收全站时主组窗口内零流量，探测找不到有流量的地址，主组的 IP
+// 才活得下来；只收自己人的那两晚，主组凌晨有了流量，五个组全被墙。
+T::case('收全站时其余组的人也进牺牲池');
 $openAll = svc([
     'night_converge_start' => 0,
     'night_converge_end' => 24,
     'night_converge_members_only' => false,
 ]);
+T::same(['p_cs5'], targets($openAll, null, 7), '归属主组的人落最后一个牺牲池');
+T::same(['p_cs5'], targets($openAll, null, 999999), '归属表里没有的人也一起收');
 T::same(
-    ['p_cs4', 'p_cs5'],
-    targets($openAll, null, 7),
-    '主组的人也被收进来，两个池都是候选'
+    ['p_cs4'],
+    targets($openAll, null, 4),
+    '归属牺牲池的人仍落自己那个，第一个池的嫌疑人纯度不被冲掉'
 );
+T::same(['p_cs5'], targets($openAll, null, 6), '归属最后一个牺牲池的人不变');
+T::same([], targets($openAll, ['pool_id' => 'p_cs1']), '人工锁定的照旧不参与');
 
 // 这一组是 8/24 那次事故的回归用例：当时按节点分摊，每个人同时占住两个牺牲地址，
 // 招墙的一个人就把两个一起带走，一夜三十六次墙里十五组成对、多组间隔仅 1 秒。

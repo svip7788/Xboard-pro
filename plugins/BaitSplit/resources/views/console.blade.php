@@ -445,7 +445,7 @@ list.forEach(pool=>{const label=document.createElement('label');label.style.cssT
 // 池子那栏的人数是静态归属，跟窗口内实际落点是两码事，这里单独标出来
 if(counts[pool.id]!==undefined){const tag=document.createElement('span');tag.className='pill warn';tag.textContent=`夜间 ${counts[pool.id]} 人`;tag.title='窗口内实际落到这个池的人数，与上方用户池的归属人数不是一回事';label.appendChild(tag)}
 box.appendChild(label)});
-const note=$('convergeNote');if(note){if(!nc||!nc.enabled){note.textContent=''}else{const total=Object.values(counts).reduce((a,b)=>a+b,0);note.textContent=nc.members_only?`窗口内共收敛 ${total} 人，落点跟着上方的用户池归属走，其他组保持原 IP`:`窗口内共收敛 ${total} 人，全站按 uid 均分到各牺牲池，其他组的人也会被塞进来`}}}
+const note=$('convergeNote');if(note){if(!nc||!nc.enabled){note.textContent=''}else{const total=Object.values(counts).reduce((a,b)=>a+b,0);note.textContent=nc.members_only?`窗口内共收敛 ${total} 人，只收牺牲池自己的人，其他组凌晨用自己组的地址——它们会跟着被墙`:`窗口内共收敛 ${total} 人：归属牺牲池的落自己那个，其余全站落最后一个，其他组窗口内零流量因此不被墙`}}}
 // 开了开关一晚没动静时，得能分清是判据太严还是根本没在攒
 function renderAutoIsolate(){const note=$('autoIsoNote'),pill=$('autoIsoState');const ai=wallData?.auto_isolate||null;
 if(pill){if(!ai||!ai.enabled){pill.textContent='隔离未开启';pill.className='pill off';pill.title='每次墙只留档，不改归属'}else{const armed=(ai.pools||[]).filter(p=>p.armed).length;pill.textContent=`今晚已挪 ${ai.moved}/${ai.cap}`;pill.className=`pill ${ai.moved>0?'bad':armed?'warn':'off'}`;pill.title=`攒够 ${ai.min_walls} 次墙、在场率 ${ai.min_rate}% 才挪人`}}

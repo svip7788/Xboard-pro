@@ -2903,11 +2903,14 @@ class BaitSplitService
     /**
      * 这个人在窗口内的候选池。
      *
-     * 只收敛本来就归属牺牲池的人：放开收全站时凌晨每个拉订阅的人都会被塞进这几个
-     * 地址，主组、安静组的人跟着一起进来，牺牲池被墙也读不出是谁招的。
+     * 收全站是保护主组的全部依据：窗口内主组、安静组零流量，而墙是按地址批量探测
+     * 的，探测只找得到有流量的地址，那些 IP 于是活得下来。8/24 到 8/26 一直这么跑，
+     * 三晚的墙全部落在两个牺牲池上；8/27 02:26 改成只收自己人之后，主组那六千多人
+     * 凌晨回到自己组的地址上，当晚五个组全被墙，第二晚照旧。
      *
-     * 限定收自己人时只返回他归属的那一个，落点等于面板上看到的组。排查靠的就是
-     * 这条链路：把一个牺牲组整批挪走、再对剩下的人对半分，一轮轮缩到招墙的人身上。
+     * 落点不按 uid 均分：归属牺牲池的人落自己那个——自动隔离把跟墙的人挪进第一个
+     * 牺牲池，于是它成了嫌疑池，人少、交集收敛得快；其余全站的人一律落最后一个，
+     * 那个池只负责替其他组挨墙，读不出是谁招的也不影响排查。
      *
      * @param string[] $targets
      * @return string[]
@@ -2917,14 +2920,16 @@ class BaitSplitService
         array $router,
         int $userId
     ): array {
-        if (
-            $targets === []
-            || !$this->configBool('night_converge_members_only', true)
-        ) {
-            return $targets;
+        if ($targets === []) {
+            return [];
         }
         $assigned = (string) ($router['assignments'][(string) $userId] ?? '');
-        return in_array($assigned, $targets, true) ? [$assigned] : [];
+        if (in_array($assigned, $targets, true)) {
+            return [$assigned];
+        }
+        return $this->configBool('night_converge_members_only', true)
+            ? []
+            : [(string) end($targets)];
     }
 
     /**
@@ -2935,8 +2940,8 @@ class BaitSplitService
      * 8/23 十八次墙里只有两组成对，改成按节点分摊的 8/24 变成三十六次里十五组成对，
      * 其中多组间隔只有 1 秒——同一批检测里一起判掉的。
      *
-     * 限定只收牺牲池自己人时 targets 只有他归属的那一个，取模落在它身上；放开收
-     * 全站时人不是按归属来的，才需要在多个池之间均分。
+     * 候选池由 convergeTargetsForUser 定，正常只有一个，取模落在它身上。留着取模
+     * 是为了兜住候选多于一个的情形——那时按人分摊，一个人仍然只占一个地址。
      */
     private function convergeTargetForUser(array $targets, int $userId): string
     {
@@ -4143,8 +4148,8 @@ class BaitSplitService
     /**
      * 窗口内每个牺牲池实际会装多少人。
      *
-     * 池子那栏的人数是静态归属，白天夜里都一样，看不出收敛把谁分到哪去了——
-     * 归属牺牲组的一千五百人在窗口内是按高危名单重新劈成两半的，得单独算。
+     * 池子那栏的人数是静态归属，白天夜里都一样，看不出收敛把谁分到哪去了——收全站时
+     * 其余组的几千人窗口内都压在最后一个牺牲池上，两个数字差得很远，得单独算。
      * 口径跟池子人数一致：只算生效用户，人工锁定的不参与收敛也不计入。
      *
      * @return array<string, int> 池 ID => 窗口内人数
