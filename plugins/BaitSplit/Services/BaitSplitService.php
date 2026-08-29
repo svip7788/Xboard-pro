@@ -4661,7 +4661,8 @@ class BaitSplitService
      * min_walls 次墙、在场率到 min_rate 才动手。
      *
      * 计数每晚清零。跟墙的人换设备、改作息，跨夜累积会把昨天的账记到今天，而且
-     * 一晚的样本已经够——牺牲组一晚能被墙六到八次。
+     * 一晚的样本已经够——牺牲组一晚能被墙六到八次。攒满一轮判一批，判完再清零，
+     * 所以一晚能出好几批，后半夜才活跃起来的人也有机会被算进来。
      *
      * 挪的是静态归属，改完面板上就能看见、能整组搬走，跟手上的排查流程是同一套
      * 东西。这里直接写 $router 而不调 reassignUsers：调用方拿着同一个引用，稍后
@@ -4700,6 +4701,7 @@ class BaitSplitService
             foreach ($suspectsByPool as $poolId => $userIds) {
                 $wallKey = $this->autoIsolateKey($campaign, $night, "pool:{$poolId}:walls");
                 $seenKey = $this->autoIsolateKey($campaign, $night, "pool:{$poolId}:seen");
+                $roundsKey = $this->autoIsolateKey($campaign, $night, "pool:{$poolId}:rounds");
                 $wallCount = (int) Redis::incr($wallKey);
                 Redis::expire($wallKey, 86400 * 2);
                 foreach ($userIds as $userId) {
@@ -4716,6 +4718,14 @@ class BaitSplitService
                         $candidates[(int) $userId] = (int) $seen;
                     }
                 }
+                // 判定过就清零，下一批从头攒。不清零的话次数只会往上走，在场率按
+                // 全程算，后面才活跃起来的人凑不出「从第一次墙就在场」，一晚只能
+                // 出一批：8/29 那晚 04:50 挪走 13 人，牺牲B 之后又被墙五次，累积
+                // 到八次却再没出过人。清零等于每 min_walls 次墙独立判一轮。
+                Redis::del($wallKey);
+                Redis::del($seenKey);
+                Redis::incr($roundsKey);
+                Redis::expire($roundsKey, 86400 * 2);
             }
             if ($candidates === []) {
                 return $result;
@@ -4790,6 +4800,7 @@ class BaitSplitService
      *
      * @return array{enabled: bool, night: string, min_walls: int, min_rate: int,
      *     cap: int, moved: int, pools: array<int, array<string, mixed>>}
+     *     pools[].walls 是当前这轮攒到的次数，pools[].rounds 是今晚判过几轮
      */
     private function autoIsolateReport(array $campaign): array
     {
@@ -4813,7 +4824,11 @@ class BaitSplitService
                 $walls = (int) Redis::get(
                     $this->autoIsolateKey($campaign, $night, "pool:{$poolId}:walls")
                 );
-                if ($walls <= 0) {
+                // 判过一轮就清零重攒，光看 walls 会以为这池整晚没动静
+                $rounds = (int) Redis::get(
+                    $this->autoIsolateKey($campaign, $night, "pool:{$poolId}:rounds")
+                );
+                if ($walls <= 0 && $rounds <= 0) {
                     continue;
                 }
                 $need = (int) ceil($walls * $minRate / 100);
@@ -4831,6 +4846,7 @@ class BaitSplitService
                     'pool_id' => (string) $poolId,
                     'pool_name' => (string) ($pool['name'] ?? $poolId),
                     'walls' => $walls,
+                    'rounds' => $rounds,
                     'need_seen' => $need,
                     'qualified' => $walls >= $minWalls ? $qualified : 0,
                     'armed' => $walls >= $minWalls,

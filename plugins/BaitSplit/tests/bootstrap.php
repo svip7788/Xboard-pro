@@ -112,6 +112,18 @@ namespace Illuminate\Support\Facades {
             return $out;
         }
 
+        public static function del(string ...$keys): int
+        {
+            $removed = 0;
+            foreach ($keys as $key) {
+                if (array_key_exists($key, self::$store)) {
+                    unset(self::$store[$key]);
+                    $removed++;
+                }
+            }
+            return $removed;
+        }
+
         public static function sadd(string $key, string $member): int
         {
             $set = (array) (self::$store[$key] ?? []);
