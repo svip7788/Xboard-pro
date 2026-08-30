@@ -327,6 +327,23 @@ $s = isoSvc(['night_auto_isolate_daily_cap' => 0]);
 [, $moved] = runWalls($s, [[7], [7], [7]]);
 T::same([], $moved, '上限设 0 等于停用');
 
+// 8/30 那晚 02:59 挪满上限之后，每次墙都在配额检查处掉头，连零都没清，累积一路
+// 涨到 14 次，后半夜再没判过一轮。配额用光只该停止挑人，不该停止分轮。
+T::case('配额用光后仍然分轮清零');
+$s = isoSvc(['night_auto_isolate_daily_cap' => 2]);
+Redis::reset();
+$router = router();
+$walls = [];
+$moved = [];
+foreach ([[7, 9, 11], [7, 9, 11], [7, 9, 11], [13], [13], [13]] as $uids) {
+    $out = $s->isolate(CAMPAIGN, $router, ['p_cs4' => $uids]);
+    $walls[] = $out['walls']['p_cs4'];
+    $moved = array_merge($moved, $out['moved']);
+}
+T::same([1, 2, 3, 1, 2, 3], $walls, '判完就清零，配额用光的后半夜照样分轮');
+T::same(2, count($moved), '配额只放行两个人');
+T::same('p_cs1', $router['assignments']['13'], '配额用光时够格的人也挪不动');
+
 T::case('无效用户不挪');
 $s = isoSvc();
 $s->eligible = [9 => true];

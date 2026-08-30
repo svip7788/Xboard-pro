@@ -4709,13 +4709,18 @@ class BaitSplitService
                 }
                 Redis::expire($seenKey, 86400 * 2);
                 $result['walls'][$poolId] = $wallCount;
-                if ($wallCount < $minWalls || $quota <= 0) {
+                if ($wallCount < $minWalls) {
                     continue;
                 }
-                $need = (int) ceil($wallCount * $minRate / 100);
-                foreach ((array) Redis::hgetall($seenKey) as $userId => $seen) {
-                    if ((int) $userId > 0 && (int) $seen >= $need) {
-                        $candidates[(int) $userId] = (int) $seen;
+                // 配额用光也要照样走完这一轮。8/30 那晚 02:59 一次挪满 20 人的上限，
+                // 之后每次墙都在这里掉头，连零都没清，累积一路涨到 14 次——在场率按
+                // 全程算，越往后越凑不出「从第一次墙就在场」，后半夜彻底判不动了。
+                if ($quota > 0) {
+                    $need = (int) ceil($wallCount * $minRate / 100);
+                    foreach ((array) Redis::hgetall($seenKey) as $userId => $seen) {
+                        if ((int) $userId > 0 && (int) $seen >= $need) {
+                            $candidates[(int) $userId] = (int) $seen;
+                        }
                     }
                 }
                 // 判定过就清零，下一批从头攒。不清零的话次数只会往上走，在场率按
