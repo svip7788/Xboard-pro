@@ -958,12 +958,12 @@ class BaitSplitService
         string $source = ''
     ): array {
         $oldIp = trim($oldIp);
-        $newIp = $this->normalizePublicIp($newIp);
+        $newIp = $this->normalizePublicHost($newIp);
         $targetId = trim($targetId);
         $reason = $this->normalizeRotationReason($reason);
         $isWall = $this->rotationIsWall($reason, $source);
         if ($oldIp !== '') {
-            $oldIp = $this->normalizePublicIp($oldIp);
+            $oldIp = $this->normalizePublicHost($oldIp);
         }
         if ($targetId === '') {
             throw new InvalidArgumentException('必须提供目标唯一标识 target_id');
@@ -3507,19 +3507,36 @@ class BaitSplitService
         return $host;
     }
 
-    private function normalizePublicIp(mixed $ip): string
+    /**
+     * 换址上报的地址：公网 IPv4 或域名。
+     *
+     * 有的目标不是裸 IP，而是一个解析到中转的域名，换址时上游报的就是域名。
+     * 私网和保留地址仍然挡掉，免得一次上报把整池的人指进内网。
+     */
+    private function normalizePublicHost(mixed $host): string
     {
-        $ip = trim((string) $ip);
-        if (!filter_var(
-            $ip,
+        $raw = trim((string) $host);
+        $host = rtrim(strtolower($raw), '.');
+        if (filter_var(
+            $host,
             FILTER_VALIDATE_IP,
             FILTER_FLAG_IPV4
                 | FILTER_FLAG_NO_PRIV_RANGE
                 | FILTER_FLAG_NO_RES_RANGE
         )) {
-            throw new InvalidArgumentException("无效的公网 IPv4：{$ip}");
+            return $host;
         }
-        return $ip;
+        // 私网 IPv4 和 IPv6 也能过 HOSTNAME 校验，先把 IP 形态全排掉再认域名
+        if (
+            $host !== ''
+            && strlen($host) <= 253
+            && str_contains($host, '.')
+            && !filter_var($host, FILTER_VALIDATE_IP)
+            && filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME)
+        ) {
+            return $host;
+        }
+        throw new InvalidArgumentException("无效的公网地址：{$raw}");
     }
 
     private function validateRouterCoverage(array $campaign): void

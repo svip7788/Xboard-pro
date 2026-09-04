@@ -45,8 +45,9 @@ class WebhookController extends Controller
                 'max:100',
                 'regex:/^[A-Za-z0-9._:-]+$/',
             ],
-            'old_ip' => ['nullable', 'ipv4'],
-            'new_ip' => ['required', 'ipv4'],
+            // 目标可能挂在域名后面，地址型和域名型都收；公网范围由 service 校验
+            'old_ip' => ['nullable', 'string', 'max:253'],
+            'new_ip' => ['required', 'string', 'max:253'],
             'reason' => ['nullable', 'string', 'max:20'],
             // 上游区分换址来源：只有 auto / rebuild 才是真被墙。
             'source' => ['nullable', 'string', 'max:20'],
