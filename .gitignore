@@ -32,7 +32,9 @@ compose.yaml
 compose.host.yaml
 compose.split.yaml
 .scribe
-.cursor/*乌龟服务器
+
+# 服务器凭据文件（敏感信息）
 服务器
 糖果服务器
+乌龟服务器
 鱼服务器
