@@ -10,7 +10,7 @@ alwaysApply: true
 - 本地 git 工作区: `/Users/net/Documents/换节点/Xboard-pro-work/Xboard-pro`
 - fork (origin): `git@github.com:svip7788/Xboard-pro.git`
 - upstream: `https://github.com/cedar2025/Xboard.git`
-- 面板服务器: `<IP><端口>` root / 密码见 `@服务器`
+- 面板服务器: 红杏主面板，IP/端口/密码见 `@服务器`
 - 线上部署目录: `/www/wwwroot/xb`（origin 已指向 fork）
 - 我们维护的关键文件（冲突高发区）:
   - `app/Jobs/TrafficFetchJob.php`（批量 CASE WHEN + ShouldBeUnique + chunk 指纹）
@@ -41,15 +41,17 @@ git push origin master
 线上 `/www/wwwroot/xb` 的 `origin` 已指向 fork，直接跑 `update.sh`：
 
 ```bash
-sshpass -p '<密码>' ssh -p 19983 root@<IP> "cd /www/wwwroot/xb && sh update.sh"
+sshpass -p '<密码>' ssh -p <端口> root@<IP> "cd /www/wwwroot/xb && sh update.sh"
 ```
+
+> IP/端口/密码从 `@服务器` 的"红杏服务器"段落获取
 
 `update.sh` 会自动：`git reset --hard origin/master` → 重装 composer → `php artisan xboard:update`。
 
 ### 3. 重启 Horizon 让新代码生效
 
 ```bash
-sshpass -p '<密码>' ssh -p 19983 root@<IP> "cd /www/wwwroot/xb && php artisan horizon:terminate"
+sshpass -p '<密码>' ssh -p <端口> root@<IP> "cd /www/wwwroot/xb && php artisan horizon:terminate"
 ```
 
 等 8 秒后 supervisor 会自动拉起。
@@ -57,7 +59,7 @@ sshpass -p '<密码>' ssh -p 19983 root@<IP> "cd /www/wwwroot/xb && php artisan 
 ### 4. 验证（必须做）
 
 ```bash
-sshpass -p '<密码>' ssh -p 19983 root@<IP> "
+sshpass -p '<密码>' ssh -p <端口> root@<IP> "
 # 4.1 我们的改动还在?
 grep -c 'ShouldBeUnique' /www/wwwroot/xb/app/Jobs/TrafficFetchJob.php /www/wwwroot/xb/app/Jobs/StatUserJob.php
 grep -E 'retry_after.*600' /www/wwwroot/xb/config/queue.php
