@@ -104,6 +104,25 @@ class PluginController extends Controller
                     }
                 }
                 $isCore = $this->pluginManager->isCorePlugin($code);
+                
+                // 处理 admin_menus，转换 ext: 路径为完整 URL
+                $adminMenus = $config['admin_menus'] ?? null;
+                if ($adminMenus) {
+                    $securePath = admin_setting(
+                        'secure_path',
+                        admin_setting('frontend_admin_path', hash('crc32b', config('app.key')))
+                    );
+                    $adminMenus = array_map(function ($menu) use ($securePath, $code) {
+                        if (isset($menu['path']) && str_starts_with($menu['path'], 'ext:')) {
+                            // ext:plugins/xxx/console -> /{securePath}/plugins/xxx/console
+                            $realPath = substr($menu['path'], 4); // 去掉 ext:
+                            $menu['path'] = "/{$securePath}/{$realPath}";
+                            $menu['external'] = true;
+                        }
+                        return $menu;
+                    }, $adminMenus);
+                }
+                
                 $plugins[] = [
                     'code' => $config['code'],
                     'name' => $config['name'],
@@ -118,7 +137,7 @@ class PluginController extends Controller
                     'config' => $pluginConfig,
                     'readme' => $readmeContent,
                     'need_upgrade' => $needUpgrade,
-                    'admin_menus' => $config['admin_menus'] ?? null,
+                    'admin_menus' => $adminMenus,
                     'admin_crud' => $config['admin_crud'] ?? null,
                 ];
             }

@@ -12,7 +12,7 @@
         {
             "id": "console",
             "title": "域名调度中心",
-            "path": "console",
+            "path": "ext:plugins/bait-split/console",
             "icon": "shield",
             "description": "可视化管理用户池、节点域名、筛查批次和用户规则"
         }
