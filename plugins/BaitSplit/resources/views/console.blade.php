@@ -378,11 +378,9 @@ function renderInvestigationTree(){
         }
         if(node.status!=='archived'&&!node.children.length){
             add('编辑域名',()=>openTreeHostEditor(node),'warning');
-            if(node.status!=='safe')add('确认安全',()=>changeTreeStatus(node,'safe'),'success');
-            if(node.status!=='blocked')add('标记被墙',()=>changeTreeStatus(node,'blocked'),'danger');
             if(['active','blocked'].includes(node.status))add('继续细分',()=>openSplitTree(node));
-            if(['active','safe'].includes(node.status)&&node.pulled_count>0)add('迁移已拉取用户',()=>openTreeTransfer(node,true),'success');
-            if(['active','safe'].includes(node.status)&&node.user_count>node.pulled_count)add('迁移未拉取用户',()=>openTreeTransfer(node,false),'warning');
+            if(node.pulled_count>0)add('迁移已拉取用户',()=>openTreeTransfer(node,true),'success');
+            if(node.user_count>node.pulled_count)add('迁移未拉取用户',()=>openTreeTransfer(node,false),'warning');
         }
         if(node.depth===0&&node.status!=='archived')add('删除排查树',()=>deleteInvestigationTree(node),'danger');
         card.append(head,host,metaLine,actions);
@@ -390,7 +388,6 @@ function renderInvestigationTree(){
     });
     updateMergeTreeButton()
 }
-async function changeTreeStatus(node,status){const label=status==='safe'?'安全':'被墙';if(!confirm(`确认把“${node.name}”标记为${label}？${status==='blocked'?'\n只有已拉取该分支域名的用户会留下排查；未拉取用户下次订阅时重新分组。':''}`))return;try{const result=await request(api(`/investigations/${encodeURIComponent(node.id)}/status`),{method:'POST',body:JSON.stringify({status})});updateCurrent(result.campaign);toast(status==='blocked'?`已保留 ${result.suspect_count} 名嫌疑用户，${result.released_count} 名未拉取用户已回流`:`节点已标记为${label}`)}catch(error){toast(error.message,'error')}}
 async function deleteInvestigationTree(node){if(!confirm(`删除“${node.name}”整棵排查树及全部下级分支？\n仍在树内的用户会解除固定分组，下次拉订阅时重新分配。手动锁定规则不受影响。`))return;try{const result=await request(api(`/investigations/${encodeURIComponent(node.id)}`),{method:'DELETE'});updateCurrent(result.campaign);toast(`排查树已删除，${result.released_count} 名用户等待重新分组`)}catch(error){toast(error.message,'error')}}
 function openTreeHostEditor(node){$('treeHostNodeId').value=node.id;$('treeHostTitle').textContent=`编辑域名/IP：${node.name}`;$('treeHostValue').value=node.host||'';$('treeWebhookId').value=node.webhook_id||'';$('treeHostModal').classList.add('show');setTimeout(()=>$('treeHostValue').focus(),0)}
 function openSplitTree(node){splitTreeNodeId=node.id;$('splitTreeTitle').textContent=`拆分：${node.name}（${node.user_count} 人）`;$('splitTreeCount').value=2;renderSplitTreeFields();$('splitTreeModal').classList.add('show')}

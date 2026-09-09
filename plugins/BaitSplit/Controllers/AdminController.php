@@ -432,28 +432,6 @@ class AdminController extends PluginController
         );
     }
 
-    public function setInvestigationNodeStatus(
-        Request $request,
-        string $campaignId,
-        string $nodeId
-    ): JsonResponse
-    {
-        if ($response = $this->ensureEnabled()) {
-            return $response;
-        }
-        $data = $request->validate([
-            'status' => ['required', Rule::in(['safe', 'blocked'])],
-        ]);
-        return $this->execute(
-            fn() => BaitSplitService::fromDatabase()
-                ->setInvestigationNodeStatus(
-                    $campaignId,
-                    $nodeId,
-                    $data['status']
-                )
-        );
-    }
-
     public function updateInvestigationNodeHost(
         Request $request,
         string $campaignId,

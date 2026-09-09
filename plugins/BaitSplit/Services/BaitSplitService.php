@@ -837,48 +837,6 @@ class BaitSplitService
         return $this->campaignStatus($campaign);
     }
 
-    public function setInvestigationNodeStatus(
-        string $campaignId,
-        string $nodeId,
-        string $status
-    ): array {
-        if (!in_array($status, ['safe', 'blocked'], true)) {
-            throw new InvalidArgumentException('节点状态无效');
-        }
-        $state = $this->state();
-        $campaign = $this->requireRouterCampaign($state, $campaignId);
-        $router = &$campaign['router'];
-        $node = $router['investigation_nodes'][$nodeId] ?? null;
-        if (!$node || $node['children'] !== []) {
-            throw new InvalidArgumentException('只能修改未拆分的叶子节点');
-        }
-        $releasedUserIds = [];
-        if ($status === 'blocked') {
-            $releasedUserIds = $this->releaseUnexposedNodeUsers(
-                $campaign,
-                $nodeId
-            );
-        }
-        $router['investigation_nodes'][$nodeId]['status'] = $status;
-        $router['investigation_nodes'][$nodeId]['updated_at'] = time();
-        if (
-            isset($router['pools'][$node['pool_id']])
-            && $router['pools'][$node['pool_id']]['tree_node_id'] === $nodeId
-        ) {
-            $router['pools'][$node['pool_id']]['status'] =
-                $status === 'safe' ? 'active' : 'blocked';
-        }
-        $state['campaigns'][$campaignId] = $campaign;
-        $this->saveState($state);
-        return [
-            'campaign' => $this->campaignStatus($campaign),
-            'released_count' => count($releasedUserIds),
-            'suspect_count' => count(
-                $router['investigation_nodes'][$nodeId]['user_ids']
-            ),
-        ];
-    }
-
     public function updateInvestigationNodeHost(
         string $campaignId,
         string $nodeId,
@@ -1332,11 +1290,11 @@ class BaitSplitService
         $node = $router['investigation_nodes'][$nodeId] ?? null;
         if (
             !$node
-            || !in_array($node['status'], ['active', 'safe'], true)
+            || $node['status'] === 'archived'
             || $node['children'] !== []
         ) {
             throw new InvalidArgumentException(
-                '只能转移观察中或已确认安全的叶子节点'
+                '只能转移未归档的叶子节点'
             );
         }
         $targetPool = $router['pools'][$targetPoolId] ?? null;

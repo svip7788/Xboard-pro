@@ -42,7 +42,6 @@ Route::prefix("api/v2/{$securePath}/plugin/bait-split")
         Route::post('/campaigns/{campaignId}/pools/{poolId}/investigation', [AdminController::class, 'createInvestigationRoot']);
         Route::post('/campaigns/{campaignId}/investigations/{nodeId}/split', [AdminController::class, 'splitInvestigationNode']);
         Route::post('/campaigns/{campaignId}/investigations/merge', [AdminController::class, 'mergeInvestigationNodes']);
-        Route::post('/campaigns/{campaignId}/investigations/{nodeId}/status', [AdminController::class, 'setInvestigationNodeStatus']);
         Route::post('/campaigns/{campaignId}/investigations/{nodeId}/host', [AdminController::class, 'updateInvestigationNodeHost']);
         Route::delete('/campaigns/{campaignId}/investigations/{nodeId}', [AdminController::class, 'deleteInvestigationTree']);
         Route::post('/campaigns/{campaignId}/investigations/{nodeId}/move', [AdminController::class, 'moveInvestigationNodeUsers']);
