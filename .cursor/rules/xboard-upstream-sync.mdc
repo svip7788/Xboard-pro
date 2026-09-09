@@ -1,0 +1,96 @@
+---
+description: Xboard-pro 上游同步 + 线上部署标准流程。用户说"上游更新了/拉上游/同步 upstream/部署到服务器/update.sh"时遵循。
+alwaysApply: true
+---
+
+# Xboard-pro 上游同步与部署流程
+
+## 关键信息
+
+- 本地 git 工作区: `/Users/net/Documents/换节点/Xboard-pro-work/Xboard-pro`
+- fork (origin): `git@github.com:svip7788/Xboard-pro.git`
+- upstream: `https://github.com/cedar2025/Xboard.git`
+- 面板服务器: `<IP><端口>` root / 密码见 `@服务器`
+- 线上部署目录: `/www/wwwroot/xb`（origin 已指向 fork）
+- 我们维护的关键文件（冲突高发区）:
+  - `app/Jobs/TrafficFetchJob.php`（批量 CASE WHEN + ShouldBeUnique + chunk 指纹）
+  - `app/Jobs/StatUserJob.php`（批量 upsert + ShouldBeUnique + tries=1）
+  - `config/queue.php`（redis.retry_after=600）
+  - `config/horizon.php`（timeout=300, maxProc=10, tries=1）
+
+## 执行步骤（当用户说"上游更新了"时）
+
+### 1. 本地同步 upstream → fork
+
+```bash
+cd /Users/net/Documents/换节点/Xboard-pro-work/Xboard-pro
+git fetch upstream
+git checkout master
+git log --oneline HEAD..upstream/master | head -20   # 先看有几个新 commit
+git merge upstream/master
+```
+
+**冲突处理**：只会出现在上面 4 个关键文件。**必须保留我们的版本**（`git checkout --ours <file>`）。冲突解完后跑一遍 `grep -n 'ShouldBeUnique\|CASE id' app/Jobs/*.php` 确认我们的改动还在。
+
+```bash
+git push origin master
+```
+
+### 2. 部署到线上服务器
+
+线上 `/www/wwwroot/xb` 的 `origin` 已指向 fork，直接跑 `update.sh`：
+
+```bash
+sshpass -p '<密码>' ssh -p 19983 root@<IP> "cd /www/wwwroot/xb && sh update.sh"
+```
+
+`update.sh` 会自动：`git reset --hard origin/master` → 重装 composer → `php artisan xboard:update`。
+
+### 3. 重启 Horizon 让新代码生效
+
+```bash
+sshpass -p '<密码>' ssh -p 19983 root@<IP> "cd /www/wwwroot/xb && php artisan horizon:terminate"
+```
+
+等 8 秒后 supervisor 会自动拉起。
+
+### 4. 验证（必须做）
+
+```bash
+sshpass -p '<密码>' ssh -p 19983 root@<IP> "
+# 4.1 我们的改动还在?
+grep -c 'ShouldBeUnique' /www/wwwroot/xb/app/Jobs/TrafficFetchJob.php /www/wwwroot/xb/app/Jobs/StatUserJob.php
+grep -E 'retry_after.*600' /www/wwwroot/xb/config/queue.php
+
+# 4.2 worker 在跑?
+ps -eo pid,cmd | grep 'horizon:work' | grep -v grep | awk '{for(i=3;i<=NF;i++) if(\$i~/^--queue=/) print \$i}' | sort -u
+
+# 4.3 队列没堆积?
+for q in traffic_fetch stat; do
+  printf '%s: %s\n' \$q \$(redis-cli -n 0 LLEN xboard_database_queues:\$q)
+done
+
+# 4.4 30s 稳态观察
+A1=\$(redis-cli -n 0 LLEN xboard_database_queues:traffic_fetch); sleep 30
+A2=\$(redis-cli -n 0 LLEN xboard_database_queues:traffic_fetch)
+echo 'traffic_fetch 30s delta =' \$((A2-A1)) '(应在 ±20 以内)'
+"
+```
+
+## 红线（绝对不做）
+
+- **不要**在线上 `/www/wwwroot/xb` 里 `git remote set-url origin` 改回 cedar2025 原仓库
+- **不要**把我们 4 个关键文件恢复到上游版本（冲突时永远 `--ours`）
+- **不要**动 `/www/wwwroot/xb/.env`（敏感配置，非 git 跟踪）
+- **不要**在执行部署前跳过步骤 1（没先推到 fork，线上 reset 会回退）
+
+## 失败回滚
+
+若线上出问题：
+
+```bash
+cd /www/wwwroot/xb
+git reflog | head -5                      # 找上一个 HEAD
+git reset --hard <上一个 commit>
+php artisan horizon:terminate
+```

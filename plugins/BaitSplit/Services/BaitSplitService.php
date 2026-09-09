@@ -607,23 +607,38 @@ class BaitSplitService
             })->values()->all();
     }
 
-    public function overrideUsers(string $campaignId): array
-    {
+    public function overrideUsers(
+        string $campaignId,
+        string $keyword = '',
+        int $page = 1,
+        int $perPage = 50
+    ): array {
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
-        $rows = $this->userRows(array_map(
+        $overrideUserIds = array_map(
             'intval',
             array_keys($campaign['router']['overrides'])
-        ));
-        $rows = array_values(array_filter(
-            $rows,
-            fn(array $user): bool => in_array(
-                $user['group_id'],
-                $campaign['target_group_ids'],
-                true
-            )
-        ));
-        return array_map(function (array $user) use ($campaign): array {
+        );
+        $query = User::query()
+            ->whereIn('id', $overrideUserIds)
+            ->whereIn('group_id', $campaign['target_group_ids']);
+        $keyword = trim($keyword);
+        if ($keyword !== '') {
+            $query->where(function ($q) use ($keyword): void {
+                $q->where('id', $keyword)
+                    ->orWhere('email', 'like', "%{$keyword}%");
+            });
+        }
+        $total = $query->count();
+        $lastPage = max(1, (int) ceil($total / $perPage));
+        $page = max(1, min($page, $lastPage));
+        $rows = $query->orderByDesc('id')
+            ->offset(($page - 1) * $perPage)
+            ->limit($perPage)
+            ->get(['id', 'email', 'group_id'])
+            ->map(fn($u) => ['id' => $u->id, 'email' => $u->email, 'group_id' => $u->group_id])
+            ->toArray();
+        $items = array_map(function (array $user) use ($campaign): array {
             $override = $campaign['router']['overrides'][(string) $user['id']];
             return $user + [
                 'pool_id' => $this->effectivePoolId($campaign, $user['id']),
@@ -631,6 +646,15 @@ class BaitSplitService
                 'active' => $this->overrideIsActive($override),
             ];
         }, $rows);
+        return [
+            'items' => $items,
+            'pagination' => [
+                'page' => $page,
+                'per_page' => $perPage,
+                'last_page' => $lastPage,
+                'total' => $total,
+            ],
+        ];
     }
 
     public function rollbackRouterConfig(string $campaignId): array

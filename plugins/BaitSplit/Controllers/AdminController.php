@@ -555,13 +555,21 @@ class AdminController extends PluginController
         );
     }
 
-    public function overrides(string $campaignId): JsonResponse
+    public function overrides(Request $request, string $campaignId): JsonResponse
     {
         if ($response = $this->ensureEnabled()) {
             return $response;
         }
+        $q = (string) $request->query('q', '');
+        $page = max(1, (int) $request->query('page', 1));
+        $perPage = min(100, max(10, (int) $request->query('per_page', 50)));
         return $this->executeRead(
-            fn() => BaitSplitService::fromDatabase()->overrideUsers($campaignId)
+            fn() => BaitSplitService::fromDatabase()->overrideUsers(
+                $campaignId,
+                $q,
+                $page,
+                $perPage
+            )
         );
     }
 
