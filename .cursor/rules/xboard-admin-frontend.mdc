@@ -1,0 +1,83 @@
+# Xboard 后台前端修改规则
+
+## 关键文件
+
+| 文件 | 用途 |
+|------|------|
+| `resources/views/admin.blade.php` | **实际使用的后台模板**（不是 index.html） |
+| `public/assets/admin/manifest.json` | 决定加载哪个 JS 文件 |
+| `public/assets/admin/assets/index-xxx.js` | 压缩后的前端代码 |
+| `public/assets/admin/index.html` | 仅用于本地开发，线上不用 |
+
+## 修改 JS 文件后必须做
+
+1. **重命名 JS 文件**（破浏览器缓存）：
+   ```bash
+   mv index-BdbgNvrf8.js index-BdbgNvrf9.js
+   ```
+
+2. **更新 manifest.json**：
+   ```json
+   "file": "assets/index-BdbgNvrf9.js"
+   ```
+
+3. **同步更新 index.html**（保持一致）：
+   ```html
+   <script src="./assets/index-BdbgNvrf9.js"></script>
+   ```
+
+## 部署后清除缓存
+
+```bash
+# 清 Laravel 缓存
+php artisan optimize:clear
+
+# 清视图缓存（修改 blade 模板后）
+php artisan view:clear
+
+# 清 Nginx 代理缓存
+rm -rf /www/server/nginx/proxy_cache_dir/*
+nginx -s reload
+```
+
+## 插件外部链接跳转
+
+插件菜单如需跳转到独立 Blade 页面（而不是 SPA 内页），需要：
+
+### 1. config.json 使用 `ext:` 前缀
+```json
+"admin_menus": [{
+    "path": "ext:plugins/plugin-code/console"
+}]
+```
+
+### 2. 后端 PluginController 自动转换
+`ext:plugins/xxx` → `/webadmin/plugins/xxx` + `external: true`
+
+### 3. admin.blade.php 全局拦截器
+```html
+<script>
+  document.addEventListener('click', function(e) {
+    var a = e.target.closest('a[href]');
+    if (a) {
+      var href = a.getAttribute('href');
+      if (href && (/\/plugins\/[^\/]+\/\w+/.test(href))) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        window.location.href = href;
+      }
+    }
+  }, true);
+</script>
+```
+
+### 4. 前端 JS 生成完整 URL
+```javascript
+const r = n.external ? window.location.origin + n.path : Ult(e.code, i);
+```
+
+## 红线
+
+- **不要**只改 `index.html`，必须同时改 `manifest.json`
+- **不要**忘记重命名 JS 文件，否则浏览器缓存不更新
+- **不要**忘记清 Nginx 缓存，静态文件默认缓存 30 天
