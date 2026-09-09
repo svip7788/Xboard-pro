@@ -52,7 +52,9 @@ nginx -s reload
 ```
 
 ### 2. 后端 PluginController 自动转换
-`ext:plugins/xxx` → `/webadmin/plugins/xxx` + `external: true`
+`ext:plugins/xxx` → `/{securePath}/plugins/xxx` + `external: true`
+
+> **注意**：`securePath` 是每个站点独立配置的后台路径，在 **系统设置 → 安全设置 → 后台路径** 中设置（如 `webadmin`、`admin`、或随机哈希）。代码中通过 `admin_setting('secure_path')` 获取。
 
 ### 3. admin.blade.php 全局拦截器
 ```html
