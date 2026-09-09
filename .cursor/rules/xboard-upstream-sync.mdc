@@ -44,7 +44,8 @@ git commit -m "cherry-pick: <原始提交信息>"
 
 **冲突处理原则**：
 - 关键文件（TrafficFetchJob、StatUserJob、queue.php、horizon.php）：**保留我们的版本**
-- 其他文件：根据实际情况选择，优先保留上游的安全修复
+- **冲突严重时**：放弃 cherry-pick，直接 `git show <hash>` 看上游改了什么，手动参考修改我们的代码
+- 已修复的问题（grep 确认已存在）：跳过，不用处理
 
 **验证修复是否已存在**（避免重复工作）：
 ```bash
@@ -58,6 +59,24 @@ grep -r "hash_equals\|关键代码片段" app/
 ```bash
 git push origin master
 ```
+
+## 上游同步进度记录
+
+> 每次同步后更新此处，下次从这里开始
+
+**最后同步时间**：2026-09-09  
+**已同步到的上游 commit**：`4f48e61` (fix(order): prevent duplicate refunds)
+
+**已合并的上游修复**：
+- `4f48e61` 防止重复退款/开通（手动改）
+- `9d12552` 设备IP数组JSON索引
+- `7cfe061` 支付宝时间戳格式
+- `0fa4b4e` 支付凭据泄露（已有）
+- `4e9dfd6` 注册邮箱验证加固（已有）
+- `1eb085d` 密码重置加固（已有）
+- `e074bef` Hysteria2 带宽参数（已有）
+- `c9ef576` 邀请佣金计算（已有）
+- `6141430` TUIC 拥塞控制（已有）
 
 ### 2. 部署到线上服务器
 
