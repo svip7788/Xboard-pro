@@ -1,8 +1,8 @@
 {
     "name": "节点域名调度",
     "code": "bait_split",
-    "version": "7.0.0",
-    "description": "全量接管节点域名，支持用户池、凌晨收敛和单用户覆盖",
+    "version": "8.0.0",
+    "description": "全量接管节点域名，支持用户池、树形排查和单用户覆盖",
     "author": "XBoard Custom",
     "type": "feature",
     "require": {
@@ -41,72 +41,6 @@
             "default": "",
             "label": "换 IP 服务 Token",
             "description": "调用 instance 与 replace-ip 接口的 Bearer Token"
-        },
-        "wall_lookback_seconds": {
-            "type": "number",
-            "default": 3600,
-            "label": "被墙前回溯窗口（秒）",
-            "description": "留档时统计死 IP 存活期内拉过订阅的用户，默认 3600"
-        },
-        "wall_fresh_max_seconds": {
-            "type": "number",
-            "default": 7200,
-            "label": "IP 新鲜阈值（秒）",
-            "description": "IP 存活超过此秒数才被墙，视为老 IP 首墙，曝光窗口不可信，只记事件不统计人，默认 7200"
-        },
-        "night_converge_enabled": {
-            "type": "boolean",
-            "default": false,
-            "label": "凌晨收敛",
-            "description": "墙压倒性落在凌晨且白天近乎为零，形态是批量主动探测；探测只找得到有流量的地址。开启后窗口内把普通用户挤到牺牲池，拿一两个 IP 换其余几个的存活。人工锁定的用户不参与"
-        },
-        "night_converge_pool_ids": {
-            "type": "string",
-            "default": "",
-            "label": "牺牲池（逗号分隔）",
-            "description": "窗口内承载用户的池，填接口标识或池 ID，顺序有讲究：归属牺牲池的人落自己那个（自动隔离往第一个里补人，它就是嫌疑池），其余全站的人一律落最后一个。留空则收敛不生效"
-        },
-        "night_converge_members_only": {
-            "type": "boolean",
-            "default": false,
-            "label": "只收敛牺牲池自己的人",
-            "description": "关着（推荐）：全站凌晨都塞进牺牲池，主组、安静组窗口内零流量，探测找不到它们的地址，那些 IP 才不被墙。开启后主组的人凌晨用自己组的地址，8/27、8/28 两晚就是这么让五个组全被墙的——只在需要单独观察某个牺牲组时短期开"
-        },
-        "night_converge_start": {
-            "type": "number",
-            "default": 1,
-            "label": "收敛起始整点",
-            "description": "含该点，默认 1"
-        },
-        "night_converge_end": {
-            "type": "number",
-            "default": 9,
-            "label": "收敛结束整点",
-            "description": "不含该点，默认 9。起始大于结束按跨零点处理"
-        },
-        "night_auto_isolate_enabled": {
-            "type": "boolean",
-            "default": false,
-            "label": "自动隔离跟墙用户",
-            "description": "窗口内每次墙都记下谁实际拿到过那个死地址，攒够次数后把每次都在场的人自动改归属到第一个牺牲池。单次曝光判不了人（一个地址被墙时拿到过它的常有上百个），攒够才有区分度：一晚被墙六次能从五十八人收敛到四个"
-        },
-        "night_auto_isolate_min_walls": {
-            "type": "number",
-            "default": 3,
-            "label": "自动隔离最少墙次数",
-            "description": "同一个池当晚攒够这么多次墙才开始判定，默认 3。只墙一两次时在场名单等于全部曝光者，没有信息量"
-        },
-        "night_auto_isolate_min_rate": {
-            "type": "number",
-            "default": 100,
-            "label": "自动隔离在场率（百分比）",
-            "description": "在场次数占当晚墙次数的比例达到该值才隔离，默认 100 即每次都在场。降低会明显放大误伤"
-        },
-        "night_auto_isolate_daily_cap": {
-            "type": "number",
-            "default": 20,
-            "label": "自动隔离单晚上限（人）",
-            "description": "一晚最多自动挪这么多人，在场次数多的优先。默认 20，防止判据失灵时整组被搬空"
         }
     }
 }

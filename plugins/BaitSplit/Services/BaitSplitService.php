@@ -2759,7 +2759,6 @@ class BaitSplitService
         $override = $router['overrides'][(string) $userId] ?? null;
         $override = $override && $this->overrideIsActive($override) ? $override : null;
         $poolIds = $this->routingPoolIds($campaign, $userId, $override);
-        $convergeTargets = $this->nightConvergeTargets($router, $override, $userId);
         $result = [];
         $deliveredPoolIds = [];
         $deliveredHosts = [];
@@ -2775,13 +2774,7 @@ class BaitSplitService
                 ? $this->hostFromRule($override, $serverId)
                 : '';
             $selectedPool = null;
-            $tryPoolIds = $convergeTargets === []
-                ? $poolIds
-                : array_merge(
-                    [$this->convergeTargetForUser($convergeTargets, $userId)],
-                    $poolIds
-                );
-            foreach ($tryPoolIds as $poolId) {
+            foreach ($poolIds as $poolId) {
                 $candidate = $router['pools'][$poolId] ?? null;
                 if (!$candidate || !$this->poolIsUsable($candidate)) {
                     continue;
@@ -2849,116 +2842,6 @@ class BaitSplitService
         $poolIds[] = $this->poolIdByType($router, 'default');
         $poolIds[] = $this->poolIdByType($router, 'emergency');
         return array_values(array_unique(array_filter($poolIds)));
-    }
-
-    /**
-     * 凌晨窗口的牺牲池列表，空数组表示本次不收敛。
-     *
-     * 墙压倒性落在凌晨、白天近乎为零，且窗口内没流量的地址不会死——所以拿一两个
-     * 池换其余几个的存活是划算的。人工锁定的用户不参与。
-     *
-     * 只返回候选，由调用方按 uid 分摊到其中一个。
-     */
-    private function nightConvergeTargets(
-        array $router,
-        ?array $override,
-        int $userId
-    ): array {
-        if (!$this->configBool('night_converge_enabled', false)) {
-            return [];
-        }
-        if ($override && (string) ($override['pool_id'] ?? '') !== '') {
-            return [];
-        }
-        if (!$this->inNightConvergeWindow()) {
-            return [];
-        }
-        return $this->convergeTargetsForUser(
-            $this->nightConvergePoolIds($router),
-            $router,
-            $userId
-        );
-    }
-
-    /**
-     * 配置里选中且当前可用的牺牲池，与具体用户无关。
-     *
-     * 单独拆出来是因为面板统计要对上万条归属逐个判定，每人重新拆一遍配置字符串
-     * 太浪费。
-     *
-     * @return string[]
-     */
-    private function nightConvergePoolIds(array $router): array
-    {
-        return array_values(array_filter(
-            $this->splitPoolIdList(
-                $router,
-                (string) ($this->config['night_converge_pool_ids'] ?? '')
-            ),
-            fn(string $poolId): bool => isset($router['pools'][$poolId])
-                && $this->poolIsUsable($router['pools'][$poolId])
-        ));
-    }
-
-    /**
-     * 这个人在窗口内的候选池。
-     *
-     * 收全站是保护主组的全部依据：窗口内主组、安静组零流量，而墙是按地址批量探测
-     * 的，探测只找得到有流量的地址，那些 IP 于是活得下来。8/24 到 8/26 一直这么跑，
-     * 三晚的墙全部落在两个牺牲池上；8/27 02:26 改成只收自己人之后，主组那六千多人
-     * 凌晨回到自己组的地址上，当晚五个组全被墙，第二晚照旧。
-     *
-     * 落点不按 uid 均分：归属牺牲池的人落自己那个——自动隔离把跟墙的人挪进第一个
-     * 牺牲池，于是它成了嫌疑池，人少、交集收敛得快；其余全站的人一律落最后一个，
-     * 那个池只负责替其他组挨墙，读不出是谁招的也不影响排查。
-     *
-     * @param string[] $targets
-     * @return string[]
-     */
-    private function convergeTargetsForUser(
-        array $targets,
-        array $router,
-        int $userId
-    ): array {
-        if ($targets === []) {
-            return [];
-        }
-        $assigned = (string) ($router['assignments'][(string) $userId] ?? '');
-        if (in_array($assigned, $targets, true)) {
-            return [$assigned];
-        }
-        return $this->configBool('night_converge_members_only', true)
-            ? []
-            : [(string) end($targets)];
-    }
-
-    /**
-     * 收敛窗口内这个人整份订阅落哪个牺牲池。
-     *
-     * 按人分摊，不按节点分摊。曾经按节点分摊过一夜，指望一个地址被墙时另一半节点
-     * 还能连，结果是每个人同时占住所有牺牲地址，招墙的一个人就把它们一起带走：
-     * 8/23 十八次墙里只有两组成对，改成按节点分摊的 8/24 变成三十六次里十五组成对，
-     * 其中多组间隔只有 1 秒——同一批检测里一起判掉的。
-     *
-     * 候选池由 convergeTargetsForUser 定，正常只有一个，取模落在它身上。留着取模
-     * 是为了兜住候选多于一个的情形——那时按人分摊，一个人仍然只占一个地址。
-     */
-    private function convergeTargetForUser(array $targets, int $userId): string
-    {
-        return $targets[$userId % count($targets)];
-    }
-
-    private function inNightConvergeWindow(): bool
-    {
-        $start = (int) ($this->config['night_converge_start'] ?? 1);
-        $end = (int) ($this->config['night_converge_end'] ?? 9);
-        if ($start === $end || $start < 0 || $start > 23 || $end < 1 || $end > 24) {
-            return false;
-        }
-        $hour = (int) date('G');
-        return $start < $end
-            ? ($hour >= $start && $hour < $end)
-            : ($hour >= $start || $hour < $end);
     }
 
     private function managedServerIds(array $groupIds): array
@@ -4162,50 +4045,6 @@ class BaitSplitService
         return $ids;
     }
 
-    /**
-     * 窗口内每个牺牲池实际会装多少人。
-     *
-     * 池子那栏的人数是静态归属，白天夜里都一样，看不出收敛把谁分到哪去了——收全站时
-     * 其余组的几千人窗口内都压在最后一个牺牲池上，两个数字差得很远，得单独算。
-     * 口径跟池子人数一致：只算生效用户，人工锁定的不参与收敛也不计入。
-     *
-     * @return array<string, int> 池 ID => 窗口内人数
-     */
-    private function nightConvergeCounts(array $campaign): array
-    {
-        $router = $campaign['router'];
-        if (!$this->configBool('night_converge_enabled', false)) {
-            return [];
-        }
-        $targets = $this->nightConvergePoolIds($router);
-        if ($targets === []) {
-            return [];
-        }
-        $eligible = $this->eligibleUserIdSet($campaign['target_group_ids']);
-        $counts = array_fill_keys($targets, 0);
-        foreach (array_keys($router['assignments']) as $userId) {
-            $userId = (int) $userId;
-            if (!isset($eligible[$userId])) {
-                continue;
-            }
-            $override = $router['overrides'][(string) $userId] ?? null;
-            if (
-                $override
-                && $this->overrideIsActive($override)
-                && (string) ($override['pool_id'] ?? '') !== ''
-            ) {
-                continue;
-            }
-            // 与下发共用同一条判定，免得面板人数和夜里的实际落点各算各的
-            $userTargets = $this->convergeTargetsForUser($targets, $router, $userId);
-            if ($userTargets === []) {
-                continue;
-            }
-            $counts[$this->convergeTargetForUser($userTargets, $userId)]++;
-        }
-        return $counts;
-    }
-
     public function wallReport(string $campaignId, int $limit = 100): array
     {
         $state = $this->state();
@@ -4216,24 +4055,6 @@ class BaitSplitService
             'events' => array_reverse(
                 array_slice($router['wall_log'] ?? [], -$limit)
             ),
-            'settings' => [
-                'lookback_seconds' => max(60, (int) ($this->config['wall_lookback_seconds'] ?? 3600)),
-                'fresh_max_seconds' => max(300, (int) ($this->config['wall_fresh_max_seconds'] ?? 7200)),
-            ],
-            'night_converge' => [
-                'enabled' => $this->configBool('night_converge_enabled', false),
-                // 配置里存的可能是池 ID、接口标识或池名，解析成 ID 交给前端勾选
-                'pool_ids' => $this->splitPoolIdList(
-                    $router,
-                    (string) ($this->config['night_converge_pool_ids'] ?? '')
-                ),
-                'start' => (int) ($this->config['night_converge_start'] ?? 1),
-                'end' => (int) ($this->config['night_converge_end'] ?? 9),
-                'in_window' => $this->inNightConvergeWindow(),
-                'members_only' => $this->configBool('night_converge_members_only', true),
-                'pool_counts' => $this->nightConvergeCounts($campaign),
-            ],
-            'auto_isolate' => $this->autoIsolateReport($campaign),
             'pending_ip_rotates' => $this->pendingIpRotateCount(),
         ];
     }
@@ -4645,7 +4466,6 @@ class BaitSplitService
             }
         }
         $suspectIds = array_values(array_unique($suspectIds));
-        $isolated = $this->autoIsolateFollowers($campaign, $router, $exactByPool);
 
         $router['wall_log'][] = [
             'at' => $now,
@@ -4655,7 +4475,6 @@ class BaitSplitService
             'new_ip' => $newIp,
             'pools' => $eventPools,
             'suspect_count' => count($suspectIds),
-            'isolated' => $isolated['moved'],
         ];
         $router['wall_log'] = array_slice($router['wall_log'], -200);
 
@@ -4663,236 +4482,7 @@ class BaitSplitService
             'reason' => $reason,
             'mode' => 'exposure',
             'suspect_count' => count($suspectIds),
-            'isolated' => $isolated['moved'],
-            'night_walls' => $isolated['walls'],
         ];
-    }
-
-    /**
-     * 把「每次墙都在场」的人挪进第一个牺牲池。
-     *
-     * 单次曝光判不了人。一个地址被墙时拿到过它的常有几十上百个，那是按地址批量
-     * 探测的必然结果，照着挪只会误伤——这套东西上一版就是因此被废掉的。但同一批
-     * 信号攒够次数就有区分度：8/27 那晚牺牲A 被墙六次，每次都在场的人从五十八收
-     * 敛到四个；只被墙一次的主组交集等于全部曝光者，毫无信息。所以要求攒够
-     * min_walls 次墙、在场率到 min_rate 才动手。
-     *
-     * 计数每晚清零。跟墙的人换设备、改作息，跨夜累积会把昨天的账记到今天，而且
-     * 一晚的样本已经够——牺牲组一晚能被墙六到八次。攒满一轮判一批，判完再清零，
-     * 所以一晚能出好几批，后半夜才活跃起来的人也有机会被算进来。
-     *
-     * 挪的是静态归属，改完面板上就能看见、能整组搬走，跟手上的排查流程是同一套
-     * 东西。这里直接写 $router 而不调 reassignUsers：调用方拿着同一个引用，稍后
-     * 会连墙事件一起存盘，各自读写状态会互相覆盖。
-     *
-     * @param array<string, int[]> $suspectsByPool 本次墙里各池实际拿到过死地址的人
-     * @return array{moved: int[], walls: array<string, int>}
-     */
-    private function autoIsolateFollowers(
-        array $campaign,
-        array &$router,
-        array $suspectsByPool
-    ): array {
-        $result = ['moved' => [], 'walls' => []];
-        if (
-            $suspectsByPool === []
-            || !$this->configBool('night_auto_isolate_enabled', false)
-            // 窗口外的墙不算：收敛没生效时落点不等于归属，归因不可信
-            || !$this->inNightConvergeWindow()
-        ) {
-            return $result;
-        }
-        $targetPoolId = $this->nightConvergePoolIds($router)[0] ?? '';
-        if ($targetPoolId === '') {
-            return $result;
-        }
-        $minWalls = max(2, (int) ($this->config['night_auto_isolate_min_walls'] ?? 3));
-        $minRate = min(100, max(1, (int) ($this->config['night_auto_isolate_min_rate'] ?? 100)));
-        $cap = max(0, (int) ($this->config['night_auto_isolate_daily_cap'] ?? 20));
-
-        try {
-            $night = $this->convergeNightKey();
-            $movedKey = $this->autoIsolateKey($campaign, $night, 'moved');
-            $quota = $cap - (int) Redis::get($movedKey);
-            $candidates = [];
-            foreach ($suspectsByPool as $poolId => $userIds) {
-                $wallKey = $this->autoIsolateKey($campaign, $night, "pool:{$poolId}:walls");
-                $seenKey = $this->autoIsolateKey($campaign, $night, "pool:{$poolId}:seen");
-                $roundsKey = $this->autoIsolateKey($campaign, $night, "pool:{$poolId}:rounds");
-                $wallCount = (int) Redis::incr($wallKey);
-                Redis::expire($wallKey, 86400 * 2);
-                foreach ($userIds as $userId) {
-                    Redis::hincrby($seenKey, (string) $userId, 1);
-                }
-                Redis::expire($seenKey, 86400 * 2);
-                $result['walls'][$poolId] = $wallCount;
-                if ($wallCount < $minWalls) {
-                    continue;
-                }
-                // 配额用光也要照样走完这一轮。8/30 那晚 02:59 一次挪满 20 人的上限，
-                // 之后每次墙都在这里掉头，连零都没清，累积一路涨到 14 次——在场率按
-                // 全程算，越往后越凑不出「从第一次墙就在场」，后半夜彻底判不动了。
-                if ($quota > 0) {
-                    $need = (int) ceil($wallCount * $minRate / 100);
-                    foreach ((array) Redis::hgetall($seenKey) as $userId => $seen) {
-                        if ((int) $userId > 0 && (int) $seen >= $need) {
-                            $candidates[(int) $userId] = (int) $seen;
-                        }
-                    }
-                }
-                // 判定过就清零，下一批从头攒。不清零的话次数只会往上走，在场率按
-                // 全程算，后面才活跃起来的人凑不出「从第一次墙就在场」，一晚只能
-                // 出一批：8/29 那晚 04:50 挪走 13 人，牺牲B 之后又被墙五次，累积
-                // 到八次却再没出过人。清零等于每 min_walls 次墙独立判一轮。
-                Redis::del($wallKey);
-                Redis::del($seenKey);
-                Redis::incr($roundsKey);
-                Redis::expire($roundsKey, 86400 * 2);
-            }
-            if ($candidates === []) {
-                return $result;
-            }
-            // 在场次数多的先挪，配额用光时留下的是证据最弱的
-            arsort($candidates);
-            $eligible = $this->eligibleUserIdSet($campaign['target_group_ids']);
-            foreach (array_keys($candidates) as $userId) {
-                if ($quota <= 0) {
-                    break;
-                }
-                if (!isset($eligible[$userId])) {
-                    continue;
-                }
-                if ((string) ($router['assignments'][(string) $userId] ?? '') === $targetPoolId) {
-                    continue;
-                }
-                $override = $router['overrides'][(string) $userId] ?? null;
-                if (
-                    $override
-                    && $this->overrideIsActive($override)
-                    && (string) ($override['pool_id'] ?? '') !== ''
-                ) {
-                    continue;
-                }
-                $router['assignments'][(string) $userId] = $targetPoolId;
-                $result['moved'][] = $userId;
-                $quota--;
-            }
-            if ($result['moved'] !== []) {
-                Redis::incrby($movedKey, count($result['moved']));
-                Redis::expire($movedKey, 86400 * 2);
-                Log::info('BaitSplit 自动隔离跟墙用户', [
-                    'night' => $night,
-                    'pool_id' => $targetPoolId,
-                    'walls' => $result['walls'],
-                    'user_ids' => $result['moved'],
-                ]);
-            }
-        } catch (\Throwable $exception) {
-            // 隔离失败不能连带丢掉换 IP：地址不换上去，所有人都连不上
-            Log::warning('BaitSplit 自动隔离失败', ['message' => $exception->getMessage()]);
-        }
-        return $result;
-    }
-
-    /**
-     * 收敛窗口所属的那一晚。
-     *
-     * 跨午夜的窗口（如 22-6 点）算作前一天，否则计数在零点断成两半，两边都攒不够
-     * 样本，判定永远不触发。
-     */
-    private function convergeNightKey(): string
-    {
-        $start = (int) ($this->config['night_converge_start'] ?? 1);
-        $end = (int) ($this->config['night_converge_end'] ?? 9);
-        return $start > $end && (int) date('G') < $end
-            ? date('Y-m-d', time() - 86400)
-            : date('Y-m-d');
-    }
-
-    private function autoIsolateKey(array $campaign, string $night, string $suffix): string
-    {
-        return "bait_split:autoiso:{$campaign['id']}:{$night}:{$suffix}";
-    }
-
-    /**
-     * 今晚自动隔离攒到哪一步了。
-     *
-     * 面板要能看出「还差几次墙才够判定」，否则开了开关一晚没动静时分不清是判据太
-     * 严还是根本没在跑。
-     *
-     * @return array{enabled: bool, night: string, min_walls: int, min_rate: int,
-     *     cap: int, moved: int, pools: array<int, array<string, mixed>>}
-     *     pools[].walls 是当前这轮攒到的次数，pools[].rounds 是今晚判过几轮
-     */
-    private function autoIsolateReport(array $campaign): array
-    {
-        $minWalls = max(2, (int) ($this->config['night_auto_isolate_min_walls'] ?? 3));
-        $minRate = min(100, max(1, (int) ($this->config['night_auto_isolate_min_rate'] ?? 100)));
-        $night = $this->convergeNightKey();
-        $report = [
-            'enabled' => $this->configBool('night_auto_isolate_enabled', false),
-            'night' => $night,
-            'min_walls' => $minWalls,
-            'min_rate' => $minRate,
-            'cap' => max(0, (int) ($this->config['night_auto_isolate_daily_cap'] ?? 20)),
-            'moved' => 0,
-            'pools' => [],
-        ];
-        try {
-            $report['moved'] = (int) Redis::get(
-                $this->autoIsolateKey($campaign, $night, 'moved')
-            );
-            foreach ((array) ($campaign['router']['pools'] ?? []) as $poolId => $pool) {
-                $walls = (int) Redis::get(
-                    $this->autoIsolateKey($campaign, $night, "pool:{$poolId}:walls")
-                );
-                // 判过一轮就清零重攒，光看 walls 会以为这池整晚没动静
-                $rounds = (int) Redis::get(
-                    $this->autoIsolateKey($campaign, $night, "pool:{$poolId}:rounds")
-                );
-                if ($walls <= 0 && $rounds <= 0) {
-                    continue;
-                }
-                $need = (int) ceil($walls * $minRate / 100);
-                $qualified = 0;
-                foreach (
-                    (array) Redis::hgetall(
-                        $this->autoIsolateKey($campaign, $night, "pool:{$poolId}:seen")
-                    ) as $userId => $seen
-                ) {
-                    if ((int) $userId > 0 && (int) $seen >= $need) {
-                        $qualified++;
-                    }
-                }
-                $report['pools'][] = [
-                    'pool_id' => (string) $poolId,
-                    'pool_name' => (string) ($pool['name'] ?? $poolId),
-                    'walls' => $walls,
-                    'rounds' => $rounds,
-                    'need_seen' => $need,
-                    'qualified' => $walls >= $minWalls ? $qualified : 0,
-                    'armed' => $walls >= $minWalls,
-                ];
-            }
-        } catch (\Throwable) {
-            // 面板统计失败不该让整个报表打不开
-        }
-        return $report;
-    }
-
-    private function configBool(string $key, bool $default = false): bool
-    {
-        $v = $this->config[$key] ?? $default;
-        if (is_array($v) && array_key_exists('value', $v)) {
-            $v = $v['value'];
-        }
-        if (is_bool($v)) {
-            return $v;
-        }
-        if (is_string($v)) {
-            return in_array(strtolower(trim($v)), ['1', 'true', 'yes', 'on'], true);
-        }
-        return (bool) $v;
     }
 
     private function routerPoolExposureKey(array $campaign, string $poolId): string

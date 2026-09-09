@@ -189,35 +189,10 @@
 
         <section class="card wide">
             <div class="topbar">
-                <h2>凌晨收敛</h2>
-                <div class="actions"><span id="convergeState" class="pill off">未开启</span></div>
+                <h2>换 IP 事件日志</h2>
+                <div class="actions"><span id="wallPending" class="pill off">换IP队列 0</span><button id="refreshWall" class="secondary">刷新</button></div>
             </div>
-            <div class="hint">墙压倒性落在凌晨、白天近乎为零，形态是按地址批量探测，而探测只找得到有流量的地址。开启后窗口内把用户挤到牺牲池，拿一两个地址换其余几个的存活。人工指定了用户池的用户不参与。选两个牺牲池时按人分摊，一个人整份订阅只落一个地址——曾经按节点分摊过一夜，每个人同时占住两个地址，招墙的一个人就把它们一起带走。</div>
-            <div class="field" style="margin-top:12px"><label><input id="convergeEnabled" type="checkbox" style="width:auto;height:auto"> 开启凌晨收敛</label></div>
-            <div class="field"><label>牺牲池（可多选，建议选两个）</label><div id="convergePools" class="branch-fields"></div><div id="convergeNote" class="hint" style="margin-top:6px"></div></div>
-            <div class="split">
-                <div class="field"><label>起始整点（含）</label><input id="convergeStart" type="number" min="0" max="23" value="0"></div>
-                <div class="field"><label>结束整点（不含，可跨零点）</label><input id="convergeEnd" type="number" min="1" max="24" value="10"></div>
-            </div>
-            <button id="saveNightConverge">保存收敛设置</button>
-        </section>
-
-        <section class="card wide">
-            <div class="topbar">
-                <h2>换 IP 事件与自动隔离</h2>
-                <div class="actions"><span id="autoIsoState" class="pill off">隔离未开启</span><span id="wallPending" class="pill off">换IP队列 0</span><button id="refreshWall" class="secondary">刷新</button></div>
-            </div>
-            <div class="hint">单次曝光判不了人：一个地址被墙时拿到过它的常有上百个，那是按地址批量探测的必然结果。但同一批信号攒够次数就有区分度——一晚被墙六次，每次都在场的能从五十八人收敛到四个。开启插件配置里的「自动隔离跟墙用户」后，攒够墙次数且在场率达标的人会被自动改归属到第一个牺牲池，面板上立刻能看见、能整组搬走。</div>
-            <div id="autoIsoNote" class="hint" style="margin-top:8px"></div>
-            <div class="split" style="margin-top:12px">
-                <div class="field"><label>被墙前回溯窗口（秒）</label><input id="wallLookback" type="number" min="60" max="86400" value="3600"></div>
-                <div class="field"><label>IP 新鲜阈值（秒，超过视为老 IP 首墙）</label><input id="wallFresh" type="number" min="300" max="86400" value="7200"></div>
-            </div>
-
-            <button id="saveWallSettings">保存留档设置</button>
-
-            <h3 style="margin-top:20px">换 IP 事件日志（最近 100 条）</h3>
-            <div class="scroll" style="max-height:320px"><table><thead><tr><th>时间</th><th>类型</th><th>旧IP→新IP</th><th>受影响池</th><th>窗口内拉取</th><th>拿到过该地址</th><th>自动隔离</th></tr></thead><tbody id="wallEvents"></tbody></table></div>
+            <div class="scroll" style="max-height:320px"><table><thead><tr><th>时间</th><th>类型</th><th>旧IP→新IP</th><th>受影响池</th><th>窗口内拉取</th><th>拿到过该地址</th></tr></thead><tbody id="wallEvents"></tbody></table></div>
         </section>
     </div>
 </main>
@@ -437,34 +412,13 @@ async function showPoolUsers(pool=null,page=null){if(pool){poolModal={poolId:poo
 async function loadOverrides(){const campaignId=current?.id,body=$('overrideRows');if(!body)return;if(!campaignId||!router()){body.textContent='';return}const rows=await request(api('/overrides'));if(current?.id!==campaignId)return;body.textContent='';rows.forEach(user=>{const row=body.insertRow();row.insertCell().textContent=`${user.id} / ${user.email}`;row.insertCell().textContent=user.pool_id||'-';row.insertCell().textContent=user.override.host||Object.values(user.override.node_hosts||{}).join(', ')||'-';row.insertCell().textContent=user.override.locked?'是':'否';row.insertCell().textContent=user.override.note||'-';const cell=row.insertCell(),button=document.createElement('button');button.className='danger small';button.textContent='解除';button.onclick=async()=>{try{updateCurrent(await request(api(`/overrides/${user.id}`),{method:'DELETE'}));await loadOverrides();toast('规则已解除')}catch(error){toast(error.message,'error')}};cell.appendChild(button)});if(!rows.length){const row=body.insertRow(),cell=row.insertCell();cell.colSpan=6;cell.className='hint';cell.textContent='暂无手动规则'}}
 let wallData=null;
 function wallReasonLabel(reason){return {blocked:'被墙',machine:'机器挂壁'}[reason]||reason||'-'}
-function renderNightConverge(){const box=$('convergePools');if(!box)return;const nc=wallData?.night_converge||null,pill=$('convergeState');if(pill){if(!nc||!nc.enabled){pill.textContent='未开启';pill.className='pill off';pill.title='窗口内不改变下发'}else if(nc.in_window){pill.textContent='收敛中';pill.className='pill bad';pill.title='当前在窗口内，普通用户已被挤到牺牲池'}else{pill.textContent=`已开启 ${nc.start}-${nc.end} 点`;pill.className='pill warn';pill.title='当前不在窗口内，按常规池下发'}}
-if(nc){if(document.activeElement!==$('convergeEnabled'))$('convergeEnabled').checked=!!nc.enabled;if(document.activeElement!==$('convergeStart'))$('convergeStart').value=nc.start??0;if(document.activeElement!==$('convergeEnd'))$('convergeEnd').value=nc.end??10}
-const selected=new Set(nc?.pool_ids||[]),list=pools();box.textContent='';if(!list.length){box.innerHTML='<div class="empty">初始化后配置用户池</div>';return}
-const counts=nc?.pool_counts||{};
-list.forEach(pool=>{const label=document.createElement('label');label.style.cssText='display:flex;align-items:center;gap:6px;font-weight:400';const box2=document.createElement('input');box2.type='checkbox';box2.value=pool.id;box2.dataset.role='convergePool';box2.style.cssText='width:auto;height:auto';box2.checked=selected.has(pool.id);label.appendChild(box2);label.appendChild(document.createTextNode(`${pool.name}（${pool.host||'无地址'}）`));
-// 池子那栏的人数是静态归属，跟窗口内实际落点是两码事，这里单独标出来
-if(counts[pool.id]!==undefined){const tag=document.createElement('span');tag.className='pill warn';tag.textContent=`夜间 ${counts[pool.id]} 人`;tag.title='窗口内实际落到这个池的人数，与上方用户池的归属人数不是一回事';label.appendChild(tag)}
-box.appendChild(label)});
-const note=$('convergeNote');if(note){if(!nc||!nc.enabled){note.textContent=''}else{const total=Object.values(counts).reduce((a,b)=>a+b,0);note.textContent=nc.members_only?`窗口内共收敛 ${total} 人，只收牺牲池自己的人，其他组凌晨用自己组的地址——它们会跟着被墙`:`窗口内共收敛 ${total} 人：归属牺牲池的落自己那个，其余全站落最后一个，其他组窗口内零流量因此不被墙`}}}
-// 开了开关一晚没动静时，得能分清是判据太严还是根本没在攒
-function renderAutoIsolate(){const note=$('autoIsoNote'),pill=$('autoIsoState');const ai=wallData?.auto_isolate||null;
-if(pill){if(!ai||!ai.enabled){pill.textContent='隔离未开启';pill.className='pill off';pill.title='每次墙只留档，不改归属'}else{const armed=(ai.pools||[]).filter(p=>p.armed).length;pill.textContent=`今晚已挪 ${ai.moved}/${ai.cap}`;pill.className=`pill ${ai.moved>0?'bad':armed?'warn':'off'}`;pill.title=`攒够 ${ai.min_walls} 次墙、在场率 ${ai.min_rate}% 才挪人`}}
-if(!note)return;
-if(!ai||!ai.enabled){note.textContent='自动隔离未开启。到插件配置页勾选「自动隔离跟墙用户」后，窗口内的墙才会累积在场次数。';return}
-// 判完一轮就清零重攒，所以要把已判轮次标出来，否则看着像整晚没动静
-const parts=(ai.pools||[]).map(p=>{const done=p.rounds>0?`已判 ${p.rounds} 轮，`:'';return p.armed?`${p.pool_name} ${done}本轮已墙 ${p.walls} 次，${p.qualified} 人在场 ≥${p.need_seen} 次`:`${p.pool_name} ${done}本轮已墙 ${p.walls} 次，还差 ${ai.min_walls-p.walls} 次才判定`});
-note.textContent=`${ai.night} 这一晚：每攒够 ${ai.min_walls} 次墙判一轮，在场率 ${ai.min_rate}% 才挪，判完清零重攒，已挪 ${ai.moved} 人（上限 ${ai.cap}）。`+(parts.length?parts.join('；'):'今晚窗口内还没有池被墙。');}
-function renderWall(){renderNightConverge();renderAutoIsolate();const events=$('wallEvents');if(!events)return;const pendingPill=$('wallPending');if(!wallData){if(pendingPill){pendingPill.textContent='换IP队列 0';pendingPill.className='pill off'}events.textContent='';return}const settings=wallData.settings||{};if(document.activeElement!==$('wallLookback'))$('wallLookback').value=settings.lookback_seconds||3600;if(document.activeElement!==$('wallFresh'))$('wallFresh').value=settings.fresh_max_seconds||7200;const pending=Number(wallData.pending_ip_rotates||0);if(pendingPill){pendingPill.textContent=`换IP队列 ${pending}`;pendingPill.className=`pill ${pending>0?'bad':'off'}`;pendingPill.title=pending>0?'有换 IP 事件排队等待写入，每分钟自动消化':'无积压换 IP 事件'}
+function renderWall(){const events=$('wallEvents');if(!events)return;const pendingPill=$('wallPending');if(!wallData){if(pendingPill){pendingPill.textContent='换IP队列 0';pendingPill.className='pill off'}events.textContent='';return}const pending=Number(wallData.pending_ip_rotates||0);if(pendingPill){pendingPill.textContent=`换IP队列 ${pending}`;pendingPill.className=`pill ${pending>0?'bad':'off'}`;pendingPill.title=pending>0?'有换 IP 事件排队等待写入，每分钟自动消化':'无积压换 IP 事件'}
 events.textContent='';(wallData.events||[]).forEach(ev=>{const row=events.insertRow();const timeCell=row.insertCell();timeCell.textContent=formatTime(ev.at);if(ev.mode==='manual_fix')timeCell.innerHTML+=' <span class="pill warn">补</span>';if((ev.pools||[]).some(p=>p&&p.stale))timeCell.innerHTML+=' <span class="pill off" title="老 IP 首墙，曝光窗口不可信">跳过</span>';const reasonCell=row.insertCell();reasonCell.innerHTML=`<span class="pill ${ev.reason==='blocked'?'bad':'off'}">${wallReasonLabel(ev.reason)}</span>`;row.insertCell().textContent=`${ev.old_ip||'-'} → ${ev.new_ip||'-'}`;row.insertCell().textContent=(ev.pools||[]).map(p=>typeof p==='string'?p:p.pool_name).join('、')||'-';row.insertCell().textContent=ev.suspect_count||0;
-// 「窗口内拉取」是池级口径，会把归属池被墙后回落到主组的人算进来；判定只认这一列
-const exact=(ev.pools||[]).reduce((sum,p)=>sum+Number(p&&p.exact_count||0),0);const exactCell=row.insertCell();exactCell.textContent=exact;exactCell.title='实际拿到过这个死地址的人数，自动隔离只按这个数累积';
-const iso=(ev.isolated||[]).length,isoCell=row.insertCell();isoCell.innerHTML=iso?`<span class="pill bad" title="uid ${(ev.isolated||[]).join('、')}">挪走 ${iso} 人</span>`:'-'});
-if(!(wallData.events||[]).length){const row=events.insertRow();row.insertCell().colSpan=7;row.cells[0].className='empty';row.cells[0].textContent='暂无换 IP 事件记录'}}
+const exact=(ev.pools||[]).reduce((sum,p)=>sum+Number(p&&p.exact_count||0),0);const exactCell=row.insertCell();exactCell.textContent=exact;exactCell.title='实际拿到过这个死地址的人数'});
+if(!(wallData.events||[]).length){const row=events.insertRow();row.insertCell().colSpan=6;row.cells[0].className='empty';row.cells[0].textContent='暂无换 IP 事件记录'}}
 async function loadWallLog(){const campaignId=current?.id;if(!campaignId||!router()){wallData=null;renderWall();return}const data=await request(api('/wall-log?limit=100'));if(current?.id!==campaignId)return;wallData=data;renderWall()}
 $('refreshWall').onclick=()=>loadWallLog().catch(error=>toast(error.message,'error'));
 $('refreshOverrides').onclick=()=>loadOverrides().catch(error=>toast(error.message,'error'));
-$('saveNightConverge').onclick=async()=>{try{const poolIds=[...document.querySelectorAll('[data-role="convergePool"]:checked')].map(item=>item.value),body={enabled:$('convergeEnabled').checked,pool_ids:poolIds,start:Number($('convergeStart').value),end:Number($('convergeEnd').value)};await request('/night-converge',{method:'POST',body:JSON.stringify(body)});toast(body.enabled?`收敛已开启，${body.start}-${body.end} 点挤到 ${poolIds.length} 个牺牲池`:'收敛已关闭');await loadWallLog()}catch(error){toast(error.message,'error')}};
-$('saveWallSettings').onclick=async()=>{try{const body={wall_lookback_seconds:Number($('wallLookback').value)||3600,wall_fresh_max_seconds:Number($('wallFresh').value)||7200};await request('/wall-settings',{method:'POST',body:JSON.stringify(body)});toast('留档设置已保存');await loadWallLog()}catch(error){toast(error.message,'error')}};
 $('campaignSelect').onchange=async event=>{const selectedId=event.target.value;try{loading(true,'正在切换任务…');await refresh(false);current=campaigns.find(item=>item.id===selectedId)||blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent();await loadOverrides();await loadWallLog().catch(()=>{})}catch(error){toast(error.message,'error')}finally{loading(false)}};
 $('newCampaign').onclick=()=>{current=blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent()};
 $('copyCampaignId').onclick=async()=>{const id=current?.id||$('campaignIdDisplay').value;if(!id)return toast('请先保存任务','error');try{await navigator.clipboard.writeText(id);toast(`campaign_id 已复制：${id}`)}catch{toast('复制失败，请手动选中复制','error')}};
