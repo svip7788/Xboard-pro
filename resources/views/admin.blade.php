@@ -83,12 +83,14 @@
   <div id="root"></div>
   <script>
     // 拦截插件链接点击
-    document.addEventListener('mousedown', function(e) {
+    document.addEventListener('click', function(e) {
       var a = e.target.closest('a[href]');
       if (a) {
         var href = a.getAttribute('href');
         if (href && (/\/plugins\/[^\/]+\/\w+/.test(href))) {
-          setTimeout(function() { window.location.href = href; }, 10);
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          window.location.href = href;
         }
       }
     }, true);
