@@ -41,6 +41,12 @@
             "default": "",
             "label": "换 IP 服务 Token",
             "description": "调用 instance 与 replace-ip 接口的 Bearer Token"
+        },
+        "boce_api_key": {
+            "type": "string",
+            "default": "",
+            "label": "拨测 API Key",
+            "description": "boce.com 的 API Key，用于 Ping 检测功能，留空则禁用"
         }
     }
 }

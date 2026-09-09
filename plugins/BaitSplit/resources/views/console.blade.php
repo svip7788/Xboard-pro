@@ -5,28 +5,85 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>节点域名调度中心</title>
     <style>
-        :root{--bg:#f3f6fb;--card:#fff;--text:#172033;--muted:#68758a;--line:#dfe5ee;--primary:#3157d5;--danger:#c9364f;--success:#138a5b;--warning:#b66a09}
-        *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-        button,input,select,textarea{font:inherit}button{padding:9px 15px;color:#fff;background:var(--primary);border:0;border-radius:9px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}
-        button.secondary{color:var(--text);background:#e9edf5}button.danger{background:var(--danger)}button.warning{background:var(--warning)}button.success{background:var(--success)}button.small{padding:5px 9px;font-size:12px}
-        input,select,textarea{width:100%;padding:10px 12px;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:9px;outline:none}input,select{height:42px}textarea{min-height:90px;resize:vertical}
-        input:focus,select:focus,textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(49,87,213,.12)}
-        .page{width:min(1320px,calc(100% - 32px));margin:26px auto 60px}.topbar,.row,.actions{display:flex;align-items:center;gap:10px}.topbar{justify-content:space-between;margin-bottom:18px}.actions{flex-wrap:wrap}
-        h1{margin:0;font-size:25px}h2{margin:0 0 14px;font-size:17px}h3{margin:0 0 8px;font-size:15px}.muted,.hint{color:var(--muted)}.back{color:var(--primary);text-decoration:none}
-        .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:15px}.card{grid-column:span 6;padding:19px;background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 5px 20px rgba(22,32,51,.05)}.wide{grid-column:1/-1}.third{grid-column:span 4}
-        .field{margin-bottom:14px}.field label{display:block;margin-bottom:6px;font-weight:600}.campaignbar{display:grid;grid-template-columns:1fr auto auto;gap:9px}
-        .group-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}.group-option{display:flex!important;align-items:center;gap:8px;padding:9px 11px;margin:0!important;background:#f7f9fc;border:1px solid var(--line);border-radius:9px;cursor:pointer}.group-option input{width:16px;height:16px;margin:0;flex:none}.group-list.cols-5{grid-template-columns:repeat(5,1fr)}.group-list.cols-5 .group-option{min-width:0}.group-list.cols-5 .group-option span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-        .stats{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.stat{padding:12px;background:#f7f9fc;border-radius:10px}.stat strong{display:block;margin-top:3px;font-size:21px}
-        .pill{display:inline-block;padding:4px 10px;border-radius:999px;font-weight:700}.pill.on{color:var(--success);background:#dcf6eb}.pill.off{color:var(--muted);background:#e9edf3}.pill.warn{color:#8b5910;background:#fff0cf}.pill.bad{color:#8b1f34;background:#fde8ed}
-        .pool-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(245px,1fr));gap:11px}.pool{padding:14px;background:#f7f9fc;border:1px solid var(--line);border-radius:11px}.pool-head{display:flex;justify-content:space-between;gap:8px}.pool .host{margin:7px 0;word-break:break-all}.pool .meta{font-size:12px;color:var(--muted)}.host-tools{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.ping-result{font-size:12px;font-weight:700}.ping-result.ok{color:var(--success)}.ping-result.warn{color:var(--warning)}.ping-result.bad{color:var(--danger)}
-        .node-list{max-height:275px;overflow:auto;border:1px solid var(--line);border-radius:10px}.node{display:flex;align-items:center;gap:9px;padding:9px 11px;border-bottom:1px solid #edf0f5;cursor:pointer}.node:last-child{border:0}.node input{width:16px;height:16px}.node small{margin-left:auto;color:var(--muted)}
-        table{width:100%;border-collapse:collapse}th,td{padding:8px;text-align:left;border-bottom:1px solid var(--line)}.scroll{max-height:350px;overflow:auto}
-        .empty{padding:18px;text-align:center;color:var(--muted);background:#f7f9fc;border-radius:10px}.notice{display:none;padding:12px;border-radius:9px}.notice.error{color:#8b1f34;background:#fde8ed}
-        .toast{position:fixed;top:18px;left:50%;z-index:10020;max-width:calc(100% - 32px);padding:12px 18px;border-radius:10px;box-shadow:0 8px 28px rgba(22,32,51,.2);opacity:0;visibility:hidden;transform:translate(-50%,-10px);transition:.2s;pointer-events:none}.toast.show{opacity:1;visibility:visible;transform:translate(-50%,0)}.toast.success{color:#096640;background:#dff7ec}.toast.error{color:#8b1f34;background:#fde8ed}
-        .overlay,.modal{display:none;position:fixed;inset:0;z-index:10000;align-items:center;justify-content:center;padding:16px;background:rgba(23,32,51,.28)}.overlay.show,.modal.show{display:flex}.loading-box{display:flex;gap:10px;align-items:center;padding:13px 18px;background:#fff;border-radius:10px}.spinner{width:18px;height:18px;border:2px solid #dce3f5;border-top-color:var(--primary);border-radius:50%;animation:spin .7s linear infinite}.modal{z-index:10010}.modal-card{width:min(1000px,100%);max-height:88vh;overflow:auto;padding:20px;background:#fff;border-radius:14px}.modal-head{display:flex;justify-content:space-between;align-items:center;gap:10px}.modal-tools{display:grid;grid-template-columns:1fr auto;gap:9px;margin:12px 0}.pagination{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px}@keyframes spin{to{transform:rotate(360deg)}}
-        .split{display:grid;grid-template-columns:1fr 1fr;gap:14px}.version{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-        .tree-list{display:grid;gap:10px}.tree-node{padding:13px;background:#f7f9fc;border:1px solid var(--line);border-left:4px solid var(--primary);border-radius:10px}.tree-node .meta{color:var(--muted);font-size:12px}.branch-fields{display:grid;gap:9px}.branch-row{display:grid;grid-template-columns:160px 1fr;gap:9px}
-        @media(max-width:900px){.card,.third{grid-column:1/-1}.stats{grid-template-columns:repeat(2,1fr)}.split{grid-template-columns:1fr}.campaignbar{grid-template-columns:1fr 1fr}.campaignbar select{grid-column:1/-1}.topbar{align-items:flex-start;flex-direction:column}}
+        :root{--bg:#f8fafc;--card:#fff;--text:#1e293b;--muted:#64748b;--line:#e2e8f0;--primary:#2563eb;--danger:#dc2626;--success:#16a34a;--warning:#d97706}
+        *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+        button,input,select,textarea{font:inherit}button{padding:8px 16px;font-weight:500;color:#fff;background:var(--primary);border:0;border-radius:6px;cursor:pointer}button:hover{opacity:.9}button:disabled{opacity:.5;cursor:not-allowed}
+        button.secondary{color:var(--text);background:#fff;border:1px solid var(--line)}button.secondary:hover{background:var(--bg)}button.danger{background:var(--danger)}button.warning{background:var(--warning)}button.success{background:var(--success)}button.small{padding:5px 10px;font-size:12px}
+        input,select,textarea{width:100%;padding:9px 12px;color:var(--text);background:#fff;border:1px solid var(--line);border-radius:6px;outline:none}input,select{height:40px}textarea{min-height:80px;resize:vertical}
+        input:focus,select:focus,textarea:focus{border-color:var(--primary);box-shadow:0 0 0 2px rgba(37,99,235,.1)}
+        .page{max-width:1280px;margin:0 auto;padding:24px 20px 60px}.topbar,.row,.actions{display:flex;align-items:center;gap:10px}.topbar{justify-content:space-between;margin-bottom:20px}.actions{flex-wrap:wrap}
+        h1{margin:0;font-size:22px;font-weight:600}h2{margin:0 0 16px;font-size:15px;font-weight:600;color:var(--text)}h3{margin:0 0 8px;font-size:14px}.muted,.hint{color:var(--muted);font-size:13px}.back{color:var(--muted);text-decoration:none;font-size:13px}.back:hover{color:var(--primary)}
+        .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}.card{grid-column:span 6;padding:20px;background:var(--card);border:1px solid var(--line);border-radius:8px}.wide{grid-column:1/-1}.third{grid-column:span 4}
+        .field{margin-bottom:14px}.field label{display:block;margin-bottom:6px;font-weight:500;font-size:13px}.campaignbar{display:grid;grid-template-columns:1fr auto auto;gap:9px}
+        .group-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}.group-option{display:flex!important;align-items:center;gap:8px;padding:8px 10px;margin:0!important;background:var(--bg);border:1px solid var(--line);border-radius:6px;cursor:pointer;font-size:13px}.group-option input{width:16px;height:16px;margin:0;flex:none}.group-list.cols-5{grid-template-columns:repeat(5,1fr)}.group-list.cols-5 .group-option{min-width:0}.group-list.cols-5 .group-option span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .stats{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}.stat{padding:14px;background:var(--bg);border-radius:6px;text-align:center}.stat span{font-size:12px;color:var(--muted)}.stat strong{display:block;margin-top:4px;font-size:22px;font-weight:600}
+        .pill{display:inline-block;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:500}.pill.on{color:var(--success);background:#dcfce7}.pill.off{color:var(--muted);background:#f1f5f9}.pill.warn{color:var(--warning);background:#fef3c7}.pill.bad{color:var(--danger);background:#fee2e2}
+        .pool-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}.pool{padding:16px;background:var(--bg);border:1px solid var(--line);border-radius:6px}.pool:hover{border-color:#cbd5e1}.pool-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.pool-head strong{font-size:14px}.pool .host{font-family:ui-monospace,monospace;font-size:12px;color:var(--muted);padding:8px 10px;background:#fff;border-radius:4px;margin:10px 0;word-break:break-all}.pool .meta{font-size:12px;color:var(--muted)}.host-tools{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.ping-result{font-size:12px;font-weight:600}.ping-result.ok{color:var(--success)}.ping-result.warn{color:var(--warning)}.ping-result.bad{color:var(--danger)}
+        .node-list{max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px}.node{display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--line);cursor:pointer;font-size:13px}.node:last-child{border:0}.node:hover{background:var(--bg)}.node input{width:16px;height:16px}.node small{margin-left:auto;color:var(--muted)}
+        table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:10px 12px;text-align:left}th{font-weight:500;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line)}td{border-bottom:1px solid var(--line)}tr:hover td{background:var(--bg)}.scroll{max-height:350px;overflow:auto}
+        .empty{padding:20px;text-align:center;color:var(--muted);background:var(--bg);border-radius:6px;font-size:13px}.notice{display:none;padding:12px;border-radius:6px}.notice.error{color:#991b1b;background:#fee2e2}
+        .toast{position:fixed;top:18px;left:50%;z-index:10020;max-width:calc(100% - 32px);padding:12px 18px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.15);opacity:0;visibility:hidden;transform:translate(-50%,-10px);transition:.2s;pointer-events:none;font-size:13px}.toast.show{opacity:1;visibility:visible;transform:translate(-50%,0)}.toast.success{color:#166534;background:#dcfce7}.toast.error{color:#991b1b;background:#fee2e2}
+        .overlay,.modal{display:none;position:fixed;inset:0;z-index:10000;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.4)}.overlay.show,.modal.show{display:flex}.loading-box{display:flex;gap:10px;align-items:center;padding:14px 20px;background:#fff;border-radius:8px;font-size:13px}.spinner{width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:spin .7s linear infinite}.modal{z-index:10010}.modal-card{width:min(1000px,100%);max-height:88vh;overflow:auto;padding:24px;background:#fff;border-radius:10px}.modal-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px}.modal-tools{display:grid;grid-template-columns:1fr auto;gap:9px;margin:12px 0}.pagination{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px}@keyframes spin{to{transform:rotate(360deg)}}
+        .split{display:grid;grid-template-columns:1fr 1fr;gap:14px}.version{font-family:ui-monospace,monospace;font-size:12px}
+        /* 树形排查 - 层次化样式 */
+        .tree-list{display:flex;flex-direction:column;gap:0;position:relative}
+        .tree-node{position:relative;padding:14px 16px;background:#fff;border:1px solid var(--line);border-radius:6px;margin-bottom:8px}
+        .tree-node::before{content:'';position:absolute;left:-20px;top:24px;width:16px;height:2px;background:var(--line)}
+        .tree-node::after{content:'';position:absolute;left:-20px;top:-8px;bottom:50%;width:2px;background:var(--line)}
+        .tree-node:first-child::after{display:none}
+        .tree-node[style*="margin-left: 0"]::before,.tree-node[style*="margin-left: 0"]::after{display:none}
+        .tree-node[style*="margin-left: 24px"]{border-left:3px solid #93c5fd}
+        .tree-node[style*="margin-left: 48px"]{border-left:3px solid #a5b4fc}
+        .tree-node[style*="margin-left: 72px"]{border-left:3px solid #c4b5fd}
+        .tree-node[style*="margin-left: 96px"]{border-left:3px solid #d8b4fe}
+        .tree-node .pool-head{margin-bottom:8px}.tree-node .pool-head strong{font-size:14px}
+        .tree-node .meta{color:var(--muted);font-size:12px;margin-top:8px}
+        .tree-node .actions{margin-top:10px}
+        .tree-depth-0{border-left:4px solid var(--primary);background:#f8fafc}
+        .tree-depth-1{margin-left:28px!important;border-left:3px solid #60a5fa}
+        .tree-depth-2{margin-left:56px!important;border-left:3px solid #818cf8}
+        .tree-depth-3{margin-left:84px!important;border-left:3px solid #a78bfa}
+        .tree-depth-4{margin-left:112px!important;border-left:3px solid #c084fc}
+        .branch-fields{display:grid;gap:9px}.branch-row{display:grid;grid-template-columns:160px 1fr;gap:9px}
+        /* 下拉菜单 */
+        .dropdown{position:relative;display:inline-block}
+        .dropdown-menu{display:none;position:absolute;right:0;top:100%;margin-top:6px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;min-width:180px;box-shadow:0 4px 12px rgba(0,0,0,.1);z-index:100}
+        .dropdown.open .dropdown-menu{display:block}
+        /* 可折叠区域 */
+        .collapsible .collapse-header{display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none;margin:-20px -20px 0;padding:16px 20px;border-radius:8px 8px 0 0;transition:background .15s}
+        .collapsible .collapse-header:hover{background:var(--bg)}
+        .collapsible .collapse-header h2{margin:0;display:flex;align-items:center;gap:8px}
+        .collapse-icon{color:var(--muted);font-size:12px;transition:transform .2s}
+        .collapsible.collapsed .collapse-icon{transform:rotate(-90deg)}
+        .collapsible.collapsed .collapse-body{display:none}
+        .collapsible .collapse-body{margin-top:12px}
+        .badge{font-size:11px;padding:2px 8px;border-radius:10px;font-weight:500}
+        .badge.on{background:#dcfce7;color:#166534}.badge.off{background:#fef3c7;color:#92400e}.badge.init{background:#e0e7ff;color:#3730a3}
+        /* 树形排查区域 */
+        .tree-section{grid-column:span 6}.tree-scroll{max-height:500px;overflow-y:auto;padding-right:8px}
+        .tree-scroll::-webkit-scrollbar{width:6px}.tree-scroll::-webkit-scrollbar-track{background:var(--bg);border-radius:3px}.tree-scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}.tree-scroll::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+        /* 手机端适配 */
+        @media(max-width:900px){
+            .card,.third,.tree-section{grid-column:1/-1}
+            .stats{grid-template-columns:repeat(2,1fr)}
+            .split{grid-template-columns:1fr}
+            .campaignbar{grid-template-columns:1fr 1fr}.campaignbar select{grid-column:1/-1}
+            .topbar{align-items:flex-start;flex-direction:column;gap:8px}
+            .tree-node{margin-left:0!important;border-left-width:4px!important}
+            .tree-scroll{max-height:none;padding-right:0}
+            .pool-grid{grid-template-columns:1fr}
+            .actions{gap:6px}.actions button{flex:1;min-width:0}
+            h1{font-size:20px}h2{font-size:14px}
+            .card{padding:16px}
+            button{padding:10px 14px}button.small{padding:8px 12px}
+            .stat{padding:12px}.stat strong{font-size:18px}
+        }
+        @media(max-width:480px){
+            .page{padding:16px 12px 40px}
+            .stats{grid-template-columns:repeat(3,1fr)}
+            .tree-node .actions{flex-wrap:wrap}
+            .modal-card{padding:16px}
+        }
     </style>
 </head>
 <body>
@@ -86,7 +143,22 @@
         <section class="card wide">
             <div class="topbar">
                 <h2>系统状态</h2>
-                <div class="actions"><span id="routerStatus" class="pill off">未初始化</span><span id="configVersion" class="pill off version">v0</span></div>
+                <div class="actions">
+                    <span id="routerStatus" class="pill off">未初始化</span>
+                    <span id="configVersion" class="pill off version">v0</span>
+                    <div class="dropdown" id="routerDropdown">
+                        <button class="secondary small" onclick="toggleDropdown()">操作 ▾</button>
+                        <div class="dropdown-menu">
+                            <div id="routerMissing">
+                                <p class="hint" style="margin:0 0 8px">初始化后再配置用户池</p>
+                                <button id="initializeRouter" style="width:100%">初始化调度系统</button>
+                            </div>
+                            <div id="routerControls" style="display:none">
+                                <button id="toggleRouter" class="success" style="width:100%">启用接管</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="stats">
                 <div class="stat"><span>有效用户</span><strong id="eligibleCount">0</strong></div>
@@ -98,7 +170,7 @@
             </div>
         </section>
 
-        <section class="card">
+        <section class="card wide">
             <h2>任务目标</h2>
             <div class="field"><label>任务名称</label><input id="campaignName" placeholder="例如：客户端域名调度"></div>
             <div class="field">
@@ -111,22 +183,6 @@
             <div class="field"><label>用户主权限组（可单选或多选）</label><div id="groupSelect" class="group-list"></div></div>
             <div class="field"><label>需要替换域名的节点（默认全选；取消勾选的节点保留原域名，适合不需要替换的协议节点）</label><div id="nodeSelect" class="node-list"></div></div>
             <button id="saveCampaign">保存任务</button>
-        </section>
-
-        <section class="card">
-            <h2>全量接管</h2>
-            <div id="routerMissing">
-                <p class="hint">初始化不会立即切换线上域名。配置完默认、危险、测试和应急池后再启用。</p>
-                <button id="initializeRouter">初始化调度系统</button>
-            </div>
-            <div id="routerControls" style="display:none">
-                <p>目标组内所有受管节点都由本插件返回域名；配置异常时隐藏节点，不泄露系统原域名。</p>
-                <div class="actions">
-                    <button id="toggleRouter" class="success">启用接管</button>
-                    <button id="syncUsers" class="secondary">同步用户</button>
-                    <button id="rollbackConfig" class="warning">回滚配置</button>
-                </div>
-            </div>
         </section>
 
         <section class="card wide">
@@ -156,10 +212,10 @@
             <button id="savePool">保存用户池</button>
         </section>
 
-        <section class="card wide">
+        <section class="card tree-section">
             <div class="topbar"><h2>树形分支排查</h2><button id="openMergeTree" class="warning" disabled>合并旧排查树（0）</button></div>
             <div class="hint">勾选一个或多个最上层根组：已标记被墙的分支会连同未拉取用户全部打乱重组；成功后旧树和旧分组会直接删除。</div>
-            <div id="investigationTree" class="tree-list" style="margin-top:12px"></div>
+            <div id="investigationTree" class="tree-list tree-scroll" style="margin-top:12px"></div>
         </section>
 
         <section class="card">
@@ -208,6 +264,9 @@
 const API_BASE=@json($apiBase);
 let token='';
 const tokenCandidates=readTokens();
+function toggleCollapse(id){document.getElementById(id).classList.toggle('collapsed')}
+function toggleDropdown(){$('routerDropdown').classList.toggle('open')}
+document.addEventListener('click',e=>{if(!e.target.closest('#routerDropdown'))$('routerDropdown').classList.remove('open')})
 let meta={groups:[],servers:[]},campaigns=[],current=null,noticeTimer=null,refreshing=false;
 let poolModal={poolId:'',poolName:'',page:1,lastPage:1,total:0,q:''};
 let transferSource=null;
@@ -323,7 +382,7 @@ async function pingTarget(host){
         throw new Error('检测超时，请稍后重试')
     }catch(error){pingStates.set(host,{phase:'error',buttonText:'重新 Ping',text:`检测失败：${error.message}`,kind:'bad',title:error.message});refreshPingState(host);toast(error.message,'error')}
 }
-function renderStatus(){const r=router();$('eligibleCount').textContent=current?.eligible_count||0;$('pulledUserCount').textContent=r?.pulled_user_count||0;$('groupedUserCount').textContent=r?.grouped_user_count||0;$('unpulledUngroupedCount').textContent=r?.unpulled_ungrouped_count||0;$('poolCount').textContent=r?.pools.length||0;$('untestedCount').textContent=r?.untested_count||0;$('configVersion').textContent=`v${r?.config_version||0}`;$('routerStatus').textContent=!r?'未初始化':r.enabled?'全量接管中':'未启用';$('routerStatus').className=`pill ${r?.enabled?'on':'off'}`;$('routerMissing').style.display=r?'none':'block';$('routerControls').style.display=r?'block':'none';if(r){$('toggleRouter').textContent=r.enabled?'危险：恢复系统原域名':'启用全量接管';$('toggleRouter').className=r.enabled?'danger':'success'}}
+function renderStatus(){const r=router();$('eligibleCount').textContent=current?.eligible_count||0;$('pulledUserCount').textContent=r?.pulled_user_count||0;$('groupedUserCount').textContent=r?.grouped_user_count||0;$('unpulledUngroupedCount').textContent=r?.unpulled_ungrouped_count||0;$('poolCount').textContent=r?.pools.length||0;$('untestedCount').textContent=r?.untested_count||0;$('configVersion').textContent=`v${r?.config_version||0}`;$('routerStatus').textContent=!r?'未初始化':r.enabled?'全量接管中':'未启用';$('routerStatus').className=`pill ${r?.enabled?'on':'off'}`;$('routerMissing').style.display=r?'none':'block';$('routerControls').style.display=r?'block':'none';if(r){$('toggleRouter').textContent=r.enabled?'停止接管':'启用接管';$('toggleRouter').className=r.enabled?'danger':'success'}}
 function renderPools(){const grid=$('poolGrid');grid.textContent='';const list=pools();if(!list.length){grid.innerHTML='<div class="empty">初始化后配置用户池</div>';return}list.forEach(pool=>{const card=document.createElement('div');card.className='pool';const head=document.createElement('div');head.className='pool-head';const title=document.createElement('strong');title.textContent=pool.name;const state=document.createElement('span');state.className=`pill ${pool.status==='blocked'?'bad':pool.enabled?'on':'off'}`;state.textContent=poolStatusName(pool.status);head.append(title,state);const host=document.createElement('div');renderPingTarget(host,pool.host,`${Object.keys(pool.node_hosts||{}).length} 个节点独立地址`);const overflowName=pools().find(item=>item.id===pool.overflow_pool_id)?.name;const metaLine=document.createElement('div');metaLine.className='meta';metaLine.textContent=`${poolTypeName(pool.type)} · ${pool.member_count} 人 · ${pool.pulled_count} 已拉取 · 容量 ${pool.capacity||'不限'} · 接口标识 ${pool.webhook_id||pool.id}${overflowName?` · 满后→${overflowName}`:''}`;const actions=document.createElement('div');actions.className='actions';const actionItems=[['复制接口标识','copy-id'],['编辑','edit'],['用户','users']];if(pool.member_count>0&&!['danger','blacklist'].includes(pool.type))actionItems.push(['进入树形排查','tree']);if(!['danger','blacklist'].includes(pool.type)){actionItems.push(['转移已拉取','transfer']);actionItems.push(['转移未拉取','transfer-unpulled']);}actionItems.push(['删除','delete']);actionItems.forEach(([label,action])=>{const button=document.createElement('button');button.className='secondary small';button.textContent=label;button.onclick=()=>poolAction(action,pool);if(action==='transfer'&&pool.pulled_count<1)button.disabled=true;if(action==='transfer-unpulled'&&(pool.member_count-pool.pulled_count)<1)button.disabled=true;if(action==='delete'&&pool.id==='default')button.disabled=true;actions.appendChild(button)});card.append(head,host,metaLine,actions);grid.appendChild(card)})}
 function renderPoolOverflowOptions(currentId='',value=''){const type=$('poolType').value;fillSelect('poolOverflow',pools().filter(item=>item.id!==currentId&&!['danger','blacklist'].includes(type)&&!['danger','blacklist'].includes(item.type)),value,'不自动转入')}
 function editPool(pool=null){$('poolId').value=pool?.id||'';$('poolName').value=pool?.name||'';$('poolType').value=pool?.type||'safe';$('poolType').disabled=pool?.id==='default';$('poolHost').value=pool?.host||'';$('poolWebhookId').value=pool?.webhook_id||'';$('poolStatus').value=pool?.status||'available';$('poolCapacity').value=pool?.capacity||0;renderPoolOverflowOptions(pool?.id||'',pool?.overflow_pool_id||'');$('poolEnabled').checked=pool?.enabled??true;$('poolNote').value=pool?.note||'';window.scrollTo({top:$('poolName').getBoundingClientRect().top+window.scrollY-100,behavior:'smooth'})}
@@ -354,8 +413,9 @@ function renderInvestigationTree(){
     nodes.forEach(appendBranch);
     ordered.forEach(node=>{
         const card=document.createElement('div');
-        card.className='tree-node';
-        card.style.marginLeft=`${Math.min(node.depth,8)*24}px`;
+        const depthClass=node.depth<=4?`tree-depth-${node.depth}`:'';
+        card.className=`tree-node ${depthClass}`;
+        card.style.marginLeft=node.depth>0?`${Math.min(node.depth,8)*28}px`:'';
         const head=document.createElement('div'),title=document.createElement('strong'),state=document.createElement('span');
         head.className='pool-head';
         const displayName=node.host&&!node.name.includes(node.host)?`${node.name} · ${node.host}`:node.name;
@@ -436,8 +496,6 @@ $('deleteCampaign').onclick=async()=>{try{if(!confirm(`删除“${current.name}�
 $('saveCampaign').onclick=async()=>{try{const name=$('campaignName').value.trim(),target_group_ids=selectedGroupIds();if(!name)throw new Error('请填写任务名称');if(!target_group_ids.length)throw new Error('请至少勾选一个用户主权限组');const result=await request('/campaigns',{method:'POST',body:JSON.stringify({campaign_id:current.id||null,name,target_group_ids,excluded_server_ids:excludedServerIds()})});updateCurrent(result);toast('任务已保存')}catch(error){toast(error.message,'error')}};
 $('initializeRouter').onclick=async()=>{try{if(!current.id)throw new Error('请先保存任务');updateCurrent(await request(api('/router/initialize'),{method:'POST',body:'{}'}));toast('调度系统已初始化，请先配置用户池域名')}catch(error){toast(error.message,'error')}};
 $('toggleRouter').onclick=async()=>{try{const enable=!router().enabled;if(!confirm(enable?'启用后目标组将完全使用插件域名，确认配置完整？':'警告：停止接管会立即向用户恢复系统原始节点域名，确认继续？'))return;updateCurrent(await request(api('/router/toggle'),{method:'POST',body:JSON.stringify({enabled:enable})}));toast(enable?'全量接管已启用':'已恢复系统原始域名')}catch(error){toast(error.message,'error')}};
-$('syncUsers').onclick=async()=>{try{updateCurrent(await request(api('/router/sync-users'),{method:'POST',body:'{}'}));toast('用户已同步')}catch(error){toast(error.message,'error')}};
-$('rollbackConfig').onclick=async()=>{try{if(!confirm('回滚到上一版用户池配置？'))return;updateCurrent(await request(api('/router/rollback'),{method:'POST',body:'{}'}));toast('配置已回滚')}catch(error){toast(error.message,'error')}};
 $('poolType').onchange=()=>renderPoolOverflowOptions($('poolId').value,$('poolOverflow').value);$('newPool').onclick=()=>editPool();$('savePool').onclick=async()=>{try{const data={id:$('poolId').value||null,webhook_id:$('poolWebhookId').value.trim()||null,name:$('poolName').value.trim(),type:$('poolType').value,host:$('poolHost').value.trim(),node_hosts:{},server_name:'',transport_host:'',status:$('poolStatus').value,capacity:Number($('poolCapacity').value)||0,overflow_pool_id:$('poolOverflow').value,enabled:$('poolEnabled').checked,note:$('poolNote').value.trim()};updateCurrent(await request(api('/pools'),{method:'POST',body:JSON.stringify(data)}));editPool();toast('用户池已保存')}catch(error){toast(error.message,'error')}};
 $('searchUser').onclick=async()=>{try{const rows=await request(api(`/users/search?q=${encodeURIComponent($('userSearch').value.trim())}`)),box=$('searchResults');box.textContent='';rows.forEach(user=>{const row=document.createElement('div'),head=document.createElement('div'),title=document.createElement('strong'),button=document.createElement('button'),poolLine=document.createElement('div'),hostLine=document.createElement('div');row.className='pool';head.className='pool-head';title.textContent=`${user.id} · ${user.email}`;button.className='secondary small';button.textContent='设置';button.onclick=()=>{$('overrideUser').value=`${user.id} / ${user.email}`;$('overrideUser').dataset.id=user.id;$('overridePool').value=user.override?.pool_id||user.pool_id||'';$('overrideHost').value=user.override?.host||'';$('overrideLocked').checked=user.override?.locked??true;$('overrideNote').value=user.override?.note||'';$('overrideExpires').value=user.override?.expires_at?new Date(user.override.expires_at*1000).toISOString().slice(0,16):''};head.append(title,button);poolLine.className='meta';poolLine.textContent=`用户池：${user.pool_name} · ${poolTypeName(user.pool_type)} · ${poolStatusName(user.pool_status)}`;hostLine.className='meta';hostLine.textContent=`域名/IP：${user.pool_hosts?.join('、')||'未配置'}`;row.append(head,poolLine,hostLine);box.appendChild(row)});if(!rows.length)box.innerHTML='<div class="empty">未找到用户</div>'}catch(error){toast(error.message,'error')}};
 $('saveOverride').onclick=async()=>{try{const userId=Number($('overrideUser').dataset.id);if(!userId)throw new Error('请先搜索并选择用户');const expires=$('overrideExpires').value?Math.floor(new Date($('overrideExpires').value).getTime()/1000):0;updateCurrent(await request(api(`/overrides/${userId}`),{method:'POST',body:JSON.stringify({pool_id:$('overridePool').value||null,host:$('overrideHost').value.trim(),node_hosts:{},server_name:'',transport_host:'',locked:$('overrideLocked').checked,note:$('overrideNote').value.trim(),expires_at:expires})}));await loadOverrides();toast('用户规则已保存')}catch(error){toast(error.message,'error')}};

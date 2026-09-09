@@ -2552,9 +2552,9 @@ class BaitSplitService
 
     private function boceApiKey(): string
     {
-        $key = trim((string) admin_setting('bait_split_boce_api_key', ''));
+        $key = trim((string) ($this->config['boce_api_key'] ?? ''));
         if (!preg_match('/^[A-Za-z0-9]{16,128}$/', $key)) {
-            throw new InvalidArgumentException('未配置有效的拨测 API Key');
+            throw new InvalidArgumentException('未配置有效的拨测 API Key，请在插件设置中配置');
         }
         return $key;
     }
