@@ -20,20 +20,5 @@
   </head>
   <body>
     <div id="root"></div>
-    <script>
-      // 拦截插件外部链接点击，强制真实跳转
-      document.addEventListener('click', function(e) {
-        var a = e.target.closest('a[href]');
-        if (a) {
-          var href = a.getAttribute('href');
-          // 匹配 /webadmin/plugins/xxx/console 或类似的插件页面路径
-          if (href && /^\/[^\/]+\/plugins\/[^\/]+\/\w+$/.test(href)) {
-            e.preventDefault();
-            e.stopPropagation();
-            window.location.href = href;
-          }
-        }
-      }, true);
-    </script>
   </body>
 </html>
