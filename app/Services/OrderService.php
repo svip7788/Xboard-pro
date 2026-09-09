@@ -34,6 +34,27 @@ class OrderService
     }
 
     /**
+     * 锁定当前订单（防并发）
+     */
+    private function lockCurrentOrder(): ?Order
+    {
+        return Order::whereKey($this->order->id)
+            ->lockForUpdate()
+            ->first();
+    }
+
+    /**
+     * 锁定指定状态的订单（防并发）
+     */
+    private function lockCurrentOrderWhenStatus(int $status): ?Order
+    {
+        return Order::whereKey($this->order->id)
+            ->where('status', $status)
+            ->lockForUpdate()
+            ->first();
+    }
+
+    /**
      * Create an order from a request.
      *
      * @param User $user
@@ -94,16 +115,20 @@ class OrderService
 
     public function open(): void
     {
-        $order = $this->order;
-        $plan = Plan::find($order->plan_id);
-        if (!$plan) {
-            throw new \RuntimeException("Plan {$order->plan_id} not found for order {$order->trade_no}");
-        }
+        $openedOrder = DB::transaction(function () {
+            // 防重复开通：只有 PROCESSING 状态的订单才能开通
+            $order = $this->lockCurrentOrderWhenStatus(Order::STATUS_PROCESSING);
+            if (!$order) {
+                return null;
+            }
 
-        HookManager::call('order.open.before', $order);
+            $plan = Plan::find($order->plan_id);
+            if (!$plan) {
+                throw new \RuntimeException("Plan {$order->plan_id} not found for order {$order->trade_no}");
+            }
 
-
-        DB::transaction(function () use ($order, $plan) {
+            HookManager::call('order.open.before', $order);
+            $this->order = $order;
             $this->user = User::lockForUpdate()->find($order->user_id);
 
             if ($order->surplus_credit) {
@@ -132,7 +157,17 @@ class OrderService
             if (!$order->save()) {
                 throw new \RuntimeException('订单信息保存失败');
             }
+
+            return $order;
         });
+
+        // 防重复：订单不在 PROCESSING 状态则直接返回
+        if (!$openedOrder) {
+            return;
+        }
+
+        $order = $openedOrder;
+        $this->order = $order;
 
         $eventId = match ((int) $order->type) {
             Order::TYPE_NEW_PURCHASE => admin_setting('new_order_event_id', 0),
