@@ -60,11 +60,11 @@
         .badge{font-size:11px;padding:2px 8px;border-radius:10px;font-weight:500}
         .badge.on{background:#dcfce7;color:#166534}.badge.off{background:#fef3c7;color:#92400e}.badge.init{background:#e0e7ff;color:#3730a3}
         /* 树形排查区域 */
-        .tree-section{grid-column:span 6}.tree-scroll{max-height:500px;overflow-y:auto;padding-right:8px}
+        .pool-section{grid-column:span 8}.edit-pool{grid-column:span 4}.tree-scroll{padding-right:0}
         .tree-scroll::-webkit-scrollbar{width:6px}.tree-scroll::-webkit-scrollbar-track{background:var(--bg);border-radius:3px}.tree-scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}.tree-scroll::-webkit-scrollbar-thumb:hover{background:var(--muted)}
         /* 手机端适配 */
         @media(max-width:900px){
-            .card,.third,.tree-section{grid-column:1/-1}
+            .card,.third,.pool-section,.edit-pool{grid-column:1/-1}
             .stats{grid-template-columns:repeat(2,1fr)}
             .split{grid-template-columns:1fr}
             .campaignbar{grid-template-columns:1fr 1fr}.campaignbar select{grid-column:1/-1}
@@ -185,12 +185,12 @@
             <button id="saveCampaign">保存任务</button>
         </section>
 
-        <section class="card wide">
+        <section class="card pool-section">
             <div class="topbar"><h2>用户池与域名</h2><button id="newPool">新增用户池</button></div>
             <div id="poolGrid" class="pool-grid"></div>
         </section>
 
-        <section class="card">
+        <section class="card edit-pool">
             <h2>编辑用户池</h2>
             <input id="poolId" type="hidden">
             <div class="split">
@@ -212,7 +212,7 @@
             <button id="savePool">保存用户池</button>
         </section>
 
-        <section class="card tree-section">
+        <section class="card wide">
             <div class="topbar"><h2>树形分支排查</h2><button id="openMergeTree" class="warning" disabled>合并旧排查树（0）</button></div>
             <div class="hint">勾选一个或多个最上层根组：已标记被墙的分支会连同未拉取用户全部打乱重组；成功后旧树和旧分组会直接删除。</div>
             <div id="investigationTree" class="tree-list tree-scroll" style="margin-top:12px"></div>
