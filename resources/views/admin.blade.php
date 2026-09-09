@@ -82,14 +82,13 @@
 <body>
   <div id="root"></div>
   <script>
-    document.addEventListener('click', function(e) {
+    // 拦截插件链接点击
+    document.addEventListener('mousedown', function(e) {
       var a = e.target.closest('a[href]');
       if (a) {
         var href = a.getAttribute('href');
-        if (href && /^\/\w+\/plugins\//.test(href)) {
-          e.preventDefault();
-          e.stopPropagation();
-          window.location.href = href;
+        if (href && (/\/plugins\/[^\/]+\/\w+/.test(href))) {
+          setTimeout(function() { window.location.href = href; }, 10);
         }
       }
     }, true);
