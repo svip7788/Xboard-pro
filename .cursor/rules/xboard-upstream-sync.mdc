@@ -20,17 +20,40 @@ alwaysApply: true
 
 ## 执行步骤（当用户说"上游更新了"时）
 
-### 1. 本地同步 upstream → fork
+### 1. 逐个 cherry-pick 上游修复
+
+> **重要**：由于历史不兼容，**不能**直接 `git merge upstream/master`。必须逐个 cherry-pick。
 
 ```bash
-cd /Users/net/Documents/换节点/Xboard-pro-work/Xboard-pro
+cd /Users/net/Documents/Xboard-pro
 git fetch upstream
-git checkout master
-git log --oneline HEAD..upstream/master | head -20   # 先看有几个新 commit
-git merge upstream/master
+
+# 筛选关键修复（安全、bug 修复）
+git log --oneline upstream/master -50 | grep -E 'fix|security|prevent'
+
+# 逐个 cherry-pick（优先安全相关）
+git cherry-pick --no-commit <commit-hash>
+
+# 检查改动
+git diff --stat HEAD
+
+# 如有冲突，手动解决后
+git add <file>
+git commit -m "cherry-pick: <原始提交信息>"
 ```
 
-**冲突处理**：只会出现在上面 4 个关键文件。**必须保留我们的版本**（`git checkout --ours <file>`）。冲突解完后跑一遍 `grep -n 'ShouldBeUnique\|CASE id' app/Jobs/*.php` 确认我们的改动还在。
+**冲突处理原则**：
+- 关键文件（TrafficFetchJob、StatUserJob、queue.php、horizon.php）：**保留我们的版本**
+- 其他文件：根据实际情况选择，优先保留上游的安全修复
+
+**验证修复是否已存在**（避免重复工作）：
+```bash
+# 先看上游改了什么
+git show <commit-hash> --stat
+
+# 检查本地是否已有（如 hash_equals 安全修复）
+grep -r "hash_equals\|关键代码片段" app/
+```
 
 ```bash
 git push origin master
