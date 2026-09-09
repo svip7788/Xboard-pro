@@ -337,8 +337,8 @@ class BaitSplitService
         if ($pool['tree_node_id'] !== '') {
             throw new InvalidArgumentException('树形排查用户池不能单独删除');
         }
-        if (in_array($poolId, ['default', 'danger', 'probe', 'emergency', 'blacklist'], true)) {
-            throw new InvalidArgumentException('系统基础池不能删除');
+        if ($poolId === 'default') {
+            throw new InvalidArgumentException('默认组不能删除');
         }
         $hasAssignments = in_array($poolId, $router['assignments'], true);
         if ($hasAssignments) {
@@ -2840,7 +2840,6 @@ class BaitSplitService
             }
         }
         $poolIds[] = $this->poolIdByType($router, 'default');
-        $poolIds[] = $this->poolIdByType($router, 'emergency');
         return array_values(array_unique(array_filter($poolIds)));
     }
 
@@ -2863,21 +2862,14 @@ class BaitSplitService
     private function newRouter(array $userIds): array
     {
         $generation = bin2hex(random_bytes(8));
-        $pools = [];
-        foreach ([
-            ['default', '默认组', 'default'],
-            ['danger', '危险组', 'danger'],
-            ['probe', '当前测试组', 'probe'],
-            ['emergency', '应急组', 'emergency'],
-            ['blacklist', '封禁组', 'blacklist'],
-        ] as [$id, $name, $type]) {
-            $pools[$id] = $this->normalizePool([
-                'id' => $id,
-                'name' => $name,
-                'type' => $type,
-                'enabled' => $id !== 'blacklist',
-            ], $id);
-        }
+        $pools = [
+            'default' => $this->normalizePool([
+                'id' => 'default',
+                'name' => '默认组',
+                'type' => 'default',
+                'enabled' => true,
+            ], 'default'),
+        ];
         return [
             'version' => 5,
             'enabled' => false,
@@ -2926,9 +2918,6 @@ class BaitSplitService
                 $poolId = (string) ($pool['id'] ?? $id);
                 $pools[$poolId] = $this->normalizePool($pool, $poolId);
             }
-        }
-        if (!isset($pools['blacklist'])) {
-            $pools['blacklist'] = $defaults['pools']['blacklist'];
         }
         $router['pools'] = $pools ?: $defaults['pools'];
         $router['assignments'] = array_filter(
@@ -3425,15 +3414,12 @@ class BaitSplitService
     private function validateRouterCoverage(array $campaign): void
     {
         $router = $campaign['router'];
-        foreach (['default', 'danger', 'probe', 'emergency'] as $type) {
-            $poolId = $this->poolIdByType($router, $type);
-            if (
-                $poolId === ''
-                || !$this->poolIsUsable($router['pools'][$poolId] ?? [])
-            ) {
-                throw new InvalidArgumentException("缺少已启用的{$type}用户池");
-            }
-            $this->validatePoolCoverage($campaign, $router['pools'][$poolId]);
+        $defaultPoolId = $this->poolIdByType($router, 'default');
+        if (
+            $defaultPoolId === ''
+            || !$this->poolIsUsable($router['pools'][$defaultPoolId] ?? [])
+        ) {
+            throw new InvalidArgumentException('缺少已启用的默认用户池');
         }
         foreach ($router['pools'] as $pool) {
             if ($this->poolIsUsable($pool)) {
@@ -3597,28 +3583,7 @@ class BaitSplitService
                         }
                         $poolId = (string) $pool['overflow_pool_id'];
                     }
-                    $emergencyPoolId = $this->poolIdByType(
-                        $latest['router'],
-                        'emergency'
-                    );
-                    $emergencyPool = $latest['router']['pools'][
-                        $emergencyPoolId
-                    ] ?? null;
-                    if (
-                        $emergencyPoolId !== ''
-                        && $this->poolIsUsable($emergencyPool ?? [])
-                        && (
-                            $emergencyPool['capacity'] === 0
-                            || ($memberCounts[$emergencyPoolId] ?? 0)
-                                < $emergencyPool['capacity']
-                        )
-                    ) {
-                        $latest['router']['assignments'][
-                            (string) $userId
-                        ] = $emergencyPoolId;
-                        $state['campaigns'][$latest['id']] = $latest;
-                        $this->saveState($state);
-                    }
+                    // 默认组无容量限制时总能进去；有容量限制又满了就不分配，下次再试
                     $campaign = $latest;
                 });
         } catch (\Throwable) {
