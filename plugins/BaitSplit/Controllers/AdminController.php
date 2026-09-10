@@ -309,6 +309,7 @@ class AdminController extends PluginController
             'q' => ['nullable', 'string', 'max:100'],
             'page' => ['nullable', 'integer', 'min:1'],
             'per_page' => ['nullable', 'integer', 'min:10', 'max:100'],
+            'filter' => ['nullable', 'string', 'in:pulled,unpulled'],
         ]);
         return $this->executeRead(
             fn() => BaitSplitService::fromDatabase()->usersForPool(
@@ -316,7 +317,8 @@ class AdminController extends PluginController
                 $poolId,
                 (string) ($data['q'] ?? ''),
                 (int) ($data['page'] ?? 1),
-                (int) ($data['per_page'] ?? 50)
+                (int) ($data['per_page'] ?? 50),
+                (string) ($data['filter'] ?? '')
             )
         );
     }
@@ -529,6 +531,7 @@ class AdminController extends PluginController
             'q' => ['nullable', 'string', 'max:100'],
             'page' => ['nullable', 'integer', 'min:1'],
             'per_page' => ['nullable', 'integer', 'min:10', 'max:100'],
+            'filter' => ['nullable', 'string', 'in:pulled,unpulled'],
         ]);
         return $this->executeRead(
             fn() => BaitSplitService::fromDatabase()->investigationNodeUsers(
@@ -536,7 +539,8 @@ class AdminController extends PluginController
                 $nodeId,
                 (string) ($data['q'] ?? ''),
                 (int) ($data['page'] ?? 1),
-                (int) ($data['per_page'] ?? 50)
+                (int) ($data['per_page'] ?? 50),
+                (string) ($data['filter'] ?? '')
             )
         );
     }

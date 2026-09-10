@@ -466,7 +466,8 @@ class BaitSplitService
         string $poolId,
         string $keyword = '',
         int $page = 1,
-        int $perPage = 50
+        int $perPage = 50,
+        string $filter = ''
     ): array {
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
@@ -476,6 +477,18 @@ class BaitSplitService
 
         $keyword = trim($keyword);
         $userIds = $this->poolMemberIds($campaign, $poolId);
+
+        // 按已拉取/未拉取筛选
+        if ($filter === 'pulled' || $filter === 'unpulled') {
+            $exposedSet = array_flip($this->poolExposureIds($campaign, $poolId));
+            $userIds = array_values(array_filter(
+                $userIds,
+                fn(int $id): bool => $filter === 'pulled'
+                    ? isset($exposedSet[$id])
+                    : !isset($exposedSet[$id])
+            ));
+        }
+
         if ($keyword !== '' && $userIds !== []) {
             $matched = [];
             foreach (array_chunk($userIds, 5000) as $chunk) {
@@ -760,19 +773,39 @@ class BaitSplitService
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $router = &$campaign['router'];
-        $root = $router['investigation_nodes'][$nodeId] ?? null;
-        if (!$root || (string) ($root['parent_id'] ?? '') !== '') {
-            throw new InvalidArgumentException('只能从根节点删除整棵排查树');
+        $targetNode = $router['investigation_nodes'][$nodeId] ?? null;
+        if (!$targetNode) {
+            throw new InvalidArgumentException('排查节点不存在');
         }
 
-        $nodeIds = [];
-        $poolIds = [];
-        foreach ($router['investigation_nodes'] as $id => $node) {
-            if ($id === $nodeId || $node['root_id'] === $nodeId) {
-                $nodeIds[] = $id;
-                $poolIds[] = $node['pool_id'];
+        // 如果是子节点，从父节点的 children 列表中移除
+        $parentId = (string) ($targetNode['parent_id'] ?? '');
+        if ($parentId !== '' && isset($router['investigation_nodes'][$parentId])) {
+            $router['investigation_nodes'][$parentId]['children'] = array_values(
+                array_filter(
+                    $router['investigation_nodes'][$parentId]['children'],
+                    fn(string $childId): bool => $childId !== $nodeId
+                )
+            );
+            // 如果父节点删除所有子节点后，恢复为可继续拆分状态
+            if ($router['investigation_nodes'][$parentId]['children'] === []) {
+                $router['investigation_nodes'][$parentId]['status'] = 'active';
             }
         }
+
+        // 递归收集该节点及其所有子节点
+        $nodeIds = [$nodeId];
+        $poolIds = [$targetNode['pool_id']];
+        $collectChildren = function (string $parentNodeId) use (&$collectChildren, &$nodeIds, &$poolIds, $router): void {
+            foreach ($router['investigation_nodes'] as $id => $node) {
+                if (($node['parent_id'] ?? '') === $parentNodeId) {
+                    $nodeIds[] = $id;
+                    $poolIds[] = $node['pool_id'];
+                    $collectChildren($id);
+                }
+            }
+        };
+        $collectChildren($nodeId);
         $poolMap = array_flip(array_values(array_unique($poolIds)));
         $releasedUserIds = [];
         foreach ($router['assignments'] as $userId => $poolId) {
@@ -891,7 +924,7 @@ class BaitSplitService
         $this->assertInvestigationHostAvailable(
             $router,
             $host,
-            $node['pool_id']
+            [$node['pool_id']]
         );
         $this->snapshotRouterConfig($router);
         $router['pools'][$node['pool_id']]['host'] = $host;
@@ -1153,7 +1186,27 @@ class BaitSplitService
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $router = &$campaign['router'];
-        $branches = $this->normalizeInvestigationBranches($router, $branches);
+
+        // 先收集旧树的所有 pool ID，用于验证时忽略
+        $oldPoolIds = [];
+        foreach ($nodeIds as $nodeId) {
+            $root = $router['investigation_nodes'][$nodeId] ?? null;
+            if (
+                !$root
+                || (string) ($root['parent_id'] ?? '') !== ''
+                || $root['status'] === 'archived'
+            ) {
+                throw new InvalidArgumentException('只能合并未归档的根树');
+            }
+            // 收集该树下所有节点的 pool_id
+            foreach ($router['investigation_nodes'] as $node) {
+                if ($node['root_id'] === $nodeId && !empty($node['pool_id'])) {
+                    $oldPoolIds[] = $node['pool_id'];
+                }
+            }
+        }
+
+        $branches = $this->normalizeInvestigationBranches($router, $branches, $oldPoolIds);
         $sourceRoots = [];
         $sourceNodes = [];
         $userMap = [];
@@ -1421,7 +1474,8 @@ class BaitSplitService
         string $nodeId,
         string $keyword = '',
         int $page = 1,
-        int $perPage = 50
+        int $perPage = 50,
+        string $filter = ''
     ): array {
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
@@ -1429,7 +1483,21 @@ class BaitSplitService
         if (!$node) {
             throw new InvalidArgumentException('排查节点不存在');
         }
-        $query = User::query()->whereIn('id', $node['user_ids']);
+
+        $userIds = $node['user_ids'];
+        $exposedSet = array_flip($this->investigationNodeExposureIds($campaign, $node));
+
+        // 按已拉取/未拉取筛选
+        if ($filter === 'pulled' || $filter === 'unpulled') {
+            $userIds = array_values(array_filter(
+                $userIds,
+                fn(int $id): bool => $filter === 'pulled'
+                    ? isset($exposedSet[$id])
+                    : !isset($exposedSet[$id])
+            ));
+        }
+
+        $query = User::query()->whereIn('id', $userIds);
         $keyword = trim($keyword);
         if ($keyword !== '') {
             $query->where(function (Builder $builder) use ($keyword): void {
@@ -1446,14 +1514,22 @@ class BaitSplitService
         $lastPage = max(1, (int) ceil($total / $perPage));
         $page = max(1, min($lastPage, $page));
         $pageIds = array_slice($matchedIds, ($page - 1) * $perPage, $perPage);
-        $exposed = array_flip(
-            $this->investigationNodeExposureIds($campaign, $node)
+
+        $stats = $this->poolExposureStats(
+            $campaign,
+            (string) $node['pool_id'],
+            $pageIds
         );
         return [
             'items' => array_map(
-                fn(array $user): array => $user + [
-                    'exposed' => isset($exposed[$user['id']]),
-                ],
+                function (array $user) use ($exposedSet, $stats): array {
+                    $stat = $stats[$user['id']] ?? ['count' => 0, 'last_at' => 0];
+                    return $user + [
+                        'exposed' => isset($exposedSet[$user['id']]),
+                        'pull_count' => $stat['count'],
+                        'last_pulled_at' => $stat['last_at'],
+                    ];
+                },
                 $this->userRows($pageIds)
             ),
             'pagination' => [
@@ -2363,7 +2439,8 @@ class BaitSplitService
 
     private function normalizeInvestigationBranches(
         array $router,
-        array $branches
+        array $branches,
+        array $ignoredPoolIds = []
     ): array {
         if (count($branches) < 2 || count($branches) > 10) {
             throw new InvalidArgumentException('每次必须拆分为 2 至 10 组');
@@ -2384,7 +2461,7 @@ class BaitSplitService
         }
         unset($branch);
         foreach (array_keys($hosts) as $host) {
-            $this->assertInvestigationHostAvailable($router, $host);
+            $this->assertInvestigationHostAvailable($router, $host, $ignoredPoolIds);
         }
         return $branches;
     }
@@ -2392,10 +2469,11 @@ class BaitSplitService
     private function assertInvestigationHostAvailable(
         array $router,
         string $host,
-        string $ignoredPoolId = ''
+        array $ignoredPoolIds = []
     ): void {
+        $ignoredMap = array_flip($ignoredPoolIds);
         foreach ($router['pools'] as $poolId => $pool) {
-            if ($poolId === $ignoredPoolId) {
+            if (isset($ignoredMap[$poolId])) {
                 continue;
             }
             $poolHosts = array_merge(
@@ -3114,8 +3192,20 @@ class BaitSplitService
         $poolCounts = array_fill_keys(array_keys($router['pools']), 0);
         $poolMemberIds = array_fill_keys(array_keys($router['pools']), []);
         $classifiedPoolIds = [];
+        // 找到默认池 ID
+        $defaultPoolId = null;
+        foreach ($router['pools'] as $pid => $p) {
+            if (($p['type'] ?? '') === 'default') {
+                $defaultPoolId = $pid;
+                break;
+            }
+        }
         foreach ($eligibleIds as $userId) {
             $poolId = $this->classifiedPoolId($campaign, $userId);
+            // 未分配的用户归入默认池
+            if ($poolId === null && $defaultPoolId !== null) {
+                $poolId = $defaultPoolId;
+            }
             $classifiedPoolIds[$userId] = $poolId;
             if ($poolId !== null && isset($poolCounts[$poolId])) {
                 $poolCounts[$poolId]++;
