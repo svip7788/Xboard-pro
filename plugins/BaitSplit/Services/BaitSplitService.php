@@ -2561,7 +2561,7 @@ class BaitSplitService
                 'host' => $branch['host'],
                 'enabled' => true,
                 'status' => 'active',
-                'capacity' => count($branchUsers),
+                'capacity' => 0,  // 树分支不限制容量，允许自由转移
                 'overflow_pool_id' => '',
                 'tree_node_id' => $childId,
                 'note' => "父节点：{$parent['name']}",
@@ -3708,8 +3708,10 @@ class BaitSplitService
                     $allocated = true;
                     break;
                 }
+                // 树分支 pool（tree_node_id 非空）或 capacity=0 时不限容量
                 if (
                     $candidate['capacity'] === 0
+                    || ($candidate['tree_node_id'] ?? '') !== ''
                     || $memberCounts[$candidateId] < $candidate['capacity']
                 ) {
                     $allocations[$userId] = $candidateId;
