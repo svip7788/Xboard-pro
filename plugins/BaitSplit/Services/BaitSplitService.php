@@ -1430,6 +1430,7 @@ class BaitSplitService
                 'emergency',
             ]
         );
+        $targetNodeUpdates = [];  // poolId => [userIds]
         foreach ($allocations as $userId => $allocatedPoolId) {
             $router['overrides'][(string) $userId] =
                 $this->normalizeOverride([
@@ -1441,6 +1442,22 @@ class BaitSplitService
                     'updated_at' => time(),
                 ]);
             $router['assignments'][(string) $userId] = $allocatedPoolId;
+            // 如果目标是树分支，记录需要添加的用户
+            $targetPool = $router['pools'][$allocatedPoolId] ?? null;
+            $targetTreeNodeId = $targetPool['tree_node_id'] ?? '';
+            if ($targetTreeNodeId !== '' && isset($router['investigation_nodes'][$targetTreeNodeId])) {
+                $targetNodeUpdates[$targetTreeNodeId][] = (int) $userId;
+            }
+        }
+        // 更新目标树节点的 user_ids
+        foreach ($targetNodeUpdates as $targetTreeNodeId => $addedUserIds) {
+            $router['investigation_nodes'][$targetTreeNodeId]['user_ids'] = array_values(
+                array_unique(array_merge(
+                    $router['investigation_nodes'][$targetTreeNodeId]['user_ids'],
+                    $addedUserIds
+                ))
+            );
+            $router['investigation_nodes'][$targetTreeNodeId]['updated_at'] = time();
         }
         $router['untested_ids'] = array_values(array_diff(
             $router['untested_ids'],
@@ -3551,6 +3568,7 @@ class BaitSplitService
             $allowedTypes
         );
         $now = time();
+        $targetNodeUpdates = [];  // nodeId => [userIds]
         foreach ($allocations as $userId => $allocatedPoolId) {
             $router['overrides'][(string) $userId] = $this->normalizeOverride([
                 'pool_id' => $allocatedPoolId,
@@ -3561,6 +3579,22 @@ class BaitSplitService
                 'updated_at' => $now,
             ]);
             $router['assignments'][(string) $userId] = $allocatedPoolId;
+            // 如果目标是树分支，记录需要添加的用户
+            $targetPool = $router['pools'][$allocatedPoolId] ?? null;
+            $targetTreeNodeId = $targetPool['tree_node_id'] ?? '';
+            if ($targetTreeNodeId !== '' && isset($router['investigation_nodes'][$targetTreeNodeId])) {
+                $targetNodeUpdates[$targetTreeNodeId][] = (int) $userId;
+            }
+        }
+        // 更新目标树节点的 user_ids
+        foreach ($targetNodeUpdates as $targetTreeNodeId => $addedUserIds) {
+            $router['investigation_nodes'][$targetTreeNodeId]['user_ids'] = array_values(
+                array_unique(array_merge(
+                    $router['investigation_nodes'][$targetTreeNodeId]['user_ids'],
+                    $addedUserIds
+                ))
+            );
+            $router['investigation_nodes'][$targetTreeNodeId]['updated_at'] = $now;
         }
         $router['untested_ids'] = array_values(array_diff(
             $router['untested_ids'],
