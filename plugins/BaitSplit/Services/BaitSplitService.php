@@ -1477,6 +1477,8 @@ class BaitSplitService
             $router['pools'][$node['pool_id']]['capacity'] =
                 count($remainingUserIds);
         }
+        // 清除用户在源节点池的曝光记录，避免转移回来时显示"已拉取"
+        $this->removeUserExposure($campaign, (string) $node['pool_id'], $userIds);
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
         return [
@@ -3600,6 +3602,8 @@ class BaitSplitService
             $router['untested_ids'],
             $userIds
         ));
+        // 清除用户在源池的曝光记录，避免转移回来时显示"已拉取"
+        $this->removeUserExposure($campaign, $sourcePoolId, $userIds);
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
         return [
@@ -4571,6 +4575,28 @@ class BaitSplitService
     private function routerPoolExposureLastKey(array $campaign, string $poolId): string
     {
         return $this->routerPoolExposureKey($campaign, $poolId) . ':last';
+    }
+
+    /**
+     * 移除用户在指定池子的曝光记录（转移时清理孤儿数据）
+     */
+    private function removeUserExposure(array $campaign, string $poolId, array $userIds): void
+    {
+        if ($userIds === []) {
+            return;
+        }
+        try {
+            $poolKey = $this->routerPoolExposureKey($campaign, $poolId);
+            $countKey = $this->routerPoolExposureCountKey($campaign, $poolId);
+            $lastKey = $this->routerPoolExposureLastKey($campaign, $poolId);
+            foreach ($userIds as $userId) {
+                Redis::srem($poolKey, (string) $userId);
+                Redis::hdel($countKey, (string) $userId);
+                Redis::hdel($lastKey, (string) $userId);
+            }
+        } catch (\Throwable) {
+            // 清理失败不能阻止转移
+        }
     }
 
     private function routerPoolIpExposureLastKey(
