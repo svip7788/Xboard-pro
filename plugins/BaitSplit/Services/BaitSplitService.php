@@ -1430,14 +1430,12 @@ class BaitSplitService
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $router = &$campaign['router'];
         $node = $router['investigation_nodes'][$nodeId] ?? null;
-        if (
-            !$node
-            || $node['status'] === 'archived'
-            || $node['children'] !== []
-        ) {
-            throw new InvalidArgumentException(
-                '只能转移未归档的叶子节点'
-            );
+        if (!$node || $node['status'] === 'archived') {
+            throw new InvalidArgumentException('节点不存在或已归档');
+        }
+        // 有子节点但没有用户的节点不能迁移（没有可迁移的用户）
+        if ($node['children'] !== [] && ($node['user_ids'] ?? []) === []) {
+            throw new InvalidArgumentException('该节点没有可迁移的用户');
         }
         $targetPool = $router['pools'][$targetPoolId] ?? null;
         if (
