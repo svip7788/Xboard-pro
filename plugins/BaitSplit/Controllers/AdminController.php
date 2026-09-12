@@ -375,12 +375,14 @@ class AdminController extends PluginController
         }
         $data = $request->validate([
             'name' => ['nullable', 'string', 'max:80'],
+            'only_exposed' => ['nullable', 'boolean'],
         ]);
         return $this->execute(
             fn() => BaitSplitService::fromDatabase()->createInvestigationRoot(
                 $campaignId,
                 $poolId,
-                (string) ($data['name'] ?? '')
+                (string) ($data['name'] ?? ''),
+                (bool) ($data['only_exposed'] ?? false)
             )
         );
     }
@@ -398,12 +400,14 @@ class AdminController extends PluginController
             'branches' => ['required', 'array', 'min:2', 'max:10'],
             'branches.*.name' => ['nullable', 'string', 'max:50'],
             'branches.*.host' => ['required', 'string', 'max:253'],
+            'only_exposed' => ['nullable', 'boolean'],
         ]);
         return $this->execute(
             fn() => BaitSplitService::fromDatabase()->splitInvestigationNode(
                 $campaignId,
                 $nodeId,
-                $data['branches']
+                $data['branches'],
+                (bool) ($data['only_exposed'] ?? false)
             )
         );
     }

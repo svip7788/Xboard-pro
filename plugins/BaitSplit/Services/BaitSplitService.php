@@ -696,7 +696,8 @@ class BaitSplitService
     public function createInvestigationRoot(
         string $campaignId,
         string $poolId,
-        string $name = ''
+        string $name = '',
+        bool $onlyExposed = false
     ): array {
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
@@ -717,9 +718,23 @@ class BaitSplitService
         // 管理员主动点「进入树形排查」时，池内锁定用户必须带上。
         // 观察组里的人几乎全是锁定的；若仍按 overrideBlocksAutomation 过滤，
         // 会出现「危险观察1 有人却无法进树」的情况。
-        $userIds = $this->normalizeIds($this->poolMemberIds($campaign, $poolId));
+        $allMemberIds = $this->normalizeIds($this->poolMemberIds($campaign, $poolId));
+        if ($onlyExposed) {
+            // 只选已拉取用户
+            $exposedMap = array_flip($this->poolExposureIds($campaign, $poolId));
+            $userIds = array_values(array_filter(
+                $allMemberIds,
+                fn(int $userId): bool => isset($exposedMap[$userId])
+            ));
+        } else {
+            $userIds = $allMemberIds;
+        }
         if ($userIds === []) {
-            throw new InvalidArgumentException('该用户池没有可进入树形排查的固定用户');
+            throw new InvalidArgumentException(
+                $onlyExposed
+                    ? '该用户池没有已拉取的固定用户'
+                    : '该用户池没有可进入树形排查的固定用户'
+            );
         }
         $type = (string) ($sourcePool['type'] ?? '');
         if (in_array($type, ['danger', 'blacklist'], true)) {
@@ -849,7 +864,8 @@ class BaitSplitService
     public function splitInvestigationNode(
         string $campaignId,
         string $nodeId,
-        array $branches
+        array $branches,
+        bool $onlyExposed = false
     ): array {
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
@@ -863,14 +879,38 @@ class BaitSplitService
         }
         $branches = $this->normalizeInvestigationBranches($router, $branches);
         $branchCount = count($branches);
-        $userIds = array_values(array_filter(
+        
+        // 筛选可移动用户（排除手动锁定的）
+        $movableUserIds = array_values(array_filter(
             $node['user_ids'],
             fn(int $userId): bool => !$this->overrideBlocksAutomation(
                 $router['overrides'][(string) $userId] ?? null
             )
         ));
+        
+        // 只细分已拉取用户
+        if ($onlyExposed) {
+            $exposedMap = array_flip($this->poolExposureIds($campaign, $node['pool_id']));
+            $userIds = array_values(array_filter(
+                $movableUserIds,
+                fn(int $userId): bool => isset($exposedMap[$userId])
+            ));
+            // 未拉取用户保留在原节点
+            $unpulledUserIds = array_values(array_filter(
+                $movableUserIds,
+                fn(int $userId): bool => !isset($exposedMap[$userId])
+            ));
+        } else {
+            $userIds = $movableUserIds;
+            $unpulledUserIds = [];
+        }
+        
         if (count($userIds) < $branchCount) {
-            throw new InvalidArgumentException('用户人数少于拆分组数');
+            throw new InvalidArgumentException(
+                $onlyExposed
+                    ? '已拉取用户人数少于拆分组数'
+                    : '用户人数少于拆分组数'
+            );
         }
         $children = $this->createInvestigationChildren(
             $campaign,
@@ -882,12 +922,32 @@ class BaitSplitService
         $router['investigation_nodes'][$nodeId]['children'] = $children;
         $router['investigation_nodes'][$nodeId]['status'] = 'split';
         $router['investigation_nodes'][$nodeId]['updated_at'] = time();
+        
+        // 更新原节点的 user_ids（只保留未拉取+锁定的用户）
+        if ($onlyExposed && $unpulledUserIds !== []) {
+            $lockedUserIds = array_values(array_filter(
+                $node['user_ids'],
+                fn(int $userId): bool => $this->overrideBlocksAutomation(
+                    $router['overrides'][(string) $userId] ?? null
+                )
+            ));
+            $router['investigation_nodes'][$nodeId]['user_ids'] = array_values(
+                array_unique(array_merge($unpulledUserIds, $lockedUserIds))
+            );
+        }
+        
         if (
             isset($router['pools'][$node['pool_id']])
             && $router['pools'][$node['pool_id']]['tree_node_id'] === $nodeId
         ) {
-            $router['pools'][$node['pool_id']]['enabled'] = false;
-            $router['pools'][$node['pool_id']]['status'] = 'blocked';
+            // 如果有未拉取用户保留，则保持池子活动状态
+            if ($onlyExposed && $unpulledUserIds !== []) {
+                $router['pools'][$node['pool_id']]['enabled'] = true;
+                $router['pools'][$node['pool_id']]['status'] = 'blocked';
+            } else {
+                $router['pools'][$node['pool_id']]['enabled'] = false;
+                $router['pools'][$node['pool_id']]['status'] = 'blocked';
+            }
         }
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
