@@ -4579,6 +4579,7 @@ class BaitSplitService
 
     /**
      * 移除用户在指定池子的曝光记录（转移时清理孤儿数据）
+     * 使用 pipeline 批量操作提升性能
      */
     private function removeUserExposure(array $campaign, string $poolId, array $userIds): void
     {
@@ -4589,11 +4590,15 @@ class BaitSplitService
             $poolKey = $this->routerPoolExposureKey($campaign, $poolId);
             $countKey = $this->routerPoolExposureCountKey($campaign, $poolId);
             $lastKey = $this->routerPoolExposureLastKey($campaign, $poolId);
-            foreach ($userIds as $userId) {
-                Redis::srem($poolKey, (string) $userId);
-                Redis::hdel($countKey, (string) $userId);
-                Redis::hdel($lastKey, (string) $userId);
-            }
+            
+            // 使用 pipeline 批量执行，避免逐个网络请求
+            Redis::pipeline(function ($pipe) use ($poolKey, $countKey, $lastKey, $userIds) {
+                foreach ($userIds as $userId) {
+                    $pipe->srem($poolKey, (string) $userId);
+                    $pipe->hdel($countKey, (string) $userId);
+                    $pipe->hdel($lastKey, (string) $userId);
+                }
+            });
         } catch (\Throwable) {
             // 清理失败不能阻止转移
         }
