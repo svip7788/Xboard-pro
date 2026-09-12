@@ -66,6 +66,10 @@
         .tree-toggle:hover{background:#c7d2fe}
         .tree-toggle.collapsed{transform:rotate(-90deg)}
         .tree-node.tree-child-hidden{display:none}
+        /* 部分拆分（已拆分但还有用户留在当前节点） */
+        .tree-node.has-remaining{border-left:5px solid #f59e0b!important;background:linear-gradient(135deg,#fffbeb 0%,#fff 100%)!important;box-shadow:0 2px 8px rgba(245,158,11,.15)}
+        .tree-node.has-remaining .pool-head strong{color:#b45309}
+        .tree-node.has-remaining::after{content:'⚠️ 有用户未分配';position:absolute;top:8px;right:12px;font-size:11px;color:#d97706;background:#fef3c7;padding:2px 8px;border-radius:4px}
         .branch-fields{display:grid;gap:9px}.branch-row{display:grid;grid-template-columns:160px 1fr;gap:9px}
         /* 下拉菜单 */
         .dropdown{position:relative;display:inline-block}
@@ -457,7 +461,9 @@ function renderInvestigationTree(){
         const isCollapsed=treeCollapsed.has(node.id);
         const ancestors=getAncestors(node.id);
         const isHidden=ancestors.some(ancestorId=>treeCollapsed.has(ancestorId));
-        card.className=`tree-node ${depthClass} ${statusClass}${isHidden?' tree-child-hidden':''}`;
+        // 已拆分但还有用户的节点（部分拆分）
+        const hasRemaining=node.children.length>0&&node.user_count>0;
+        card.className=`tree-node ${depthClass} ${statusClass}${isHidden?' tree-child-hidden':''}${hasRemaining?' has-remaining':''}`;
         card.style.marginLeft=node.depth>0?`${Math.min(node.depth,8)*32}px`:'';
         card.dataset.rootId=node.root_id;
         const head=document.createElement('div'),title=document.createElement('strong'),state=document.createElement('span');
@@ -504,6 +510,10 @@ function renderInvestigationTree(){
         if(node.status!=='archived'&&!node.children.length){
             add('编辑域名',()=>openTreeHostEditor(node),'warning');
             if(['active','blocked'].includes(node.status))add('继续细分',()=>openSplitTree(node));
+        }
+        // 已拆分但还有用户的节点也能编辑域名（用户会拉取到这个节点的IP）
+        if(node.status!=='archived'&&node.children.length>0&&node.user_count>0){
+            add('编辑域名',()=>openTreeHostEditor(node),'warning');
         }
         // 有用户的节点都可以迁移（包括已拆分但留有用户的父节点）
         if(node.status!=='archived'&&node.user_count>0){
