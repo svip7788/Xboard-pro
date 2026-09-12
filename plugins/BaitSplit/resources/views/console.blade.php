@@ -504,6 +504,9 @@ function renderInvestigationTree(){
         if(node.status!=='archived'&&!node.children.length){
             add('编辑域名',()=>openTreeHostEditor(node),'warning');
             if(['active','blocked'].includes(node.status))add('继续细分',()=>openSplitTree(node));
+        }
+        // 有用户的节点都可以迁移（包括已拆分但留有用户的父节点）
+        if(node.status!=='archived'&&node.user_count>0){
             if(node.pulled_count>0)add('迁移已拉取用户',()=>openTreeTransfer(node,true),'success');
             if(node.user_count>node.pulled_count)add('迁移未拉取用户',()=>openTreeTransfer(node,false),'warning');
         }
