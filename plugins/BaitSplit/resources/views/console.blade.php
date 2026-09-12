@@ -26,24 +26,41 @@
         .overlay,.modal{display:none;position:fixed;inset:0;z-index:10000;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.4)}.overlay.show,.modal.show{display:flex}.loading-box{display:flex;gap:10px;align-items:center;padding:14px 20px;background:#fff;border-radius:8px;font-size:13px}.spinner{width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:spin .7s linear infinite}.modal{z-index:10010}.modal-card{width:min(1000px,100%);max-height:88vh;overflow:auto;padding:24px;background:#fff;border-radius:10px}.modal-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px}.modal-tools{display:grid;grid-template-columns:1fr auto;gap:9px;margin:12px 0}.pagination{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px}@keyframes spin{to{transform:rotate(360deg)}}
         .split{display:grid;grid-template-columns:1fr 1fr;gap:14px}.version{font-family:ui-monospace,monospace;font-size:12px}
         /* 树形排查 - 层次化样式 */
-        .tree-list{display:flex;flex-direction:column;gap:0;position:relative}
-        .tree-node{position:relative;padding:14px 16px;background:#fff;border:1px solid var(--line);border-radius:6px;margin-bottom:8px}
-        .tree-node::before{content:'';position:absolute;left:-20px;top:24px;width:16px;height:2px;background:var(--line)}
-        .tree-node::after{content:'';position:absolute;left:-20px;top:-8px;bottom:50%;width:2px;background:var(--line)}
+        .tree-list{display:flex;flex-direction:column;gap:0;position:relative;padding:8px 0}
+        .tree-node{position:relative;padding:16px 18px;background:#fff;border:1px solid var(--line);border-radius:8px;margin-bottom:10px;transition:box-shadow .15s,transform .15s}
+        .tree-node:hover{box-shadow:0 4px 12px rgba(0,0,0,.08);transform:translateY(-1px)}
+        .tree-node::before{content:'';position:absolute;left:-18px;top:26px;width:14px;height:2px;background:linear-gradient(90deg,var(--line),transparent)}
+        .tree-node::after{content:'';position:absolute;left:-18px;top:0;bottom:50%;width:2px;background:var(--line)}
         .tree-node:first-child::after{display:none}
         .tree-node[style*="margin-left: 0"]::before,.tree-node[style*="margin-left: 0"]::after{display:none}
-        .tree-node[style*="margin-left: 24px"]{border-left:3px solid #93c5fd}
-        .tree-node[style*="margin-left: 48px"]{border-left:3px solid #a5b4fc}
-        .tree-node[style*="margin-left: 72px"]{border-left:3px solid #c4b5fd}
-        .tree-node[style*="margin-left: 96px"]{border-left:3px solid #d8b4fe}
-        .tree-node .pool-head{margin-bottom:8px}.tree-node .pool-head strong{font-size:14px}
-        .tree-node .meta{color:var(--muted);font-size:12px;margin-top:8px}
-        .tree-node .actions{margin-top:10px}
-        .tree-depth-0{border-left:4px solid var(--primary);background:#f8fafc}
-        .tree-depth-1{margin-left:28px!important;border-left:3px solid #60a5fa}
-        .tree-depth-2{margin-left:56px!important;border-left:3px solid #818cf8}
-        .tree-depth-3{margin-left:84px!important;border-left:3px solid #a78bfa}
-        .tree-depth-4{margin-left:112px!important;border-left:3px solid #c084fc}
+        .tree-node .pool-head{margin-bottom:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}.tree-node .pool-head strong{font-size:15px;font-weight:600}
+        .tree-node .meta{color:var(--muted);font-size:12px;margin-top:10px;line-height:1.6}
+        .tree-node .actions{margin-top:12px;padding-top:12px;border-top:1px dashed var(--line)}
+        /* 根节点 - 最醒目 */
+        .tree-depth-0{border-left:5px solid var(--primary);background:linear-gradient(135deg,#eff6ff 0%,#fff 100%);box-shadow:0 2px 8px rgba(37,99,235,.12)}
+        .tree-depth-0 .pool-head strong::before{content:'🌳 ';font-size:16px}
+        /* 子节点层级颜色 */
+        .tree-depth-1{margin-left:32px!important;border-left:4px solid #3b82f6;background:linear-gradient(135deg,#f0f9ff 0%,#fff 100%)}
+        .tree-depth-1 .pool-head strong::before{content:'├─ '}
+        .tree-depth-2{margin-left:64px!important;border-left:4px solid #8b5cf6;background:linear-gradient(135deg,#f5f3ff 0%,#fff 100%)}
+        .tree-depth-2 .pool-head strong::before{content:'│  ├─ '}
+        .tree-depth-3{margin-left:96px!important;border-left:4px solid #a855f7;background:linear-gradient(135deg,#faf5ff 0%,#fff 100%)}
+        .tree-depth-3 .pool-head strong::before{content:'│  │  ├─ '}
+        .tree-depth-4{margin-left:128px!important;border-left:4px solid #c084fc;background:linear-gradient(135deg,#fdf4ff 0%,#fff 100%)}
+        .tree-depth-4 .pool-head strong::before{content:'│  │  │  ├─ '}
+        /* 状态样式 */
+        .tree-node.status-blocked{border-color:#fca5a5;background:linear-gradient(135deg,#fef2f2 0%,#fff 100%)}
+        .tree-node.status-blocked .pool-head strong{color:#dc2626}
+        .tree-node.status-active{border-color:#86efac;background:linear-gradient(135deg,#f0fdf4 0%,#fff 100%)}
+        .tree-node.status-active .pool-head strong{color:#16a34a}
+        .tree-node.status-split{opacity:.7}
+        .tree-node.status-split .pool-head strong{color:var(--muted)}
+        /* 状态徽章 */
+        .tree-status{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600}
+        .tree-status.blocked{background:#fee2e2;color:#dc2626}.tree-status.blocked::before{content:'🚫 '}
+        .tree-status.active{background:#dcfce7;color:#16a34a}.tree-status.active::before{content:'✅ '}
+        .tree-status.split{background:#e0e7ff;color:#4f46e5}.tree-status.split::before{content:'🔀 '}
+        .tree-status.archived{background:#f1f5f9;color:#64748b}.tree-status.archived::before{content:'📦 '}
         .branch-fields{display:grid;gap:9px}.branch-row{display:grid;grid-template-columns:160px 1fr;gap:9px}
         /* 下拉菜单 */
         .dropdown{position:relative;display:inline-block}
@@ -427,13 +444,14 @@ function renderInvestigationTree(){
     ordered.forEach(node=>{
         const card=document.createElement('div');
         const depthClass=node.depth<=4?`tree-depth-${node.depth}`:'';
-        card.className=`tree-node ${depthClass}`;
-        card.style.marginLeft=node.depth>0?`${Math.min(node.depth,8)*28}px`:'';
+        const statusClass=`status-${node.status}`;
+        card.className=`tree-node ${depthClass} ${statusClass}`;
+        card.style.marginLeft=node.depth>0?`${Math.min(node.depth,8)*32}px`:'';
         const head=document.createElement('div'),title=document.createElement('strong'),state=document.createElement('span');
         head.className='pool-head';
         const displayName=node.host&&!node.name.includes(node.host)?`${node.name} · ${node.host}`:node.name;
-        title.textContent=`${node.depth===0?'根组':'L'+node.depth} · ${displayName}`;
-        state.className=`pill ${node.status==='blocked'?'bad':node.status==='safe'?'on':'off'}`;
+        title.textContent=displayName;
+        state.className=`tree-status ${node.status}`;
         state.textContent={active:'观察中',safe:'安全',blocked:'被墙',split:'已拆分',archived:'已归档'}[node.status]||node.status;
         head.append(title,state);
         const host=document.createElement('div'),metaLine=document.createElement('div'),actions=document.createElement('div');
