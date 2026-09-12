@@ -474,7 +474,11 @@ function renderInvestigationTree(){
         const displayName=node.host&&!node.name.includes(node.host)?`${node.name} · ${node.host}`:node.name;
         title.textContent=displayName;
         state.className=`tree-status ${node.status}`;
-        state.textContent={active:'观察中',safe:'安全',blocked:'被墙',split:'已拆分',archived:'已归档'}[node.status]||node.status;
+        const statusLabels={active:'观察中',safe:'安全',blocked:'被墙',split:'已拆分',archived:'已归档'};
+        let statusText=statusLabels[node.status]||node.status;
+        // 观察中显示天数
+        if(node.status==='active'&&node.created_at){const days=Math.floor((Date.now()/1000-node.created_at)/86400);statusText=days>0?`观察中 ${days}天`:'观察中 <1天'}
+        state.textContent=statusText;
         head.append(title,state);
         const host=document.createElement('div'),metaLine=document.createElement('div'),actions=document.createElement('div');
         const hostLabel=document.createElement('div'),hostTarget=document.createElement('div');
