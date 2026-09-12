@@ -61,6 +61,11 @@
         .tree-status.active{background:#dcfce7;color:#16a34a}.tree-status.active::before{content:'✅ '}
         .tree-status.split{background:#e0e7ff;color:#4f46e5}.tree-status.split::before{content:'🔀 '}
         .tree-status.archived{background:#f1f5f9;color:#64748b}.tree-status.archived::before{content:'📦 '}
+        /* 展开收起 */
+        .tree-toggle{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;margin-right:8px;background:#e0e7ff;border:none;border-radius:6px;cursor:pointer;font-size:12px;transition:transform .2s,background .15s}
+        .tree-toggle:hover{background:#c7d2fe}
+        .tree-toggle.collapsed{transform:rotate(-90deg)}
+        .tree-node.tree-child-hidden{display:none}
         .branch-fields{display:grid;gap:9px}.branch-row{display:grid;grid-template-columns:160px 1fr;gap:9px}
         /* 下拉菜单 */
         .dropdown{position:relative;display:inline-block}
@@ -240,7 +245,7 @@
         </section>
 
         <section class="card wide">
-            <div class="topbar"><h2>树形分支排查</h2><button id="openMergeTree" class="warning" disabled>合并旧排查树（0）</button></div>
+            <div class="topbar"><h2>树形分支排查</h2><div class="actions"><button id="toggleAllTrees" class="secondary small">全部展开</button><button id="openMergeTree" class="warning" disabled>合并旧排查树（0）</button></div></div>
             <div class="hint">勾选一个或多个最上层根组：已标记被墙的分支会连同未拉取用户全部打乱重组；成功后旧树和旧分组会直接删除。</div>
             <div id="investigationTree" class="tree-list tree-scroll" style="margin-top:12px"></div>
         </section>
@@ -419,6 +424,8 @@ function openPoolTransfer(pool,movePulled=true){const targets=getTransferTargets
 function openTreeTransfer(node,movePulled=true){const targets=getTransferTargets(node.pool_id);if(!targets.length)return toast('暂无可用的转入目标','error');const unpulledCount=Math.max(0,node.user_count-node.pulled_count);transferSource={...node,mode:movePulled?'tree-pulled':'tree-unpulled'};fillSelect('transferTarget',targets,'');$('transferTitle').textContent=movePulled?'转移已拉取用户':'转移未拉取用户';$('transferHint').textContent=movePulled?`"${node.name}"已有 ${node.pulled_count} 人拉取（含锁定）；只迁移这些已拉取用户并锁定，剩余 ${unpulledCount} 人继续留在当前分支观察。`:`"${node.name}"有 ${unpulledCount} 人尚未拉取（含锁定）；只迁移这些未拉取用户并锁定，已拉取的 ${node.pulled_count} 人继续留在当前分支。`;$('transferModal').classList.add('show')}
 function openStartInvestigation(pool){$('startInvestigationPoolId').value=pool.id;$('startInvestigationName').value='';$('startInvestigationOnlyExposed').checked=false;$('startInvestigationHint').textContent=`"${pool.name}"当前有 ${pool.member_count} 人，其中 ${pool.pulled_count} 人已拉取。进入排查后用户会冻结到独立树中，需继续拆分并填写新域名。`;$('startInvestigationModal').classList.add('show')}
 async function poolAction(action,pool){try{if(action==='copy-id'){const targetId=pool.webhook_id||pool.id;await navigator.clipboard.writeText(targetId);return toast(`接口标识已复制：${targetId}`)}if(action==='edit')return editPool(pool);if(action==='users')return showPoolUsers(pool);if(action==='transfer')return openPoolTransfer(pool,true);if(action==='transfer-unpulled')return openPoolTransfer(pool,false);if(action==='tree'){return openStartInvestigation(pool)}if(action==='delete'){if(!confirm(`删除“${pool.name}”？`))return;updateCurrent(await request(api(`/pools/${encodeURIComponent(pool.id)}`),{method:'DELETE'}));toast('用户池已删除')}}catch(error){toast(error.message,'error')}}
+const treeCollapsed=new Set(JSON.parse(localStorage.getItem('baitSplitTreeCollapsed')||'[]'));
+function toggleTreeCollapse(rootId){if(treeCollapsed.has(rootId))treeCollapsed.delete(rootId);else treeCollapsed.add(rootId);localStorage.setItem('baitSplitTreeCollapsed',JSON.stringify([...treeCollapsed]));renderInvestigationTree()}
 function renderInvestigationTree(){
     const list=$('investigationTree'),nodes=router()?.investigation_nodes||[];
     list.textContent='';
@@ -445,10 +452,22 @@ function renderInvestigationTree(){
         const card=document.createElement('div');
         const depthClass=node.depth<=4?`tree-depth-${node.depth}`:'';
         const statusClass=`status-${node.status}`;
-        card.className=`tree-node ${depthClass} ${statusClass}`;
+        const isCollapsed=node.depth===0&&treeCollapsed.has(node.root_id);
+        const isHidden=node.depth>0&&treeCollapsed.has(node.root_id);
+        card.className=`tree-node ${depthClass} ${statusClass}${isHidden?' tree-child-hidden':''}`;
         card.style.marginLeft=node.depth>0?`${Math.min(node.depth,8)*32}px`:'';
+        card.dataset.rootId=node.root_id;
         const head=document.createElement('div'),title=document.createElement('strong'),state=document.createElement('span');
         head.className='pool-head';
+        // 根节点添加展开/收起按钮
+        if(node.depth===0&&node.children.length>0){
+            const toggle=document.createElement('button');
+            toggle.className=`tree-toggle${isCollapsed?' collapsed':''}`;
+            toggle.innerHTML='▼';
+            toggle.title=isCollapsed?'展开子节点':'收起子节点';
+            toggle.onclick=e=>{e.stopPropagation();toggleTreeCollapse(node.root_id)};
+            head.appendChild(toggle);
+        }
         const displayName=node.host&&!node.name.includes(node.host)?`${node.name} · ${node.host}`:node.name;
         title.textContent=displayName;
         state.className=`tree-status ${node.status}`;
@@ -496,7 +515,7 @@ function branchValues(containerId){return [...$(containerId).querySelectorAll('.
 function renderSplitTreeFields(){renderBranchFields('splitTreeCount','splitTreeBranches')}
 function renderMergeTreeFields(){renderBranchFields('mergeTreeCount','mergeTreeBranches')}
 function treeMergeableCount(rootId,nodes=router()?.investigation_nodes||[]){return nodes.filter(node=>node.root_id===rootId&&!node.children.length&&node.status!=='archived').reduce((sum,node)=>sum+node.mergeable_count,0)}
-function updateMergeTreeButton(){const button=$('openMergeTree');button.textContent=`重组/合并旧树（${mergeTreeNodeIds.size}）`;button.disabled=mergeTreeNodeIds.size<1}
+function updateMergeTreeButton(){const button=$('openMergeTree');button.textContent=`重组/合并旧树（${mergeTreeNodeIds.size}）`;button.disabled=mergeTreeNodeIds.size<1;const nodes=router()?.investigation_nodes||[];const rootIds=nodes.filter(n=>n.depth===0&&n.children.length>0).map(n=>n.root_id);const allCollapsed=rootIds.length>0&&rootIds.every(id=>treeCollapsed.has(id));$('toggleAllTrees').textContent=allCollapsed?'全部展开':'全部收起';$('toggleAllTrees').style.display=rootIds.length?'':'none'}
 function openMergeTree(){const nodes=router()?.investigation_nodes||[],selected=nodes.filter(node=>mergeTreeNodeIds.has(node.id));if(!selected.length)return toast('请至少选择一个最上层根组','error');$('mergeTreeHint').textContent=`已选择 ${selected.length} 棵旧树，共 ${selected.reduce((sum,node)=>sum+treeMergeableCount(node.id,nodes),0)} 名用户。被墙分支全部用户都会打乱重组，手动锁定用户不移动，成功后旧树直接删除。`;$('mergeTreeName').value=selected.length>1?'合并排查树':'重组排查树';$('mergeTreeCount').value=2;renderMergeTreeFields();$('mergeTreeModal').classList.add('show')}
 function renderOverridePoolOptions(){fillSelect('overridePool',pools(),$('overridePool').value,'仅使用单独域名')}
 function resetTaskEditors(){$('poolId').value='';$('poolName').value='';$('poolHost').value='';$('poolWebhookId').value='';$('poolCapacity').value=0;$('poolNote').value='';$('userSearch').value='';$('searchResults').textContent='';$('overrideUser').value='';delete $('overrideUser').dataset.id;$('overrideHost').value='';$('overrideNote').value='';$('overrideExpires').value='';$('overrideSearch').value='';$('usersModal').classList.remove('show');$('transferModal').classList.remove('show');$('splitTreeModal').classList.remove('show');$('mergeTreeModal').classList.remove('show');$('treeHostModal').classList.remove('show');transferSource=null;splitTreeNodeId='';mergeTreeNodeIds.clear();updateMergeTreeButton();poolModal={poolId:'',poolName:'',page:1,lastPage:1,total:0,q:''};overrideModal={page:1,lastPage:1,total:0,q:''}}
@@ -541,6 +560,7 @@ $('closeStartInvestigation').onclick=()=>$('startInvestigationModal').classList.
 $('closeTransfer').onclick=()=>{$('transferModal').classList.remove('show');transferSource=null};$('transferModal').onclick=event=>{if(event.target===$('transferModal'))$('closeTransfer').click()};$('confirmTransfer').onclick=async()=>{if(!transferSource)return;const source=transferSource,targetId=$('transferTarget').value,targetName=$('transferTarget').options[$('transferTarget').selectedIndex]?.textContent,isTree=source.mode?.startsWith('tree-'),moveUnpulled=source.mode==='tree-unpulled'||source.mode==='pool-unpulled',userType=moveUnpulled?'未拉取':'已拉取';if(!confirm(`把“${source.name}”${userType}用户转入“${targetName}”？\n迁移用户将锁定到目标组。`))return;try{const path=isTree?(moveUnpulled?`/investigations/${encodeURIComponent(source.id)}/move-unpulled`:`/investigations/${encodeURIComponent(source.id)}/move`):(moveUnpulled?`/pools/${encodeURIComponent(source.id)}/move-unpulled`:`/pools/${encodeURIComponent(source.id)}/move-pulled`);const result=await request(api(path),{method:'POST',body:JSON.stringify({target_pool_id:targetId})});updateCurrent(result.campaign);$('closeTransfer').click();toast(isTree?`已移动并锁定 ${result.moved_count} 名${userType}用户，原分支剩余 ${result.remaining_count} 人`:`已移动并锁定 ${result.moved_count} 名${userType}用户`)}catch(error){toast(error.message,'error')}};
 $('closeTreeHost').onclick=()=> $('treeHostModal').classList.remove('show');$('treeHostModal').onclick=event=>{if(event.target===$('treeHostModal'))$('closeTreeHost').click()};$('treeHostValue').onkeydown=event=>{if(event.key==='Enter')$('confirmTreeHost').click()};$('confirmTreeHost').onclick=async()=>{const nodeId=$('treeHostNodeId').value,host=$('treeHostValue').value.trim(),webhookId=$('treeWebhookId').value.trim();if(!nodeId||!host)return toast('请输入域名或 IP','error');try{updateCurrent(await request(api(`/investigations/${encodeURIComponent(nodeId)}/host`),{method:'POST',body:JSON.stringify({host,webhook_id:webhookId||null})}));$('closeTreeHost').click();toast('分支域名/IP和接口标识已更新')}catch(error){toast(error.message,'error')}};
 $('splitTreeCount').oninput=renderSplitTreeFields;$('closeSplitTree').onclick=()=>{$('splitTreeModal').classList.remove('show');splitTreeNodeId=''};$('splitTreeModal').onclick=event=>{if(event.target===$('splitTreeModal'))$('closeSplitTree').click()};$('confirmSplitTree').onclick=async()=>{if(!splitTreeNodeId)return;const branches=branchValues('splitTreeBranches'),onlyExposed=$('splitTreeOnlyExposed').checked;if(branches.some(branch=>!branch.host))return toast('请填写每个分支的全新域名','error');const confirmMsg=onlyExposed?`确认只把已拉取用户均分为 ${branches.length} 个独立分支？未拉取用户将保留在当前节点。`:`确认把该节点固定均分为 ${branches.length} 个独立分支？`;if(!confirm(confirmMsg))return;try{updateCurrent(await request(api(`/investigations/${encodeURIComponent(splitTreeNodeId)}/split`),{method:'POST',body:JSON.stringify({branches,only_exposed:onlyExposed})}));$('closeSplitTree').click();toast(onlyExposed?'下级分支已创建，只有已拉取用户被分配':'下级分支已创建，用户分配已固定')}catch(error){toast(error.message,'error')}};
+$('toggleAllTrees').onclick=()=>{const nodes=router()?.investigation_nodes||[];const rootIds=nodes.filter(n=>n.depth===0&&n.children.length>0).map(n=>n.root_id);const allCollapsed=rootIds.every(id=>treeCollapsed.has(id));if(allCollapsed){rootIds.forEach(id=>treeCollapsed.delete(id));$('toggleAllTrees').textContent='全部收起'}else{rootIds.forEach(id=>treeCollapsed.add(id));$('toggleAllTrees').textContent='全部展开'}localStorage.setItem('baitSplitTreeCollapsed',JSON.stringify([...treeCollapsed]));renderInvestigationTree()};
 $('openMergeTree').onclick=openMergeTree;$('mergeTreeCount').oninput=renderMergeTreeFields;$('closeMergeTree').onclick=()=> $('mergeTreeModal').classList.remove('show');$('mergeTreeModal').onclick=event=>{if(event.target===$('mergeTreeModal'))$('closeMergeTree').click()};$('confirmMergeTree').onclick=async()=>{const nodeIds=[...mergeTreeNodeIds],branches=branchValues('mergeTreeBranches');if(!nodeIds.length)return toast('请至少选择一个最上层根组','error');if(branches.some(branch=>!branch.host))return toast('请填写每个新分支的全新域名','error');if(!confirm(`把 ${nodeIds.length} 棵旧树中的用户重新打乱并分为 ${branches.length} 组？\n被墙分支包含未拉取用户，手动锁定用户不移动，旧树和旧分组将直接删除。`))return;try{const result=await request(api('/investigations/merge'),{method:'POST',body:JSON.stringify({node_ids:nodeIds,name:$('mergeTreeName').value.trim(),branches})});mergeTreeNodeIds.clear();updateCurrent(result.campaign);$('closeMergeTree').click();toast(`旧树已删除；重分 ${result.merged_count} 人，回流 ${result.released_count} 人`)}catch(error){toast(error.message,'error')}};
 $('closeUsers').onclick=()=> $('usersModal').classList.remove('show');$('usersModal').onclick=event=>{if(event.target===$('usersModal'))$('usersModal').classList.remove('show')};
 async function boot(){
