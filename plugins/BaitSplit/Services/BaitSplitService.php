@@ -923,17 +923,22 @@ class BaitSplitService
         $router['investigation_nodes'][$nodeId]['status'] = 'split';
         $router['investigation_nodes'][$nodeId]['updated_at'] = time();
         
-        // 更新原节点的 user_ids（只保留未拉取+锁定的用户）
-        if ($onlyExposed && $unpulledUserIds !== []) {
-            $lockedUserIds = array_values(array_filter(
-                $node['user_ids'],
-                fn(int $userId): bool => $this->overrideBlocksAutomation(
-                    $router['overrides'][(string) $userId] ?? null
-                )
-            ));
+        // 更新原节点的 user_ids
+        // - 只细分已拉取：保留未拉取+锁定的用户
+        // - 细分全部：只保留锁定的用户（不参与自动分配的）
+        $lockedUserIds = array_values(array_filter(
+            $node['user_ids'],
+            fn(int $userId): bool => $this->overrideBlocksAutomation(
+                $router['overrides'][(string) $userId] ?? null
+            )
+        ));
+        if ($onlyExposed) {
             $router['investigation_nodes'][$nodeId]['user_ids'] = array_values(
                 array_unique(array_merge($unpulledUserIds, $lockedUserIds))
             );
+        } else {
+            // 细分全部用户时，只保留锁定的（不可移动的）
+            $router['investigation_nodes'][$nodeId]['user_ids'] = $lockedUserIds;
         }
         
         if (
