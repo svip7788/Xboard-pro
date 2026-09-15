@@ -1472,14 +1472,7 @@ class BaitSplitService
             $campaign,
             $userIds,
             $targetPoolId,
-            [
-                'default',
-                'probe',
-                'observation',
-                'safe',
-                'custom',
-                'emergency',
-            ]
+            ['default', 'probe', 'observation', 'safe', 'custom', 'emergency', 'danger', 'blacklist']
         );
         $targetNodeUpdates = [];  // poolId => [userIds]
         foreach ($allocations as $userId => $allocatedPoolId) {
@@ -3609,7 +3602,7 @@ class BaitSplitService
             );
         }
 
-        $allowedTypes = ['default', 'probe', 'observation', 'emergency', 'safe', 'custom'];
+        $allowedTypes = ['default', 'probe', 'observation', 'emergency', 'safe', 'custom', 'danger', 'blacklist'];
         $allocations = $this->allocateUsersToPoolChain(
             $campaign,
             $userIds,
