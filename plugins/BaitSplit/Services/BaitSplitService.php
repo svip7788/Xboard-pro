@@ -3604,12 +3604,8 @@ class BaitSplitService
             throw new InvalidArgumentException('来源用户池不存在');
         }
         $targetPool = $router['pools'][$targetPoolId] ?? null;
-        if (
-            !$targetPool
-            || !$this->poolIsUsable($targetPool)
-            || in_array($targetPool['type'], ['danger', 'blacklist'], true)
-        ) {
-            throw new InvalidArgumentException('目标用户池不存在、不可用或为危险/封禁组');
+        if (!$targetPool || !$this->poolIsUsable($targetPool)) {
+            throw new InvalidArgumentException('目标用户池不存在或不可用');
         }
 
         $exposedMap = array_flip($this->poolExposureIds($campaign, $sourcePoolId));
