@@ -1442,20 +1442,8 @@ class BaitSplitService
             !$targetPool
             || $targetPoolId === $node['pool_id']
             || !$this->poolIsUsable($targetPool)
-            || !in_array(
-                $targetPool['type'],
-                [
-                    'default',
-                    'probe',
-                    'observation',
-                    'safe',
-                    'custom',
-                    'emergency',
-                ],
-                true
-            )
         ) {
-            throw new InvalidArgumentException('请选择可用的普通用户池');
+            throw new InvalidArgumentException('目标用户池不存在或不可用');
         }
         $exposedMap = array_flip(
             $this->investigationNodeExposureIds($campaign, $node)
