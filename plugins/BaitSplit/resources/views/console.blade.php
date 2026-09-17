@@ -338,7 +338,7 @@
                 </div>
                 <div class="scroll" style="max-height:400px">
                     <table>
-                        <thead><tr><th style="width:30px"><input type="checkbox" id="analysisSelectAllHead" style="width:16px;height:16px"></th><th>用户ID</th><th>邮箱</th><th>出现次数</th></tr></thead>
+                        <thead><tr><th style="width:30px"><input type="checkbox" id="analysisSelectAllHead" style="width:16px;height:16px"></th><th>用户ID</th><th>邮箱</th><th>当前分组</th><th>出现次数</th></tr></thead>
                         <tbody id="analysisUsers"></tbody>
                     </table>
                 </div>
@@ -720,7 +720,7 @@ function selectByCount(count){
 function renderAnalysisUsers(){
     const tbody=$('analysisUsers');tbody.textContent='';
     analysisSelected.clear();updateAnalysisSelectedCount();
-    if(!analysisUsers.length){const row=tbody.insertRow();row.insertCell().colSpan=4;row.cells[0].className='empty';row.cells[0].textContent='无符合条件的用户';return}
+    if(!analysisUsers.length){const row=tbody.insertRow();row.insertCell().colSpan=5;row.cells[0].className='empty';row.cells[0].textContent='无符合条件的用户';return}
     analysisUsers.forEach(u=>{
         const row=tbody.insertRow();
         const checkCell=row.insertCell();
@@ -730,6 +730,7 @@ function renderAnalysisUsers(){
         checkCell.appendChild(cb);
         row.insertCell().textContent=u.user_id;
         row.insertCell().textContent=u.email;
+        row.insertCell().textContent=u.pool_name||'默认组';
         const countCell=row.insertCell();
         const countLink=document.createElement('a');countLink.href='javascript:void(0)';countLink.textContent=u.count;
         countLink.style.cssText='cursor:pointer;text-decoration:underline;'+(u.count>1?'font-weight:bold;':'')+'color:'+(u.count>2?'var(--danger)':u.count>1?'var(--warning)':'inherit');

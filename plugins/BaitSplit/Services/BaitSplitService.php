@@ -4263,12 +4263,30 @@ class BaitSplitService
                 ->select('id', 'email')
                 ->get()
                 ->keyBy('id');
+            
+            // 构建用户分组映射
+            $router = $campaign['router'] ?? [];
+            $pools = $router['pools'] ?? [];
+            $assignments = $router['assignments'] ?? [];
+            $poolNameMap = [];
+            foreach ($pools as $pool) {
+                $poolNameMap[$pool['id']] = $pool['name'] ?? $pool['id'];
+            }
+            $userPoolMap = [];
+            foreach ($assignments as $poolId => $userIdArr) {
+                $poolName = $poolNameMap[$poolId] ?? $poolId;
+                foreach ($userIdArr as $uid) {
+                    $userPoolMap[(int) $uid] = $poolName;
+                }
+            }
+            
             foreach ($userCounts as $userId => $count) {
                 $user = $userRows[$userId] ?? null;
                 $users[] = [
                     'user_id' => $userId,
                     'email' => $user->email ?? '未知',
                     'count' => $count,
+                    'pool_name' => $userPoolMap[$userId] ?? '默认组',
                 ];
             }
         }
