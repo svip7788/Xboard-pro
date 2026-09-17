@@ -737,9 +737,6 @@ class BaitSplitService
             );
         }
         $type = (string) ($sourcePool['type'] ?? '');
-        if (in_array($type, ['danger', 'blacklist'], true)) {
-            throw new InvalidArgumentException('危险组 / 封禁组不能进入树形排查');
-        }
 
         $nodeId = 'tree-' . Str::uuid();
         $rootPoolId = 'tree-pool-' . Str::uuid();
