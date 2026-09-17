@@ -292,8 +292,39 @@
                 <h2>换 IP 事件日志</h2>
                 <div class="actions"><span id="wallPending" class="pill off">换IP队列 0</span><button id="refreshWall" class="secondary">刷新</button></div>
             </div>
-            <div class="scroll" style="max-height:320px"><table><thead><tr><th>时间</th><th>类型</th><th>旧IP→新IP</th><th>受影响池</th><th>窗口内拉取</th><th>拿到过该地址</th></tr></thead><tbody id="wallEvents"></tbody></table></div>
+            <div class="wall-tools" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+                <label style="font-size:13px;display:flex;align-items:center;gap:6px"><input type="checkbox" id="wallSelectAll" style="width:16px;height:16px"> 全选</label>
+                <input type="datetime-local" id="wallStartTime" style="width:180px;height:34px" title="开始时间">
+                <span style="color:var(--muted)">至</span>
+                <input type="datetime-local" id="wallEndTime" style="width:180px;height:34px" title="结束时间">
+                <button id="analyzeWall" class="secondary small">分析选中/时间段</button>
+                <span id="wallSelectedCount" class="muted" style="font-size:12px"></span>
+            </div>
+            <div class="scroll" style="max-height:320px"><table><thead><tr><th style="width:30px"><input type="checkbox" id="wallSelectAllHead" style="width:16px;height:16px"></th><th>时间</th><th>类型</th><th>旧IP→新IP</th><th>受影响池</th><th>窗口内拉取</th><th>拿到过该地址</th></tr></thead><tbody id="wallEvents"></tbody></table></div>
         </section>
+
+        <!-- 墙事件分析弹窗 -->
+        <div id="wallAnalysisModal" class="modal">
+            <div class="modal-card" style="max-width:800px">
+                <div class="modal-head">
+                    <h2>墙事件分析结果</h2>
+                    <button class="secondary small" onclick="$('wallAnalysisModal').classList.remove('show')">关闭</button>
+                </div>
+                <div id="wallAnalysisSummary" style="margin-bottom:12px;font-size:13px;color:var(--muted)"></div>
+                <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+                    <label style="font-size:13px;display:flex;align-items:center;gap:6px"><input type="checkbox" id="analysisSelectAll" style="width:16px;height:16px"> 全选</label>
+                    <select id="analysisMoveTarget" style="width:200px;height:34px"></select>
+                    <button id="analysisMoveBtn" class="small">迁移选中用户</button>
+                    <span id="analysisSelectedCount" class="muted" style="font-size:12px"></span>
+                </div>
+                <div class="scroll" style="max-height:400px">
+                    <table>
+                        <thead><tr><th style="width:30px"><input type="checkbox" id="analysisSelectAllHead" style="width:16px;height:16px"></th><th>用户ID</th><th>邮箱</th><th>出现次数</th></tr></thead>
+                        <tbody id="analysisUsers"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
     </div>
 </main>
 <script>
@@ -550,12 +581,114 @@ let overrideModal={page:1,lastPage:1,total:0,q:''};
 async function loadOverrides(page=null){const campaignId=current?.id,body=$('overrideRows');if(!body)return;if(!campaignId||!router()){body.textContent='';$('overrideCount').textContent='0';return}if(page!==null)overrideModal.page=page;const result=await request(api(`/overrides?q=${encodeURIComponent(overrideModal.q)}&page=${overrideModal.page}&per_page=50`));if(current?.id!==campaignId)return;overrideModal.page=result.pagination.page;overrideModal.lastPage=result.pagination.last_page;overrideModal.total=result.pagination.total;$('overrideCount').textContent=result.pagination.total;$('overridePage').textContent=`第 ${overrideModal.page} / ${overrideModal.lastPage} 页，共 ${overrideModal.total} 条`;$('prevOverrides').disabled=overrideModal.page<=1;$('nextOverrides').disabled=overrideModal.page>=overrideModal.lastPage;body.textContent='';result.items.forEach(user=>{const row=body.insertRow();row.insertCell().textContent=`${user.id} / ${user.email}`;row.insertCell().textContent=user.pool_id||'-';row.insertCell().textContent=user.override.host||Object.values(user.override.node_hosts||{}).join(', ')||'-';row.insertCell().textContent=user.override.locked?'是':'否';row.insertCell().textContent=user.override.note||'-';const cell=row.insertCell(),button=document.createElement('button');button.className='danger small';button.textContent='解除';button.onclick=async()=>{try{updateCurrent(await request(api(`/overrides/${user.id}`),{method:'DELETE'}));await loadOverrides(overrideModal.page);toast('规则已解除')}catch(error){toast(error.message,'error')}};cell.appendChild(button)});if(!result.items.length){const row=body.insertRow(),cell=row.insertCell();cell.colSpan=6;cell.className='hint';cell.textContent=overrideModal.q?'没有匹配的规则':'暂无手动规则'}}
 let wallData=null;
 function wallReasonLabel(reason){return {blocked:'被墙',machine:'机器挂壁'}[reason]||reason||'-'}
-function renderWall(){const events=$('wallEvents');if(!events)return;const pendingPill=$('wallPending');if(!wallData){if(pendingPill){pendingPill.textContent='换IP队列 0';pendingPill.className='pill off'}events.textContent='';return}const pending=Number(wallData.pending_ip_rotates||0);if(pendingPill){pendingPill.textContent=`换IP队列 ${pending}`;pendingPill.className=`pill ${pending>0?'bad':'off'}`;pendingPill.title=pending>0?'有换 IP 事件排队等待写入，每分钟自动消化':'无积压换 IP 事件'}
-events.textContent='';(wallData.events||[]).forEach(ev=>{const row=events.insertRow();const timeCell=row.insertCell();timeCell.textContent=formatTime(ev.at);if(ev.mode==='manual_fix')timeCell.innerHTML+=' <span class="pill warn">补</span>';if((ev.pools||[]).some(p=>p&&p.stale))timeCell.innerHTML+=' <span class="pill off" title="老 IP 首墙，曝光窗口不可信">跳过</span>';const reasonCell=row.insertCell();reasonCell.innerHTML=`<span class="pill ${ev.reason==='blocked'?'bad':'off'}">${wallReasonLabel(ev.reason)}</span>`;row.insertCell().textContent=`${ev.old_ip||'-'} → ${ev.new_ip||'-'}`;row.insertCell().textContent=(ev.pools||[]).map(p=>typeof p==='string'?p:p.pool_name).join('、')||'-';row.insertCell().textContent=ev.suspect_count||0;
-const exact=(ev.pools||[]).reduce((sum,p)=>sum+Number(p&&p.exact_count||0),0);const exactCell=row.insertCell();exactCell.textContent=exact;exactCell.title='实际拿到过这个死地址的人数'});
-if(!(wallData.events||[]).length){const row=events.insertRow();row.insertCell().colSpan=6;row.cells[0].className='empty';row.cells[0].textContent='暂无换 IP 事件记录'}}
-async function loadWallLog(){const campaignId=current?.id;if(!campaignId||!router()){wallData=null;renderWall();return}const data=await request(api('/wall-log?limit=100'));if(current?.id!==campaignId)return;wallData=data;renderWall()}
+const wallSelected=new Set();
+function updateWallSelectedCount(){const count=wallSelected.size;$('wallSelectedCount').textContent=count>0?`已选 ${count} 条`:''}
+function renderWall(){
+    const events=$('wallEvents');if(!events)return;
+    const pendingPill=$('wallPending');
+    wallSelected.clear();updateWallSelectedCount();
+    if(!wallData){if(pendingPill){pendingPill.textContent='换IP队列 0';pendingPill.className='pill off'}events.textContent='';return}
+    const pending=Number(wallData.pending_ip_rotates||0);
+    if(pendingPill){pendingPill.textContent=`换IP队列 ${pending}`;pendingPill.className=`pill ${pending>0?'bad':'off'}`;pendingPill.title=pending>0?'有换 IP 事件排队等待写入，每分钟自动消化':'无积压换 IP 事件'}
+    events.textContent='';
+    (wallData.events||[]).forEach(ev=>{
+        const row=events.insertRow();
+        // 复选框列
+        const checkCell=row.insertCell();
+        if(ev.reason==='blocked'){
+            const cb=document.createElement('input');cb.type='checkbox';cb.style.cssText='width:16px;height:16px';
+            cb.dataset.index=ev.index;
+            cb.onchange=()=>{if(cb.checked)wallSelected.add(ev.index);else wallSelected.delete(ev.index);updateWallSelectedCount()};
+            checkCell.appendChild(cb);
+        }
+        // 时间列
+        const timeCell=row.insertCell();timeCell.textContent=formatTime(ev.at);
+        if(ev.mode==='manual_fix')timeCell.innerHTML+=' <span class="pill warn">补</span>';
+        if((ev.pools||[]).some(p=>p&&p.stale))timeCell.innerHTML+=' <span class="pill off" title="老 IP 首墙，曝光窗口不可信">跳过</span>';
+        // 类型列
+        const reasonCell=row.insertCell();reasonCell.innerHTML=`<span class="pill ${ev.reason==='blocked'?'bad':'off'}">${wallReasonLabel(ev.reason)}</span>`;
+        // IP列
+        row.insertCell().textContent=`${ev.old_ip||'-'} → ${ev.new_ip||'-'}`;
+        // 受影响池
+        row.insertCell().textContent=(ev.pools||[]).map(p=>typeof p==='string'?p:p.pool_name).join('、')||'-';
+        // 窗口内拉取
+        row.insertCell().textContent=ev.suspect_count||0;
+        // 拿到过该地址
+        const exact=(ev.pools||[]).reduce((sum,p)=>sum+Number(p&&p.exact_count||0),0);
+        const exactCell=row.insertCell();exactCell.textContent=exact;exactCell.title='实际拿到过这个死地址的人数';
+    });
+    if(!(wallData.events||[]).length){const row=events.insertRow();row.insertCell().colSpan=7;row.cells[0].className='empty';row.cells[0].textContent='暂无换 IP 事件记录'}
+}
+async function loadWallLog(){const campaignId=current?.id;if(!campaignId||!router()){wallData=null;renderWall();return}const data=await request(api('/wall-log?limit=200'));if(current?.id!==campaignId)return;wallData=data;renderWall()}
 $('refreshWall').onclick=()=>loadWallLog().catch(error=>toast(error.message,'error'));
+// 全选墙事件
+$('wallSelectAll').onchange=$('wallSelectAllHead').onchange=function(){
+    const checked=this.checked;
+    $('wallSelectAll').checked=$('wallSelectAllHead').checked=checked;
+    wallSelected.clear();
+    document.querySelectorAll('#wallEvents input[type=checkbox]').forEach(cb=>{
+        cb.checked=checked;if(checked)wallSelected.add(Number(cb.dataset.index));
+    });
+    updateWallSelectedCount();
+};
+// 分析墙事件
+let analysisUsers=[];
+$('analyzeWall').onclick=async()=>{
+    try{
+        const startTime=$('wallStartTime').value?Math.floor(new Date($('wallStartTime').value).getTime()/1000):null;
+        const endTime=$('wallEndTime').value?Math.floor(new Date($('wallEndTime').value).getTime()/1000):null;
+        const eventIndexes=wallSelected.size>0?[...wallSelected]:null;
+        if(!startTime&&!endTime&&!eventIndexes){return toast('请选择事件或设置时间范围','error')}
+        loading(true,'正在分析…');
+        const result=await request(api('/wall-log/analyze'),{method:'POST',body:JSON.stringify({start_time:startTime,end_time:endTime,event_indexes:eventIndexes})});
+        analysisUsers=result.users||[];
+        $('wallAnalysisSummary').textContent=`共分析 ${result.event_count} 条被墙事件，涉及 ${analysisUsers.length} 个用户`;
+        renderAnalysisUsers();
+        // 填充迁移目标
+        fillSelect('analysisMoveTarget',getTransferTargets(),'','选择目标分组');
+        $('wallAnalysisModal').classList.add('show');
+    }catch(error){toast(error.message,'error')}finally{loading(false)}
+};
+const analysisSelected=new Set();
+function updateAnalysisSelectedCount(){const count=analysisSelected.size;$('analysisSelectedCount').textContent=count>0?`已选 ${count} 人`:''}
+function renderAnalysisUsers(){
+    const tbody=$('analysisUsers');tbody.textContent='';
+    analysisSelected.clear();updateAnalysisSelectedCount();
+    if(!analysisUsers.length){const row=tbody.insertRow();row.insertCell().colSpan=4;row.cells[0].className='empty';row.cells[0].textContent='无符合条件的用户';return}
+    analysisUsers.forEach(u=>{
+        const row=tbody.insertRow();
+        const checkCell=row.insertCell();
+        const cb=document.createElement('input');cb.type='checkbox';cb.style.cssText='width:16px;height:16px';
+        cb.dataset.userId=u.user_id;
+        cb.onchange=()=>{if(cb.checked)analysisSelected.add(u.user_id);else analysisSelected.delete(u.user_id);updateAnalysisSelectedCount()};
+        checkCell.appendChild(cb);
+        row.insertCell().textContent=u.user_id;
+        row.insertCell().textContent=u.email;
+        const countCell=row.insertCell();countCell.textContent=u.count;countCell.style.fontWeight=u.count>1?'bold':'normal';countCell.style.color=u.count>2?'var(--danger)':u.count>1?'var(--warning)':'inherit';
+    });
+}
+$('analysisSelectAll').onchange=$('analysisSelectAllHead').onchange=function(){
+    const checked=this.checked;
+    $('analysisSelectAll').checked=$('analysisSelectAllHead').checked=checked;
+    analysisSelected.clear();
+    document.querySelectorAll('#analysisUsers input[type=checkbox]').forEach(cb=>{
+        cb.checked=checked;if(checked)analysisSelected.add(Number(cb.dataset.userId));
+    });
+    updateAnalysisSelectedCount();
+};
+$('analysisMoveBtn').onclick=async()=>{
+    try{
+        const targetPoolId=$('analysisMoveTarget').value;
+        if(!targetPoolId)return toast('请选择目标分组','error');
+        if(!analysisSelected.size)return toast('请选择要迁移的用户','error');
+        if(!confirm(`确定将 ${analysisSelected.size} 个用户迁移到选中的分组？`))return;
+        loading(true,'正在迁移…');
+        const result=await request(api('/users/batch-move'),{method:'POST',body:JSON.stringify({user_ids:[...analysisSelected],target_pool_id:targetPoolId,note:'墙事件分析批量迁移'})});
+        updateCurrent(result);
+        toast(`已迁移 ${result.moved_count} 个用户到「${result.target_pool_name}」`);
+        $('wallAnalysisModal').classList.remove('show');
+    }catch(error){toast(error.message,'error')}finally{loading(false)}
+};
 $('refreshOverrides').onclick=()=>{overrideModal.q='';$('overrideSearch').value='';loadOverrides(1).catch(error=>toast(error.message,'error'))};
 $('searchOverrides').onclick=()=>{overrideModal.q=$('overrideSearch').value.trim();loadOverrides(1).catch(error=>toast(error.message,'error'))};
 $('overrideSearch').onkeydown=event=>{if(event.key==='Enter')$('searchOverrides').click()};

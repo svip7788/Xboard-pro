@@ -4161,11 +4161,160 @@ class BaitSplitService
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $router = $campaign['router'];
         $limit = max(1, min(200, $limit));
+        // 给每个事件加上索引便于前端选择
+        $events = array_slice($router['wall_log'] ?? [], -$limit);
+        foreach ($events as $i => &$ev) {
+            $ev['index'] = $i;
+        }
+        unset($ev);
         return [
-            'events' => array_reverse(
-                array_slice($router['wall_log'] ?? [], -$limit)
-            ),
+            'events' => array_reverse($events),
             'pending_ip_rotates' => $this->pendingIpRotateCount(),
+        ];
+    }
+
+    /**
+     * 分析墙事件：统计指定时间范围或事件索引内，用户出现次数。
+     */
+    public function analyzeWallEvents(
+        string $campaignId,
+        ?int $startTime = null,
+        ?int $endTime = null,
+        ?array $eventIndexes = null
+    ): array {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $router = $campaign['router'];
+        $events = $router['wall_log'] ?? [];
+
+        // 筛选事件
+        $filtered = [];
+        foreach ($events as $i => $ev) {
+            $at = (int) ($ev['at'] ?? 0);
+            // 按索引筛选
+            if ($eventIndexes !== null && !in_array($i, $eventIndexes, true)) {
+                continue;
+            }
+            // 按时间筛选
+            if ($startTime !== null && $at < $startTime) {
+                continue;
+            }
+            if ($endTime !== null && $at > $endTime) {
+                continue;
+            }
+            // 只统计被墙的事件
+            if (($ev['reason'] ?? '') !== 'blocked') {
+                continue;
+            }
+            $filtered[] = $ev;
+        }
+
+        if ($filtered === []) {
+            return [
+                'event_count' => 0,
+                'users' => [],
+            ];
+        }
+
+        // 统计用户出现次数
+        $userCounts = [];
+        foreach ($filtered as $ev) {
+            // 优先用精确名单，没有就用疑似名单
+            $userIds = $ev['exact_user_ids'] ?? $ev['suspect_user_ids'] ?? [];
+            foreach ($userIds as $userId) {
+                $userId = (int) $userId;
+                if ($userId > 0) {
+                    $userCounts[$userId] = ($userCounts[$userId] ?? 0) + 1;
+                }
+            }
+        }
+
+        // 按出现次数降序排序
+        arsort($userCounts);
+
+        // 获取用户信息
+        $userIds = array_keys($userCounts);
+        $users = [];
+        if ($userIds !== []) {
+            $userRows = DB::table('v2_user')
+                ->whereIn('id', $userIds)
+                ->select('id', 'email')
+                ->get()
+                ->keyBy('id');
+            foreach ($userCounts as $userId => $count) {
+                $user = $userRows[$userId] ?? null;
+                $users[] = [
+                    'user_id' => $userId,
+                    'email' => $user->email ?? '未知',
+                    'count' => $count,
+                ];
+            }
+        }
+
+        return [
+            'event_count' => count($filtered),
+            'users' => $users,
+        ];
+    }
+
+    /**
+     * 批量迁移用户到指定池。
+     */
+    public function batchMoveUsersToPool(
+        string $campaignId,
+        array $userIds,
+        string $targetPoolId,
+        string $note = ''
+    ): array {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $router = &$campaign['router'];
+
+        $userIds = $this->normalizeIds($userIds);
+        if ($userIds === []) {
+            throw new InvalidArgumentException('用户列表不能为空');
+        }
+
+        $targetPool = $router['pools'][$targetPoolId] ?? null;
+        if (!$targetPool || !$this->poolIsUsable($targetPool)) {
+            throw new InvalidArgumentException('目标用户池不存在或不可用');
+        }
+
+        $now = time();
+        $moved = 0;
+        $noteText = $note ?: '墙事件分析批量迁移';
+
+        foreach ($userIds as $userId) {
+            $router['overrides'][(string) $userId] = $this->normalizeOverride([
+                'pool_id' => $targetPoolId,
+                'locked' => true,
+                'note' => $noteText,
+                'updated_at' => $now,
+            ]);
+            $router['assignments'][(string) $userId] = $targetPoolId;
+            $moved++;
+        }
+
+        // 如果目标是树分支，更新 user_ids
+        $targetTreeNodeId = $targetPool['tree_node_id'] ?? '';
+        if ($targetTreeNodeId !== '' && isset($router['investigation_nodes'][$targetTreeNodeId])) {
+            $router['investigation_nodes'][$targetTreeNodeId]['user_ids'] = array_values(
+                array_unique(array_merge(
+                    $router['investigation_nodes'][$targetTreeNodeId]['user_ids'],
+                    $userIds
+                ))
+            );
+            $router['investigation_nodes'][$targetTreeNodeId]['updated_at'] = $now;
+        }
+
+        $state['campaigns'][$campaignId] = $campaign;
+        $this->saveState($state);
+
+        return [
+            'campaign' => $this->campaignStatus($campaign),
+            'moved_count' => $moved,
+            'target_pool_id' => $targetPoolId,
+            'target_pool_name' => $targetPool['name'] ?? $targetPoolId,
         ];
     }
 
@@ -4577,6 +4726,13 @@ class BaitSplitService
         }
         $suspectIds = array_values(array_unique($suspectIds));
 
+        // 收集所有精确到地址的用户ID
+        $allExactIds = [];
+        foreach ($exactByPool as $ids) {
+            $allExactIds = array_merge($allExactIds, $ids);
+        }
+        $allExactIds = array_values(array_unique($allExactIds));
+
         $router['wall_log'][] = [
             'at' => $now,
             'reason' => $reason,
@@ -4585,6 +4741,8 @@ class BaitSplitService
             'new_ip' => $newIp,
             'pools' => $eventPools,
             'suspect_count' => count($suspectIds),
+            'suspect_user_ids' => $suspectIds,
+            'exact_user_ids' => $allExactIds,
         ];
         $router['wall_log'] = array_slice($router['wall_log'], -200);
 

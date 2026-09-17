@@ -61,6 +61,50 @@ class AdminController extends PluginController
         );
     }
 
+    public function analyzeWallEvents(Request $request, string $campaignId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        $data = $request->validate([
+            'start_time' => ['nullable', 'integer'],
+            'end_time' => ['nullable', 'integer'],
+            'event_indexes' => ['nullable', 'array'],
+            'event_indexes.*' => ['integer', 'min:0'],
+        ]);
+        return $this->success(
+            BaitSplitService::fromDatabase()->analyzeWallEvents(
+                $campaignId,
+                isset($data['start_time']) ? (int) $data['start_time'] : null,
+                isset($data['end_time']) ? (int) $data['end_time'] : null,
+                $data['event_indexes'] ?? null
+            )
+        );
+    }
+
+    public function batchMoveUsers(Request $request, string $campaignId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        $data = $request->validate([
+            'user_ids' => ['required', 'array', 'min:1'],
+            'user_ids.*' => ['integer', 'min:1'],
+            'target_pool_id' => ['required', 'string', 'max:100'],
+            'note' => ['nullable', 'string', 'max:200'],
+        ]);
+        return $this->withStateLock(
+            fn() => $this->success(
+                BaitSplitService::fromDatabase()->batchMoveUsersToPool(
+                    $campaignId,
+                    $data['user_ids'],
+                    $data['target_pool_id'],
+                    $data['note'] ?? ''
+                )
+            )
+        );
+    }
+
     public function createPing(Request $request): JsonResponse
     {
         if ($response = $this->ensureEnabled()) {
