@@ -2713,33 +2713,29 @@ class BaitSplitService
             return [];
         }
 
+        // 只选陕西移动和河北移动
+        $wanted = ['陕西' => '移动', '河北' => '移动'];
         $selected = [];
-        foreach (['电信', '联通', '移动'] as $isp) {
-            $regions = [];
-            foreach ($nodes as $node) {
-                if (
-                    !is_array($node)
-                    || !str_contains((string) ($node['isp_name'] ?? ''), $isp)
-                    || isset($regions[(string) ($node['node_name'] ?? '')])
-                ) {
-                    continue;
-                }
-                $nodeId = (int) ($node['id'] ?? 0);
-                if ($nodeId <= 0) {
-                    continue;
-                }
-                $selected[] = $nodeId;
-                $regions[(string) ($node['node_name'] ?? '')] = true;
-                if (count($regions) >= 2) {
+        foreach ($nodes as $node) {
+            if (!is_array($node)) {
+                continue;
+            }
+            $nodeName = (string) ($node['node_name'] ?? '');
+            $ispName = (string) ($node['isp_name'] ?? '');
+            $nodeId = (int) ($node['id'] ?? 0);
+            if ($nodeId <= 0) {
+                continue;
+            }
+            foreach ($wanted as $region => $isp) {
+                if (str_contains($nodeName, $region) && str_contains($ispName, $isp)) {
+                    $selected[] = $nodeId;
+                    unset($wanted[$region]);
                     break;
                 }
             }
-        }
-        if ($selected === []) {
-            $selected = array_map(
-                fn(array $node): int => (int) ($node['id'] ?? 0),
-                array_slice(array_filter($nodes, 'is_array'), 0, 6)
-            );
+            if ($wanted === []) {
+                break;
+            }
         }
         return $this->normalizeIds($selected);
     }
