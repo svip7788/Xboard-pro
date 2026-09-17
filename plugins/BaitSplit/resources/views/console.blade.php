@@ -614,8 +614,7 @@ function renderWall(){
         // 窗口内拉取
         row.insertCell().textContent=ev.suspect_count||0;
         // 拿到过该地址
-        const exact=(ev.pools||[]).reduce((sum,p)=>sum+Number(p&&p.exact_count||0),0);
-        const exactCell=row.insertCell();exactCell.textContent=exact;exactCell.title='实际拿到过这个死地址的人数';
+        const exactCell=row.insertCell();exactCell.textContent=ev.exact_count||0;exactCell.title='实际拿到过这个死地址的人数';
     });
     if(!(wallData.events||[]).length){const row=events.insertRow();row.insertCell().colSpan=7;row.cells[0].className='empty';row.cells[0].textContent='暂无换 IP 事件记录'}
 }
