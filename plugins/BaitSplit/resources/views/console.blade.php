@@ -303,6 +303,25 @@
             <div class="scroll" style="max-height:320px"><table><thead><tr><th style="width:30px"><input type="checkbox" id="wallSelectAllHead" style="width:16px;height:16px"></th><th>时间</th><th>类型</th><th>旧IP→新IP</th><th>受影响池</th><th>窗口内拉取</th><th>拿到过该地址</th><th>操作</th></tr></thead><tbody id="wallEvents"></tbody></table></div>
         </section>
 
+        <!-- 单条日志转移用户弹窗 -->
+        <div id="wallEventMoveModal" class="modal">
+            <div class="modal-card" style="max-width:500px">
+                <div class="modal-head">
+                    <h2>转移拿到过该IP的用户</h2>
+                    <button class="secondary small" onclick="$('wallEventMoveModal').classList.remove('show')">关闭</button>
+                </div>
+                <div id="wallEventMoveInfo" style="margin-bottom:12px;font-size:13px;color:var(--muted)"></div>
+                <div class="field">
+                    <label>目标分组</label>
+                    <select id="wallEventMoveTarget" style="height:38px"></select>
+                </div>
+                <div class="actions" style="margin-top:16px">
+                    <button id="wallEventMoveBtn">确认转移</button>
+                    <button class="secondary" onclick="$('wallEventMoveModal').classList.remove('show')">取消</button>
+                </div>
+            </div>
+        </div>
+
         <!-- 墙事件分析弹窗 -->
         <div id="wallAnalysisModal" class="modal">
             <div class="modal-card" style="max-width:800px">
@@ -615,8 +634,15 @@ function renderWall(){
         row.insertCell().textContent=ev.suspect_count||0;
         // 拿到过该地址
         const exactCell=row.insertCell();exactCell.textContent=ev.exact_count||0;exactCell.title='实际拿到过这个死地址的人数';
-        // 删除按钮
+        // 操作按钮
         const actCell=row.insertCell();
+        // 转移用户按钮
+        if(ev.exact_count>0){
+            const moveBtn=document.createElement('button');moveBtn.className='small';moveBtn.textContent='转移';moveBtn.style.marginRight='6px';
+            moveBtn.onclick=()=>openWallEventMove(ev);
+            actCell.appendChild(moveBtn);
+        }
+        // 删除按钮
         const delBtn=document.createElement('button');delBtn.className='secondary small';delBtn.textContent='删除';
         delBtn.onclick=async()=>{if(!confirm('删除此条日志？'))return;try{await request(api(`/wall-log/${ev.id}`),{method:'DELETE'});toast('已删除');loadWallLog()}catch(e){toast(e.message,'error')}};
         actCell.appendChild(delBtn);
@@ -625,6 +651,29 @@ function renderWall(){
 }
 async function loadWallLog(){const campaignId=current?.id;if(!campaignId||!router()){wallData=null;renderWall();return}const data=await request(api('/wall-log?limit=200'));if(current?.id!==campaignId)return;wallData=data;renderWall()}
 $('refreshWall').onclick=async()=>{try{loading(true,'正在加载日志…');await loadWallLog()}catch(error){toast(error.message,'error')}finally{loading(false)}};
+// 单条日志转移用户
+let wallEventToMove=null;
+function openWallEventMove(ev){
+    wallEventToMove=ev;
+    $('wallEventMoveInfo').innerHTML=`<strong>${ev.old_ip} → ${ev.new_ip}</strong><br>共 <strong>${ev.exact_count}</strong> 人拿到过该地址，将被转移到目标分组`;
+    fillSelect('wallEventMoveTarget',getTransferTargets(),'','选择目标分组');
+    $('wallEventMoveModal').classList.add('show');
+}
+$('wallEventMoveBtn').onclick=async()=>{
+    if(!wallEventToMove)return;
+    const targetPoolId=$('wallEventMoveTarget').value;
+    if(!targetPoolId)return toast('请选择目标分组','error');
+    const userIds=wallEventToMove.exact_user_ids||[];
+    if(!userIds.length)return toast('该日志没有用户记录','error');
+    if(!confirm(`确定将 ${userIds.length} 个用户转移到选中的分组？`))return;
+    try{
+        loading(true,'正在转移…');
+        const result=await request(api('/users/batch-move'),{method:'POST',body:JSON.stringify({user_ids:userIds,target_pool_id:targetPoolId,note:`墙事件 ${wallEventToMove.old_ip} 用户转移`})});
+        updateCurrent(result);
+        toast(`已转移 ${result.moved_count} 个用户到「${result.target_pool_name}」`);
+        $('wallEventMoveModal').classList.remove('show');
+    }catch(error){toast(error.message,'error')}finally{loading(false)}
+};
 // 全选墙事件
 $('wallSelectAll').onchange=$('wallSelectAllHead').onchange=function(){
     const checked=this.checked;
