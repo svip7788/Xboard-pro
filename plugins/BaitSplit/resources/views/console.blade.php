@@ -624,7 +624,7 @@ function renderWall(){
     if(!(wallData.events||[]).length){const row=events.insertRow();row.insertCell().colSpan=8;row.cells[0].className='empty';row.cells[0].textContent='暂无换 IP 事件记录'}
 }
 async function loadWallLog(){const campaignId=current?.id;if(!campaignId||!router()){wallData=null;renderWall();return}const data=await request(api('/wall-log?limit=200'));if(current?.id!==campaignId)return;wallData=data;renderWall()}
-$('refreshWall').onclick=()=>loadWallLog().catch(error=>toast(error.message,'error'));
+$('refreshWall').onclick=async()=>{try{loading(true,'正在加载日志…');await loadWallLog()}catch(error){toast(error.message,'error')}finally{loading(false)}};
 // 全选墙事件
 $('wallSelectAll').onchange=$('wallSelectAllHead').onchange=function(){
     const checked=this.checked;
