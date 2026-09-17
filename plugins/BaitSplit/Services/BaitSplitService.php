@@ -4516,7 +4516,7 @@ class BaitSplitService
         if ($source === '') {
             return $reason === 'blocked';
         }
-        if (in_array($source, ['auto', 'rebuild'], true)) {
+        if (in_array($source, ['auto', 'rebuild', 'drift'], true)) {
             return true;
         }
         if (
