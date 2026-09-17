@@ -4753,11 +4753,11 @@ class BaitSplitService
                 'suspect_count' => $stale ? 0 : count($poolSuspects),
                 'exact_count' => $stale ? 0 : count($exactSuspects),
             ];
-            if ($reason !== 'blocked' || $stale) {
+            // 不管是否被墙，都收集用户ID（方便后续分析）
+            // 但如果是 stale（老IP首墙），曝光窗口不可信，不收集
+            if ($stale) {
                 continue;
             }
-            // 两份名单各自成立：池级那份可能因为归属刚变动而空着，不该顺带
-            // 把精确到地址的证据也丢掉
             $suspectIds = array_merge($suspectIds, $poolSuspects);
             if ($exactSuspects !== []) {
                 $exactByPool[$poolId] = $exactSuspects;
