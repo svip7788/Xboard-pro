@@ -4199,8 +4199,21 @@ class BaitSplitService
             ];
         }
         
+        // 收集所有涉及的池（去重）
+        $affectedPools = [];
+        $seenPoolIds = [];
+        foreach ($events as $ev) {
+            foreach ($ev['pools'] as $p) {
+                if (!isset($seenPoolIds[$p['pool_id']])) {
+                    $seenPoolIds[$p['pool_id']] = true;
+                    $affectedPools[] = ['id' => $p['pool_id'], 'name' => $p['pool_name']];
+                }
+            }
+        }
+        
         return [
             'events' => $events,
+            'affected_pools' => $affectedPools,
             'pending_ip_rotates' => $this->pendingIpRotateCount(),
         ];
     }

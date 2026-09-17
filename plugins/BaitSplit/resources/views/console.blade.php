@@ -650,19 +650,21 @@ function renderWall(){
     });
     if(!(wallData.events||[]).length){const row=events.insertRow();row.insertCell().colSpan=8;row.cells[0].className='empty';row.cells[0].textContent='暂无换 IP 事件记录'}
 }
-async function loadWallLog(){
+async function loadWallLog(updateFilter=false){
     const campaignId=current?.id;if(!campaignId||!router()){wallData=null;renderWall();return}
     const poolId=$('wallPoolFilter').value;
     const url=poolId?`/wall-log?limit=200&pool_id=${encodeURIComponent(poolId)}`:'/wall-log?limit=200';
-    const data=await request(api(url));if(current?.id!==campaignId)return;wallData=data;renderWall()
+    const data=await request(api(url));if(current?.id!==campaignId)return;wallData=data;
+    if(updateFilter)fillWallPoolFilter(data.affected_pools);
+    renderWall()
 }
-function fillWallPoolFilter(){
+function fillWallPoolFilter(affectedPools){
     const sel=$('wallPoolFilter');const cur=sel.value;sel.innerHTML='<option value="">全部池</option>';
-    const pools=router()?.pools||[];pools.forEach(p=>{const opt=document.createElement('option');opt.value=p.id;opt.textContent=p.name||p.id;sel.appendChild(opt)});
+    (affectedPools||[]).forEach(p=>{const opt=document.createElement('option');opt.value=p.id;opt.textContent=p.name||p.id;sel.appendChild(opt)});
     sel.value=cur;
 }
-$('wallPoolFilter').onchange=async()=>{try{loading(true,'正在加载日志…');await loadWallLog()}catch(error){toast(error.message,'error')}finally{loading(false)}};
-$('refreshWall').onclick=async()=>{try{loading(true,'正在加载日志…');fillWallPoolFilter();await loadWallLog()}catch(error){toast(error.message,'error')}finally{loading(false)}};
+$('wallPoolFilter').onchange=async()=>{try{loading(true,'正在加载日志…');await loadWallLog(false)}catch(error){toast(error.message,'error')}finally{loading(false)}};
+$('refreshWall').onclick=async()=>{try{loading(true,'正在加载日志…');await loadWallLog(true)}catch(error){toast(error.message,'error')}finally{loading(false)}};
 // 单条日志转移用户
 let wallEventToMove=null;
 function openWallEventMove(ev){
@@ -778,7 +780,7 @@ $('searchOverrides').onclick=()=>{overrideModal.q=$('overrideSearch').value.trim
 $('overrideSearch').onkeydown=event=>{if(event.key==='Enter')$('searchOverrides').click()};
 $('prevOverrides').onclick=()=>loadOverrides(overrideModal.page-1).catch(error=>toast(error.message,'error'));
 $('nextOverrides').onclick=()=>loadOverrides(overrideModal.page+1).catch(error=>toast(error.message,'error'));
-$('campaignSelect').onchange=async event=>{const selectedId=event.target.value;try{loading(true,'正在切换任务…');await refresh(false);current=campaigns.find(item=>item.id===selectedId)||blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent();await loadOverrides();fillWallPoolFilter();await loadWallLog().catch(()=>{})}catch(error){toast(error.message,'error')}finally{loading(false)}};
+$('campaignSelect').onchange=async event=>{const selectedId=event.target.value;try{loading(true,'正在切换任务…');await refresh(false);current=campaigns.find(item=>item.id===selectedId)||blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent();await loadOverrides();await loadWallLog(true).catch(()=>{})}catch(error){toast(error.message,'error')}finally{loading(false)}};
 $('newCampaign').onclick=()=>{current=blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent()};
 $('copyCampaignId').onclick=async()=>{const id=current?.id||$('campaignIdDisplay').value;if(!id)return toast('请先保存任务','error');try{await navigator.clipboard.writeText(id);toast(`campaign_id 已复制：${id}`)}catch{toast('复制失败，请手动选中复制','error')}};
 $('deleteCampaign').onclick=async()=>{try{if(!confirm(`删除“${current.name}”？`))return;campaigns=await request(api(''),{method:'DELETE'});current=campaigns[0]||blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent();await loadOverrides();toast('任务已删除')}catch(error){toast(error.message,'error')}};
@@ -819,8 +821,7 @@ async function boot(){
     }
     $('authWarning').style.display='none';
     await loadOverrides().catch(()=>{});
-    fillWallPoolFilter();
-    await loadWallLog().catch(()=>{});
+    await loadWallLog(true).catch(()=>{});
     loading(false);
     setInterval(()=>{
         if(!document.hidden&&!refreshing){
