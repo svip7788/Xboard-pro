@@ -4280,15 +4280,13 @@ class BaitSplitService
             foreach ($pools as $pool) {
                 $poolNameMap[$pool['id']] = $pool['name'] ?? $pool['id'];
             }
+            // assignments 结构是 {userId: poolId}
             $userPoolMap = [];
-            foreach ($assignments as $poolId => $userIdArr) {
-                if (!is_array($userIdArr)) {
+            foreach ($assignments as $userId => $poolId) {
+                if (!is_string($poolId)) {
                     continue;
                 }
-                $poolName = $poolNameMap[$poolId] ?? $poolId;
-                foreach ($userIdArr as $uid) {
-                    $userPoolMap[(int) $uid] = $poolName;
-                }
+                $userPoolMap[(int) $userId] = $poolNameMap[$poolId] ?? $poolId;
             }
             
             foreach ($userCounts as $userId => $count) {
