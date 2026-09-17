@@ -4273,12 +4273,18 @@ class BaitSplitService
             $router = $campaign['router'] ?? [];
             $pools = $router['pools'] ?? [];
             $assignments = $router['assignments'] ?? [];
+            if (!is_array($assignments)) {
+                $assignments = [];
+            }
             $poolNameMap = [];
             foreach ($pools as $pool) {
                 $poolNameMap[$pool['id']] = $pool['name'] ?? $pool['id'];
             }
             $userPoolMap = [];
             foreach ($assignments as $poolId => $userIdArr) {
+                if (!is_array($userIdArr)) {
+                    continue;
+                }
                 $poolName = $poolNameMap[$poolId] ?? $poolId;
                 foreach ($userIdArr as $uid) {
                     $userPoolMap[(int) $uid] = $poolName;
