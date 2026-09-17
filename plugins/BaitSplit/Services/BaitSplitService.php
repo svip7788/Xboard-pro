@@ -4156,18 +4156,23 @@ class BaitSplitService
         return $ids;
     }
 
-    public function wallReport(string $campaignId, int $limit = 100): array
+    public function wallReport(string $campaignId, int $limit = 100, ?string $poolId = null): array
     {
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         $limit = max(1, min(500, $limit));
         
         // 从数据库读取（持久化数据）
-        $rows = DB::table('v2_bait_split_wall_events')
+        $query = DB::table('v2_bait_split_wall_events')
             ->where('campaign_id', $campaignId)
-            ->orderByDesc('event_at')
-            ->limit($limit)
-            ->get();
+            ->orderByDesc('event_at');
+        
+        // 按池ID过滤（pool_ids 是 JSON 数组）
+        if ($poolId !== null && $poolId !== '') {
+            $query->whereRaw('JSON_CONTAINS(pool_ids, ?)', [json_encode($poolId)]);
+        }
+        
+        $rows = $query->limit($limit)->get();
         
         $events = [];
         foreach ($rows as $row) {

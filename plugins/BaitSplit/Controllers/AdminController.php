@@ -52,11 +52,13 @@ class AdminController extends PluginController
         }
         $data = $request->validate([
             'limit' => ['nullable', 'integer', 'min:1', 'max:200'],
+            'pool_id' => ['nullable', 'string', 'max:100'],
         ]);
         return $this->success(
             BaitSplitService::fromDatabase()->wallReport(
                 $campaignId,
-                (int) ($data['limit'] ?? 100)
+                (int) ($data['limit'] ?? 100),
+                $data['pool_id'] ?? null
             )
         );
     }
