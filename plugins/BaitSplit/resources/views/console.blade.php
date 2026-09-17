@@ -597,8 +597,8 @@ function renderWall(){
         const checkCell=row.insertCell();
         if(ev.reason==='blocked'){
             const cb=document.createElement('input');cb.type='checkbox';cb.style.cssText='width:16px;height:16px';
-            cb.dataset.index=ev.index;
-            cb.onchange=()=>{if(cb.checked)wallSelected.add(ev.index);else wallSelected.delete(ev.index);updateWallSelectedCount()};
+            cb.dataset.eventId=ev.id;
+            cb.onchange=()=>{if(cb.checked)wallSelected.add(ev.id);else wallSelected.delete(ev.id);updateWallSelectedCount()};
             checkCell.appendChild(cb);
         }
         // 时间列
@@ -627,7 +627,7 @@ $('wallSelectAll').onchange=$('wallSelectAllHead').onchange=function(){
     $('wallSelectAll').checked=$('wallSelectAllHead').checked=checked;
     wallSelected.clear();
     document.querySelectorAll('#wallEvents input[type=checkbox]').forEach(cb=>{
-        cb.checked=checked;if(checked)wallSelected.add(Number(cb.dataset.index));
+        cb.checked=checked;if(checked)wallSelected.add(Number(cb.dataset.eventId));
     });
     updateWallSelectedCount();
 };
@@ -637,10 +637,10 @@ $('analyzeWall').onclick=async()=>{
     try{
         const startTime=$('wallStartTime').value?Math.floor(new Date($('wallStartTime').value).getTime()/1000):null;
         const endTime=$('wallEndTime').value?Math.floor(new Date($('wallEndTime').value).getTime()/1000):null;
-        const eventIndexes=wallSelected.size>0?[...wallSelected]:null;
-        if(!startTime&&!endTime&&!eventIndexes){return toast('请选择事件或设置时间范围','error')}
+        const eventIds=wallSelected.size>0?[...wallSelected]:null;
+        if(!startTime&&!endTime&&!eventIds){return toast('请选择事件或设置时间范围','error')}
         loading(true,'正在分析…');
-        const result=await request(api('/wall-log/analyze'),{method:'POST',body:JSON.stringify({start_time:startTime,end_time:endTime,event_indexes:eventIndexes})});
+        const result=await request(api('/wall-log/analyze'),{method:'POST',body:JSON.stringify({start_time:startTime,end_time:endTime,event_ids:eventIds})});
         analysisUsers=result.users||[];
         $('wallAnalysisSummary').textContent=`共分析 ${result.event_count} 条被墙事件，涉及 ${analysisUsers.length} 个用户`;
         renderAnalysisUsers();

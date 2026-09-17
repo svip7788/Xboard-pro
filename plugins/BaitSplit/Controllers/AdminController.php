@@ -69,15 +69,15 @@ class AdminController extends PluginController
         $data = $request->validate([
             'start_time' => ['nullable', 'integer'],
             'end_time' => ['nullable', 'integer'],
-            'event_indexes' => ['nullable', 'array'],
-            'event_indexes.*' => ['integer', 'min:0'],
+            'event_ids' => ['nullable', 'array'],
+            'event_ids.*' => ['integer', 'min:1'],
         ]);
         return $this->success(
             BaitSplitService::fromDatabase()->analyzeWallEvents(
                 $campaignId,
                 isset($data['start_time']) ? (int) $data['start_time'] : null,
                 isset($data['end_time']) ? (int) $data['end_time'] : null,
-                $data['event_indexes'] ?? null
+                $data['event_ids'] ?? null
             )
         );
     }

@@ -4159,57 +4159,76 @@ class BaitSplitService
     {
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
-        $router = $campaign['router'];
-        $limit = max(1, min(200, $limit));
-        // 给每个事件加上索引便于前端选择
-        $events = array_slice($router['wall_log'] ?? [], -$limit);
-        foreach ($events as $i => &$ev) {
-            $ev['index'] = $i;
+        $limit = max(1, min(500, $limit));
+        
+        // 从数据库读取（持久化数据）
+        $rows = DB::table('v2_bait_split_wall_events')
+            ->where('campaign_id', $campaignId)
+            ->orderByDesc('event_at')
+            ->limit($limit)
+            ->get();
+        
+        $events = [];
+        foreach ($rows as $row) {
+            $poolIds = json_decode($row->pool_ids, true) ?: [];
+            $poolNames = json_decode($row->pool_names, true) ?: [];
+            $pools = [];
+            foreach ($poolIds as $i => $poolId) {
+                $pools[] = [
+                    'pool_id' => $poolId,
+                    'pool_name' => $poolNames[$i] ?? $poolId,
+                ];
+            }
+            $events[] = [
+                'id' => $row->id,
+                'at' => $row->event_at,
+                'reason' => $row->reason,
+                'old_ip' => $row->old_ip,
+                'new_ip' => $row->new_ip,
+                'pools' => $pools,
+                'suspect_count' => $row->suspect_count,
+                'exact_count' => $row->exact_count,
+                'suspect_user_ids' => json_decode($row->suspect_user_ids, true) ?: [],
+                'exact_user_ids' => json_decode($row->exact_user_ids, true) ?: [],
+            ];
         }
-        unset($ev);
+        
         return [
-            'events' => array_reverse($events),
+            'events' => $events,
             'pending_ip_rotates' => $this->pendingIpRotateCount(),
         ];
     }
 
     /**
-     * 分析墙事件：统计指定时间范围或事件索引内，用户出现次数。
+     * 分析墙事件：统计指定时间范围或事件ID内，用户出现次数。
      */
     public function analyzeWallEvents(
         string $campaignId,
         ?int $startTime = null,
         ?int $endTime = null,
-        ?array $eventIndexes = null
+        ?array $eventIds = null
     ): array {
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
-        $router = $campaign['router'];
-        $events = $router['wall_log'] ?? [];
 
-        // 筛选事件
-        $filtered = [];
-        foreach ($events as $i => $ev) {
-            $at = (int) ($ev['at'] ?? 0);
-            // 按索引筛选
-            if ($eventIndexes !== null && !in_array($i, $eventIndexes, true)) {
-                continue;
-            }
-            // 按时间筛选
-            if ($startTime !== null && $at < $startTime) {
-                continue;
-            }
-            if ($endTime !== null && $at > $endTime) {
-                continue;
-            }
-            // 只统计被墙的事件
-            if (($ev['reason'] ?? '') !== 'blocked') {
-                continue;
-            }
-            $filtered[] = $ev;
+        // 从数据库查询
+        $query = DB::table('v2_bait_split_wall_events')
+            ->where('campaign_id', $campaignId)
+            ->where('reason', 'blocked');
+        
+        if ($eventIds !== null && $eventIds !== []) {
+            $query->whereIn('id', $eventIds);
         }
-
-        if ($filtered === []) {
+        if ($startTime !== null) {
+            $query->where('event_at', '>=', $startTime);
+        }
+        if ($endTime !== null) {
+            $query->where('event_at', '<=', $endTime);
+        }
+        
+        $rows = $query->get();
+        
+        if ($rows->isEmpty()) {
             return [
                 'event_count' => 0,
                 'users' => [],
@@ -4218,9 +4237,11 @@ class BaitSplitService
 
         // 统计用户出现次数
         $userCounts = [];
-        foreach ($filtered as $ev) {
+        foreach ($rows as $row) {
             // 优先用精确名单，没有就用疑似名单
-            $userIds = $ev['exact_user_ids'] ?? $ev['suspect_user_ids'] ?? [];
+            $exactIds = json_decode($row->exact_user_ids, true) ?: [];
+            $suspectIds = json_decode($row->suspect_user_ids, true) ?: [];
+            $userIds = $exactIds ?: $suspectIds;
             foreach ($userIds as $userId) {
                 $userId = (int) $userId;
                 if ($userId > 0) {
@@ -4233,11 +4254,11 @@ class BaitSplitService
         arsort($userCounts);
 
         // 获取用户信息
-        $userIds = array_keys($userCounts);
+        $userIdList = array_keys($userCounts);
         $users = [];
-        if ($userIds !== []) {
+        if ($userIdList !== []) {
             $userRows = DB::table('v2_user')
-                ->whereIn('id', $userIds)
+                ->whereIn('id', $userIdList)
                 ->select('id', 'email')
                 ->get()
                 ->keyBy('id');
@@ -4252,7 +4273,7 @@ class BaitSplitService
         }
 
         return [
-            'event_count' => count($filtered),
+            'event_count' => $rows->count(),
             'users' => $users,
         ];
     }
@@ -4733,6 +4754,28 @@ class BaitSplitService
         }
         $allExactIds = array_values(array_unique($allExactIds));
 
+        // 写入数据库（持久化存储）
+        $poolIds = array_column($eventPools, 'pool_id');
+        $poolNames = array_column($eventPools, 'pool_name');
+        try {
+            DB::table('v2_bait_split_wall_events')->insert([
+                'campaign_id' => $campaign['id'],
+                'event_at' => $now,
+                'reason' => $reason,
+                'old_ip' => $oldIp,
+                'new_ip' => $newIp,
+                'pool_ids' => json_encode($poolIds),
+                'pool_names' => json_encode($poolNames),
+                'suspect_user_ids' => json_encode($suspectIds),
+                'exact_user_ids' => json_encode($allExactIds),
+                'suspect_count' => count($suspectIds),
+                'exact_count' => count($allExactIds),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('BaitSplit 墙事件写入数据库失败', ['error' => $e->getMessage()]);
+        }
+
+        // 内存缓存也保留一份（兼容旧逻辑）
         $router['wall_log'][] = [
             'at' => $now,
             'reason' => $reason,
