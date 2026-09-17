@@ -1,0 +1,118 @@
+订阅特化 HTTP 查询配置补充
+本文是《新手文档.md》中“订阅特化”部分的补充，重点说明 HTTP 查询接口的对接格式、返回值和排查方法。节点安装、站点创建、反向代理和基础测试流程请以《新手文档.md》为准。
+
+一、适用场景
+当订阅面板不方便直接提供数据库只读访问时，可以由面板或独立服务提供一个“通过订阅 Token 查询用户”的 HTTP 接口。节点收到订阅请求后，会按照 matches 中的路径规则提取 Token，并调用指定的 HTTP 查询服务。
+
+如果只需要按 Token 进行规则匹配或风险用户屏蔽，不需要查询用户资料，则不必配置 HTTP 查询，直接使用《新手文档.md》中的“只匹配 Token”方案即可。
+
+二、节点配置
+在节点的 config.yaml 中补充 lookups 和带有 lookup 的匹配项。示例：
+
+subscription_specialization:
+  lookups:
+    subscriptions:
+      mode: http
+      lookup_url: https://subscription-api.example.com/v1/get_user_by_token
+      api_key: 替换为仅查询用户信息的接口密钥
+    #   timeout: 2s
+    #   cache_success_ttl: 1h
+    #   cache_failure_ttl: 30s
+    #   cache_max_entries: 100000
+  matches:
+    - lookup: subscriptions
+      path: /api/v1/client/subscribe
+      query_parameter: token
+    - lookup: subscriptions
+      path_template: /s/{token}
+配置要点：
+
+mode 必须填写为 http。
+lookup_url 填写查询接口地址，不要把订阅 Token 固定写入 URL。地址中已有的查询参数会继续保留。
+api_key 应使用专用、低权限、可轮换的接口密钥，不要使用管理后台密码或节点 Token。
+timeout、缓存时间和缓存数量通常保持示例值即可；需要调整时，应结合查询服务性能和订阅请求量评估。
+matches 中的 lookup 必须与 lookups 下的名称一致。没有配置 lookup 的匹配项只提取 Token，不会调用 HTTP 服务。
+path_template 必须且只能包含一个 {token}；也可以使用精确的 path 配合 query_parameter。
+三、HTTP 接口约定
+节点会向 lookup_url 发起不跟随重定向的 GET 请求，并追加以下内容：
+
+GET /v1/get_user_by_token?token=URL_ENCODED_TOKEN HTTP/1.1
+Host: subscription-api.example.com
+X-Api-Key: configured-api-key
+其中：
+
+token 是从订阅请求中提取的 Token，按 URL 查询参数进行编码。
+请求头名称固定为 X-Api-Key，不能改成其他自定义名称。
+查询服务应直接返回最终结果，不要依赖 3xx 跳转到登录页或其他地址。
+Token 可能包含特殊字符，服务端应按标准 URL 查询参数解析，不能简单按原始字符串截取。
+四、响应格式
+查询成功时返回 200 OK，响应体为 JSON：
+
+{
+  "email": "subscriber@example.com",
+  "uid": 123
+}
+email 和 uid 都是必填字段，uid 必须是非负整数。其他字段不会用于身份识别，可以不返回。响应体不得超过 64 KiB，建议只返回必要字段，不要返回密码、订阅链接、流量明细或其他个人资料。
+
+当 Token 不存在时，查询服务应返回 404 Not Found。这表示“没有找到对应用户”，不是节点故障。
+
+以下情况会被视为查询失败：
+
+返回除 200、404 之外的状态码；
+请求超时或网络连接失败；
+响应体超过大小限制；
+200 响应不是合法 JSON；
+email 或 uid 缺失，或 uid 不是非负整数。
+查询失败时，节点仍会保留已经提取到的 Token，邮箱和 UID 为空，并按放行优先处理。也就是说，HTTP 查询服务异常通常不会直接导致订阅请求中断；如需阻断异常请求，应在面板或节点规则中另行设计，不要依赖查询接口的失败结果。
+
+五、规则和日志中的结果
+启用 HTTP 查询后，订阅请求可产生以下四类信息：
+
+信息	含义
+subscription_token	从请求路径或查询参数中提取的 Token。
+subscription_email	查询成功后返回的邮箱；未查询到或查询失败时为空。
+subscription_uid	查询成功后返回的用户 UID；未查询到或查询失败时为 0。
+subscription_resolved	是否成功得到用户身份；查询成功且返回有效身份时为 true。
+HTTP 404 和查询失败都会使 subscription_resolved 保持为 false，但两者含义不同：前者是服务确认没有对应用户，后者是查询过程没有完成。排查问题时应分别记录和统计这两类情况。
+
+如果不希望保存邮箱和 UID，可以移除匹配项中的 lookup，改用 Token-only 配置。Token 本身仍属于用户标识，也应按照敏感数据处理。
+
+六、接口自测
+在查询服务所在网络环境中，使用测试 Token 验证接口响应。不要把真实用户 Token 写入 shell 历史、工单或公开聊天记录：
+
+curl --fail-with-body --silent --show-error \
+  --max-time 5 \
+  -H 'X-Api-Key: 替换为测试密钥' \
+  --get \
+  --data-urlencode 'token=替换为测试Token' \
+  'https://subscription-api.example.com/v1/get_user_by_token'
+预期结果：
+
+已登记的测试 Token 返回 200，并包含字符串类型的 email 和非负整数类型的 uid。
+未登记的测试 Token 返回 404。
+不应跳转到登录页，也不应返回 HTML 错误页面。
+接口自测通过后，再通过订阅域名发起一次请求，并在节点日志或站点访问日志中确认 Token 和身份结果是否符合预期。访问日志上传存在周期，不一定立即显示。
+
+七、安全与隐私要求
+生产环境必须使用 HTTPS，并校验证书；不要为了排查方便长期关闭证书校验。
+查询接口只允许已部署节点访问，防止接口被公开用于枚举 Token。
+API 密钥应专用、只读、可撤销，并在泄露或人员变更时及时轮换。
+查询服务、网关、访问日志和监控系统不要记录完整 Token、API 密钥或完整订阅 URL。
+HTTP 查询接口只返回 email 和 uid 等必要字段，不要返回密码、原始订阅内容或账户管理信息。
+节点配置文件包含 API 密钥，应限制文件权限，备份和工单中应先脱敏。
+如使用反向代理，确保代理不会把 X-Api-Key 转发给不相关的上游服务。
+八、常见问题
+返回 401 或 403
+通常是 API 密钥错误、密钥权限不足或查询服务限制了节点来源地址。检查 api_key、服务端鉴权规则和网络白名单；不要直接改用管理员密钥。
+
+返回 404，但用户确定存在
+检查节点实际提取的 Token 是否正确，尤其是订阅路径、查询参数名称、URL 编码和前后空白。再确认查询服务使用的 Token 与面板生成的 Token 是同一字段。
+
+节点日志显示查询失败
+依次检查 lookup_url 是否可达、DNS 和防火墙是否正常、证书是否有效、服务端是否在超时内返回，以及响应是否为合法 JSON。若服务端返回 200，重点检查 email 和 uid 的字段类型。
+
+查询接口正常，但邮箱和 UID 仍为空
+确认匹配项写了正确的 lookup 名称，并且该名称与 lookups 下的配置完全一致。如果省略了 lookup，当前请求只会进行 Token 匹配，不会查询用户身份。
+
+修改配置后没有生效
+确认编辑的是节点实际使用的配置文件，并重启节点。随后重新发起请求；缓存可能使相同 Token 的旧查询结果在短时间内继续生效。

@@ -1,0 +1,236 @@
+subwaf 新手文档
+本文介绍从安装节点到接入订阅接口的基本流程。文中的域名、路径和 Token 均为示例，请替换为自己的内容。
+
+TG 售后群，已有套餐的用户才能进。
+
+一、创建节点
+登录 SubWAF 控制台，进入租户空间：
+
+打开“节点”页面，点击“添加节点”。
+填写节点名称，例如“订阅面板-01”。
+保存后复制节点 Token。Token 只显示一次，请立即保存。
+如果 Token 丢失，在节点列表点击“重置 token”。重置后旧 Token 会失效，节点配置也要同步修改。
+
+二、安装节点
+节点机器需要安装 Docker。选择一个独立安装目录，例如 /opt/waf-node：
+
+cd /opt/waf-node
+bash <(curl -fLSs https://dl.nyafw.com/download/waf-node/node-install.sh)
+首次运行脚本时输入 y 确认安装。脚本会下载节点程序并生成 compose.yaml、config.yaml。节点目前支持 amd64 和 arm64。
+
+有关节点部署的重要提醒：
+
+waf 节点建议部署在和订阅面板同一台机器。
+一个 node_token 只能在一个节点实例（你可以理解为一个安装目录）中使用，切勿多次使用。
+多个站点可以对接在同一个节点上，但是配置 subscription_specialization 会有些麻烦。如果嫌麻烦，可以 1:1 部署节点和站点，即部署多个 node_token 和节点实例，这样是最容易配置的。
+配置完毕，订阅接口已畅通后，请按「自测是否配置正确」章节进行检查，不要以为通了就没事了。
+关注售后群，有时会有版本更新，请注意更新。
+三、配置节点
+编辑 /opt/waf-node/config.yaml：
+
+listen_addr: 127.0.0.2:8081
+panel_url: https://sw.nyafw.com
+node_token: 替换为控制台生成的节点Token
+state_dir: /var/lib/subwaf
+# poll_interval: 30s
+# upload_interval: 30s
+# log_batch_size: 1000
+# max_queue_items: 10000
+
+# 上游使用自签名 HTTPS 证书时才开启
+# upstream_tls_skip_verify: true
+
+# 如果前置反代不在本机，也请填写它所在的可信网段
+trusted_proxies:
+  - 127.0.0.0/8
+  - ::1/128
+# trusted_proxy_header: x-real-ip
+
+event:
+  exclude_headers:
+    - authorization
+    - cookie
+    - proxy-authorization
+  # log_rate_limit:
+  #   enabled: true
+  #   window: 1s
+  #   max_events_per_client_ip: 100
+  #   max_events_per_window: 10000
+  #   max_client_ips: 100000
+字段说明：
+
+listen_addr：节点监听地址。与 1Panel/Nginx 同机时可以使用 127.0.0.2:8081。
+panel_url：控制面板地址，不要填写节点自己的地址。
+node_token：第三步创建节点时复制的 Token。
+state_dir：节点保存状态和待上传日志的位置。
+poll_interval：节点拉取控制面配置的间隔，通常保持默认值即可。
+upload_interval：节点上传访问日志的间隔，通常保持默认值即可。
+log_batch_size、max_queue_items：单批上传数量和本地待上传日志队列上限。
+trusted_proxies：可信反代的网段，用于获取真实 IP；只填写您信任的代理网段。
+trusted_proxy_header：反代传递真实 IP 使用的请求头，需与反代配置一致；不使用时可删除。
+event.exclude_headers：不记录的请求头，建议保留这三个敏感请求头。
+event.log_rate_limit：访问日志限流配置，用于避免异常流量占满本地队列，通常保持默认值即可。
+upstream_tls_skip_verify：跳过上游 HTTPS 证书校验，仅适用于自签名证书，不建议用于生产环境。
+保存后重启节点。除非确实需要调整性能或日志限流，否则其余参数保持示例中的默认值即可。
+
+3.5：订阅特化
+订阅特化用于识别订阅请求对应的用户。启用后，节点会从指定的订阅路径中提取 Token，并根据配置的 Lookup 查询用户 UID 和 Email。识别结果会用于访问日志、风险用户屏蔽和规则判断，也可以在规则中使用以下变量：
+
+subscription_token：请求中的订阅 Token。
+subscription_email：Lookup 查询到的用户邮箱。
+subscription_uid：Lookup 查询到的用户 UID。
+subscription_resolved：是否成功查询到用户身份。
+这是可选功能，不需要按用户身份进行风控时可以不配置。如果您不希望上传邮箱等个人信息，可以只上传 Token，不填写 Lookup 查询配置。 这样仍然可以基于 Token 做一定程度的屏蔽和排查，同时减少隐私信息的收集。需要注意，Token 本身仍属于用户标识；如果连 Token 也不希望记录，请不要开启订阅特化，但这样「用户屏蔽规则」也完全不会生效。
+
+方案一：数据库查询（V2Board/SSPanel-UIM）
+节点使用只读 MySQL 账号查询订阅用户。application 必须填写 v2board 或 sspanel_uim，不能填写其他值：
+
+subscription_specialization:
+  reject_unmatch: false
+  lookups:
+    default:
+      mode: database
+      driver: mysql
+      application: v2board # 或 sspanel_uim
+      # 建议使用仅有 SELECT 权限的数据库账号，不要使用面板管理员账号
+      dsn: '只读用户名:密码@tcp(127.0.0.1:3306)/数据库名?charset=utf8mb4&parseTime=true'
+      # timeout: 2s
+      # max_open_conns: 25
+      # max_idle_conns: 10
+      # conn_max_lifetime: 5m
+      # conn_max_idle_time: 1m
+      # cache_success_ttl: 1h
+      # cache_failure_ttl: 30s
+      # cache_max_entries: 100000
+  matches:
+    - lookup: default
+      path: /api/v1/client/subscribe
+      query_parameter: token
+    - lookup: default
+      path_template: /s/{token}
+reject_unmatch 控制是否只允许匹配到上述订阅路径的请求通过：如果节点只用于清洗订阅接口，可以改为 true，所有未匹配订阅路径的请求都会直接返回 403；如果同一节点还代理其他站点或接口，请保持为 false。
+
+V2Board 查询 v2_user 表中的 token、id 和 email；SSPanel-UIM 查询 link 与 user 表中的对应记录。节点只查询用户身份，不会根据账号状态、到期时间或流量额度过滤，因此建议使用专用只读账号，并限制该账号只能访问所需的数据表。
+
+方案二：只匹配 Token（不查询邮箱和 UID）
+只需配置订阅路径和 Token 参数，无需配置 Lookup。节点会提取 Token 并写入访问日志，之后即可按 Token 做规则匹配和用户屏蔽；Email 和 UID 为空属于预期现象。
+
+subscription_specialization:
+  matches:
+    - path: /api/v1/client/subscribe
+      query_parameter: token
+如果有多个订阅路径，在 matches 中继续添加配置即可。
+
+方案三：HTTP 查询接口
+如果订阅面板不方便提供数据库只读访问，可以使用 HTTP 查询接口。完整的接口格式、响应要求、安全注意事项和排查方法请参阅《订阅特化_HTTP查询补充.md》。
+
+四、启动节点
+再次运行安装脚本：
+
+cd /opt/waf-node
+bash <(curl -fLSs https://dl.nyafw.com/download/waf-node/node-install.sh)
+在菜单中选择 1) 启动。
+
+启动后等待约 30 秒，在控制台节点列表检查“最后在线”时间是否更新。也可以查看日志：
+
+docker compose -f compose.yaml logs --tail=100 -f
+五、添加站点
+节点上线后，在控制台打开“站点”页面，点击“添加站点”。
+
+填写以下内容：
+
+站点名称：例如“站点1”。
+访问域名：每行一个域名，只填写域名，不要填写协议、路径或端口，例如 sub.example.com，也可以用 * 允许所有域名（一个节点只能用一次 *）。
+源站 URL：填写节点访问源站的完整地址，例如 http://127.0.0.1:8080。
+所属节点：选择刚创建的节点。
+保存后等待节点下一次轮询，默认约 30 秒。源站 URL 不要填写订阅路径，路径会由用户请求原样转发。
+
+六、测试
+在节点机器执行以下命令，替换域名和 Token：
+
+curl -v \
+  -H 'Host: sub.example.com' \
+  'http://127.0.0.2:8081/api/v1/client/subscribe?token=某个真实Token'
+必须带正确的 Host，否则节点无法匹配站点。
+
+常见结果：
+
+返回订阅内容：节点已成功转发到源站。
+421：Host 没有匹配站点。
+502：节点无法访问源站，检查源站 URL、端口和协议。
+403：命中了防护规则，或 reject_unmatch 没有匹配请求路径。
+请求完成后等待约 30 秒，在站点的“访问日志”中查看记录。日志不是实时上传的。
+
+七、添加防护规则
+有需要的可以使用规则集：
+
+点击“添加规则”。
+规则来源选择“引用规则集”。
+选择需要的规则集并保存。
+规则保存后，节点会在下一次轮询时生效（大约30s）。
+
+八、接入正式环境
+测试通过后，将订阅域名的反向代理目标改为节点地址。以 1Panel/Nginx 和节点同机为例：
+
+location /api/v1/client/subscribe {
+    proxy_pass http://127.0.0.2:8081;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+修改后检查并重载 Nginx：
+
+nginx -t
+systemctl reload nginx
+注意：
+
+1Panel 网站设置需要开启真实 IP
+proxy_set_header Host $host 不能省略，否则节点无法匹配站点。
+节点监听端口（ http://127.0.0.2:8081 ）只供本机 Nginx 使用时，不要开放到公网。
+建议先保留原反代配置，出现问题时切回源站。
+九、常见问题
+节点一直不在线
+检查 panel_url、节点 Token 和节点日志。节点必须能够访问控制面；Token 重置后要同步修改 config.yaml 并重启。
+
+订阅返回 421
+检查站点访问域名，以及 Nginx 是否保留了原始 Host：
+
+proxy_set_header Host $host;
+订阅返回 502
+在节点机器直接访问源站，检查源站是否可达、端口是否正确。
+
+订阅返回 403
+查看站点访问日志，确认是防护规则命中还是 reject_unmatch 导致。
+
+有访问但没有日志
+节点默认每 30 秒上传一次日志，请先等待一个完整周期；仍没有日志时检查节点到控制面的网络和节点日志。
+
+真实 IP 不正确
+只信任实际使用的反代网段，不要使用 0.0.0.0/0 或 ::/0。
+
+也可以使用 trusted_proxy_header，如果你使用 Cloudflare 那么可以设置为 cf-connecting-ip。
+
+自测是否配置正确
+⚠️ 必须完成这项自测！不要看到“有日志”就以为配置成功！
+
+打开 SubWAF 的访问日志，找到一条真实的订阅请求，然后查看该条日志的「访问资源」字段。
+
+✅ 配置正确时，「访问资源」只能是下面两种内容之一：
+
+纯 Token，例如：f4df5be0e71f02b5fce27680f5743f69
+用户邮箱，例如：user@example.com
+❌ 只要「访问资源」仍然显示完整的请求路径，就说明配置错误！
+
+典型错误示例：
+
+/api/v1/client/subscribe?token=xxxxxxxx
+注意：即使订阅能够正常下载、日志能够正常产生，只要「访问资源」显示的是上述路径，也不代表订阅特化配置成功。此时 waf-node 无法按预期识别用户，用户屏蔽、风险定位和相关防护规则的效果都会严重下降。
+
+发现错误后不要继续下一步！请立即返回「3.5：订阅特化」，重新检查订阅路径和 Token 提取配置；修改后再次发送真实订阅请求，并重复上述检查，直到「访问资源」只显示纯 Token 或用户邮箱为止。
+
+⚠️ 不要把其他接口的流量也接入 SubWAF！这里应该只出现订阅请求。如果日志中出现大量登录、支付、用户中心、后台管理等非订阅请求，说明你的前置反向代理配置有问题，错误地把整个网站或其他接口都转发到了 waf-node。请立即检查并修正 Nginx/1Panel 的转发路径，只把订阅接口流量转发给 waf-node。
+
+十、反馈问题
+反馈时请提供：节点名称、节点版本、请求域名和路径、实际状态码，以及节点日志中的错误信息。

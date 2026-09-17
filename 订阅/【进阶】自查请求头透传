@@ -1,0 +1,76 @@
+当服务器或 CDN 把客户端发来的请求头（Header）削减或屏蔽时，安全防护组件将无法精准识别访问者特征，导致防护效果大幅下降。
+
+**1.发送测试请求:**用终端模拟带有特殊请求头的信息。
+
+打开电脑的终端（Mac/Linux 打开 Terminal，Windows 打开 CMD 或 PowerShell），复制下方命令，将其中的 域名和路径等 替换为你自己的真实信息后运行：
+
+curl -v \
+  -H 'Accept: AAAAAAAAAAAAAAAAAAAAAAAAA' \
+  -H 'Accept-Language: BBBBBBBBBBBBBBBB' \
+  -H 'Cache-Control: CCCCCCCCCCCCCCCCCC' \
+  -H 'X-Test-Header: DDDDDDDDDDDDDDDDDD' \
+  'https://你的域名/你的路径?token=ttttttttttttttttttttttttt'
+提示：ttttttttttttttttttttttttt 可以随意改成一串容易搜索的字母或数字，例如 mytest123456789。
+
+**2.查看服务端日志:**等待 30 秒后核对信息。
+
+等待约 30 秒，查看日志平台，在「路径」搜索刚刚填写的测试字符串，例如 ttttttttttttttttttttttttt，找到刚才那条测试请求。
+
+**3.核对请求头透传结果:**判断是否存在丢失。
+
+打开该条日志的请求头（Header）详情：
+
+正常：能完整看到 AAAAAA...、BBBBBB...、CCCCCC... 以及 DDDDDD... 等测试字符。
+
+异常：日志里找不到这些信息，或者自定义请求头（X-Test-Header）消失了。说明你的服务器环境正在"吃掉"请求头。
+
+常见原因与排查方法
+
+1. 前置 Nginx 配置关掉了透传
+
+原理：服务器的 Nginx 显式设置了忽略请求头。
+
+解决：打开 Nginx 配置文件（如 nginx.conf），查找是否存在 proxy_pass_request_headers off;。将其改为 proxy_pass_request_headers on; 或直接删掉该行，然后重载配置（nginx -s reload）。
+
+2. CDN 或多层反向代理剔除了请求头
+
+原理：使用的 CDN（特别是部分小厂商 CDN）默认过滤或者重写了请求头。
+
+解决：登录 CDN 管理后台，在"域名设置/回源配置/HTTP 头部管理"中开启 "透传所有请求头" 或 "保留原始请求头" 功能。若无法开启，建议联系 CDN 技术支持解决。
+
+宝塔用户请看
+宝塔"PHP 项目"默认自动生成的反代规则（#PROXY-START/）会拦截并修改 Header。解决办法：直接在宝塔站点配置文件中，把这段默认配置替换为标准 Nginx 反代配置。
+
+正确操作步骤
+
+打开宝塔面板 -> 网站 -> 点击目标站点 设置 -> 打开 配置文件。
+
+找到 #PROXY-START/ 到 #PROXY-END/ 这段代码，整段删除。
+
+将下方标准反代代码粘贴进去（修改 proxy_pass 为你的真实源站地址）：
+
+#PROXY-CONF-START
+location ^~ /path/of/subscribe {
+    proxy_pass http://127.0.0.1:8088; # 替换为你的 WAF 节点监听的 IP 及端口
+    
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Real-Port $remote_port;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Port $server_port;
+    proxy_set_header REMOTE-HOST $remote_addr;
+    
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 600s;
+    proxy_read_timeout 600s;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+}
+#PROXY-CONF-END
+真实 IP 不正确
+如果你使用 Cloudflare CDN，最简单的办法是查看新手教程，使用 cf-connecting-ip 这个请求头。
+
+如果你用的是其他 CDN 或者直连，请查看新手教程，自行配置好可信代理 IP 段。
