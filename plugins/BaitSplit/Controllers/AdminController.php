@@ -103,14 +103,12 @@ class AdminController extends PluginController
             'target_pool_id' => ['required', 'string', 'max:100'],
             'note' => ['nullable', 'string', 'max:200'],
         ]);
-        return $this->withStateLock(
-            fn() => $this->success(
-                BaitSplitService::fromDatabase()->batchMoveUsersToPool(
-                    $campaignId,
-                    $data['user_ids'],
-                    $data['target_pool_id'],
-                    $data['note'] ?? ''
-                )
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()->batchMoveUsersToPool(
+                $campaignId,
+                $data['user_ids'],
+                $data['target_pool_id'],
+                $data['note'] ?? ''
             )
         );
     }
