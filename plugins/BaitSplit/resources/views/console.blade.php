@@ -704,6 +704,16 @@ $('analyzeWall').onclick=async()=>{
 };
 const analysisSelected=new Set();
 function updateAnalysisSelectedCount(){const count=analysisSelected.size;$('analysisSelectedCount').textContent=count>0?`已选 ${count} 人`:''}
+function selectByCount(count){
+    analysisUsers.forEach((u,i)=>{
+        if(u.count===count){
+            analysisSelected.add(u.user_id);
+            const cb=document.querySelectorAll('#analysisUsers input[type=checkbox]')[i];
+            if(cb)cb.checked=true;
+        }
+    });
+    updateAnalysisSelectedCount();
+}
 function renderAnalysisUsers(){
     const tbody=$('analysisUsers');tbody.textContent='';
     analysisSelected.clear();updateAnalysisSelectedCount();
@@ -717,7 +727,12 @@ function renderAnalysisUsers(){
         checkCell.appendChild(cb);
         row.insertCell().textContent=u.user_id;
         row.insertCell().textContent=u.email;
-        const countCell=row.insertCell();countCell.textContent=u.count;countCell.style.fontWeight=u.count>1?'bold':'normal';countCell.style.color=u.count>2?'var(--danger)':u.count>1?'var(--warning)':'inherit';
+        const countCell=row.insertCell();
+        const countLink=document.createElement('a');countLink.href='javascript:void(0)';countLink.textContent=u.count;
+        countLink.style.cssText='cursor:pointer;text-decoration:underline;'+(u.count>1?'font-weight:bold;':'')+'color:'+(u.count>2?'var(--danger)':u.count>1?'var(--warning)':'inherit');
+        countLink.title=`点击勾选所有出现 ${u.count} 次的用户`;
+        countLink.onclick=()=>selectByCount(u.count);
+        countCell.appendChild(countLink);
     });
 }
 $('analysisSelectAll').onchange=$('analysisSelectAllHead').onchange=function(){
