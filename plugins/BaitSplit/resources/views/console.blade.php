@@ -705,11 +705,14 @@ $('analyzeWall').onclick=async()=>{
 const analysisSelected=new Set();
 function updateAnalysisSelectedCount(){const count=analysisSelected.size;$('analysisSelectedCount').textContent=count>0?`已选 ${count} 人`:''}
 function selectByCount(count){
+    // 检查该次数的用户是否全部已选中
+    const usersWithCount=analysisUsers.filter(u=>u.count===count);
+    const allSelected=usersWithCount.every(u=>analysisSelected.has(u.user_id));
     analysisUsers.forEach((u,i)=>{
         if(u.count===count){
-            analysisSelected.add(u.user_id);
             const cb=document.querySelectorAll('#analysisUsers input[type=checkbox]')[i];
-            if(cb)cb.checked=true;
+            if(allSelected){analysisSelected.delete(u.user_id);if(cb)cb.checked=false}
+            else{analysisSelected.add(u.user_id);if(cb)cb.checked=true}
         }
     });
     updateAnalysisSelectedCount();
