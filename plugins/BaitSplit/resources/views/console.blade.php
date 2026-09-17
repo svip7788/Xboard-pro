@@ -300,7 +300,7 @@
                 <button id="analyzeWall" class="secondary small">分析选中/时间段</button>
                 <span id="wallSelectedCount" class="muted" style="font-size:12px"></span>
             </div>
-            <div class="scroll" style="max-height:320px"><table><thead><tr><th style="width:30px"><input type="checkbox" id="wallSelectAllHead" style="width:16px;height:16px"></th><th>时间</th><th>类型</th><th>旧IP→新IP</th><th>受影响池</th><th>窗口内拉取</th><th>拿到过该地址</th></tr></thead><tbody id="wallEvents"></tbody></table></div>
+            <div class="scroll" style="max-height:320px"><table><thead><tr><th style="width:30px"><input type="checkbox" id="wallSelectAllHead" style="width:16px;height:16px"></th><th>时间</th><th>类型</th><th>旧IP→新IP</th><th>受影响池</th><th>窗口内拉取</th><th>拿到过该地址</th><th>操作</th></tr></thead><tbody id="wallEvents"></tbody></table></div>
         </section>
 
         <!-- 墙事件分析弹窗 -->
@@ -615,8 +615,13 @@ function renderWall(){
         row.insertCell().textContent=ev.suspect_count||0;
         // 拿到过该地址
         const exactCell=row.insertCell();exactCell.textContent=ev.exact_count||0;exactCell.title='实际拿到过这个死地址的人数';
+        // 删除按钮
+        const actCell=row.insertCell();
+        const delBtn=document.createElement('button');delBtn.className='secondary small';delBtn.textContent='删除';
+        delBtn.onclick=async()=>{if(!confirm('删除此条日志？'))return;try{await request(api(`/wall-log/${ev.id}`),{method:'DELETE'});toast('已删除');loadWallLog()}catch(e){toast(e.message,'error')}};
+        actCell.appendChild(delBtn);
     });
-    if(!(wallData.events||[]).length){const row=events.insertRow();row.insertCell().colSpan=7;row.cells[0].className='empty';row.cells[0].textContent='暂无换 IP 事件记录'}
+    if(!(wallData.events||[]).length){const row=events.insertRow();row.insertCell().colSpan=8;row.cells[0].className='empty';row.cells[0].textContent='暂无换 IP 事件记录'}
 }
 async function loadWallLog(){const campaignId=current?.id;if(!campaignId||!router()){wallData=null;renderWall();return}const data=await request(api('/wall-log?limit=200'));if(current?.id!==campaignId)return;wallData=data;renderWall()}
 $('refreshWall').onclick=()=>loadWallLog().catch(error=>toast(error.message,'error'));

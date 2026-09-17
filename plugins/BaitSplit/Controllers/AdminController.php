@@ -82,6 +82,16 @@ class AdminController extends PluginController
         );
     }
 
+    public function deleteWallEvent(string $campaignId, int $eventId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        return $this->success(
+            BaitSplitService::fromDatabase()->deleteWallEvent($campaignId, $eventId)
+        );
+    }
+
     public function batchMoveUsers(Request $request, string $campaignId): JsonResponse
     {
         if ($response = $this->ensureEnabled()) {

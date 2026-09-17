@@ -4280,6 +4280,23 @@ class BaitSplitService
     }
 
     /**
+     * 删除墙事件日志。
+     */
+    public function deleteWallEvent(string $campaignId, int $eventId): array
+    {
+        $deleted = DB::table('v2_bait_split_wall_events')
+            ->where('id', $eventId)
+            ->where('campaign_id', $campaignId)
+            ->delete();
+        
+        if ($deleted === 0) {
+            throw new InvalidArgumentException('事件不存在或已被删除');
+        }
+        
+        return ['deleted' => true, 'event_id' => $eventId];
+    }
+
+    /**
      * 批量迁移用户到指定池。
      */
     public function batchMoveUsersToPool(
