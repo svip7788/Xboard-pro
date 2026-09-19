@@ -4509,9 +4509,9 @@ class BaitSplitService
                     $score = max(0, $score - 2);
                     $reasons[] = "已邀请 {$inviteCount} 人，降权";
                 }
-                $recommend = $score >= 30
+                $recommend = $score >= 40
                     ? '建议隔离'
-                    : ($score >= 20 ? '建议观察' : '继续观察');
+                    : ($score >= 30 ? '建议观察' : '继续观察');
                 $users[] = [
                     'user_id' => $userId,
                     'email' => $user->email ?? '未知',
