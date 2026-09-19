@@ -325,7 +325,7 @@
 
         <!-- 墙事件分析弹窗 -->
         <div id="wallAnalysisModal" class="modal">
-            <div class="modal-card" style="max-width:800px">
+            <div class="modal-card" style="max-width:1100px">
                 <div class="modal-head">
                     <h2>墙事件分析结果</h2>
                     <button class="secondary small" onclick="$('wallAnalysisModal').classList.remove('show')">关闭</button>
@@ -333,13 +333,15 @@
                 <div id="wallAnalysisSummary" style="margin-bottom:12px;font-size:13px;color:var(--muted)"></div>
                 <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
                     <label style="font-size:13px;display:flex;align-items:center;gap:6px"><input type="checkbox" id="analysisSelectAll" style="width:16px;height:16px"> 全选</label>
+                    <button id="selectHighRisk" class="danger small">选风险≥8</button>
+                    <button id="selectWatchRisk" class="secondary small">选风险≥5</button>
                     <select id="analysisMoveTarget" style="width:200px;height:34px"></select>
                     <button id="analysisMoveBtn" class="small">迁移选中用户</button>
                     <span id="analysisSelectedCount" class="muted" style="font-size:12px"></span>
                 </div>
                 <div class="scroll" style="max-height:400px">
                     <table>
-                        <thead><tr><th style="width:30px"><input type="checkbox" id="analysisSelectAllHead" style="width:16px;height:16px"></th><th>用户ID</th><th>邮箱</th><th>当前分组</th><th>出现次数</th></tr></thead>
+                        <thead><tr><th style="width:30px"><input type="checkbox" id="analysisSelectAllHead" style="width:16px;height:16px"></th><th>用户ID</th><th>邮箱</th><th>当前分组</th><th>出现次数</th><th>风险分</th><th>订阅画像</th><th>建议/原因</th></tr></thead>
                         <tbody id="analysisUsers"></tbody>
                     </table>
                 </div>
@@ -732,10 +734,20 @@ function selectByCount(count){
     });
     updateAnalysisSelectedCount();
 }
+function selectByRisk(minScore){
+    analysisUsers.forEach((u,i)=>{
+        if(Number(u.risk_score||0)>=minScore){
+            analysisSelected.add(u.user_id);
+            const cb=document.querySelectorAll('#analysisUsers input[type=checkbox]')[i];
+            if(cb)cb.checked=true;
+        }
+    });
+    updateAnalysisSelectedCount();
+}
 function renderAnalysisUsers(){
     const tbody=$('analysisUsers');tbody.textContent='';
     analysisSelected.clear();updateAnalysisSelectedCount();
-    if(!analysisUsers.length){const row=tbody.insertRow();row.insertCell().colSpan=5;row.cells[0].className='empty';row.cells[0].textContent='无符合条件的用户';return}
+    if(!analysisUsers.length){const row=tbody.insertRow();row.insertCell().colSpan=8;row.cells[0].className='empty';row.cells[0].textContent='无符合条件的用户';return}
     analysisUsers.forEach(u=>{
         const row=tbody.insertRow();
         const checkCell=row.insertCell();
@@ -752,8 +764,14 @@ function renderAnalysisUsers(){
         countLink.title=`点击勾选所有出现 ${u.count} 次的用户`;
         countLink.onclick=()=>selectByCount(u.count);
         countCell.appendChild(countLink);
+        const scoreCell=row.insertCell();scoreCell.textContent=u.risk_score||0;scoreCell.style.fontWeight='bold';scoreCell.style.color=(u.risk_score||0)>=8?'var(--danger)':(u.risk_score||0)>=5?'var(--warning)':'inherit';
+        const profileCell=row.insertCell();profileCell.textContent=`IP ${u.subscribe_ip_count||0} / UA ${u.subscribe_ua_count||0} / 快拉 ${u.fast_pull_count||0}`;
+        profileCell.title=`最近拉取 ${u.recent_pull_count||0} 次，客户端 ${u.subscribe_client_count||0} 种${u.last_pull_at?`，最近 ${formatTime(u.last_pull_at)}`:''}`;
+        const reasonCell=row.insertCell();reasonCell.textContent=`${u.recommendation||'继续观察'}：${(u.risk_reasons||[]).join('、')}`;
     });
 }
+$('selectHighRisk').onclick=()=>selectByRisk(8);
+$('selectWatchRisk').onclick=()=>selectByRisk(5);
 $('analysisSelectAll').onchange=$('analysisSelectAllHead').onchange=function(){
     const checked=this.checked;
     $('analysisSelectAll').checked=$('analysisSelectAllHead').checked=checked;

@@ -36,7 +36,7 @@ class Plugin extends AbstractPlugin
     ): array {
         try {
             return (new BaitSplitService($this->getConfig()))
-                ->filterServers($servers, $user);
+                ->filterServers($servers, $user, $request);
         } catch (\Throwable $exception) {
             Log::error('订阅诱饵分组处理失败', [
                 'user_id' => $user->id,

@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Support\Setting;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -42,7 +43,7 @@ class BaitSplitService
         return new self($config);
     }
 
-    public function filterServers(array $servers, User $user): array
+    public function filterServers(array $servers, User $user, ?Request $request = null): array
     {
         foreach ($this->state()['campaigns'] as $campaign) {
             if (
@@ -74,7 +75,7 @@ class BaitSplitService
                 ) {
                     return [];
                 }
-                return $this->filterRoutedServers($servers, $user, $campaign);
+                return $this->filterRoutedServers($servers, $user, $campaign, $request);
             }
             if (
                 !$campaign['serving']
@@ -2869,7 +2870,12 @@ class BaitSplitService
         return chr(65 + $index);
     }
 
-    private function filterRoutedServers(array $servers, User $user, array $campaign): array
+    private function filterRoutedServers(
+        array $servers,
+        User $user,
+        array $campaign,
+        ?Request $request = null
+    ): array
     {
         $router = $campaign['router'];
         $userId = (int) $user->id;
@@ -2937,7 +2943,8 @@ class BaitSplitService
             $campaign,
             $userId,
             $deliveredPoolIds,
-            $deliveredHosts
+            $deliveredHosts,
+            $request ? $this->subscribeSignalFromRequest($request) : []
         );
         return $result;
     }
@@ -3961,7 +3968,8 @@ class BaitSplitService
         array $campaign,
         int $userId,
         array $poolIds,
-        array $hostByPoolId = []
+        array $hostByPoolId = [],
+        array $subscribeSignal = []
     ): void {
         try {
             $now = time();
@@ -3991,9 +3999,57 @@ class BaitSplitService
                     Redis::expire($ipLastKey, 86400 * 14);
                 }
             }
+            $this->recordSubscribeSignal($campaign, $userId, $subscribeSignal, $now);
         } catch (\Throwable) {
             // 统计失败不能影响订阅。
         }
+    }
+
+    private function subscribeSignalFromRequest(Request $request): array
+    {
+        $ua = trim((string) $request->header('User-Agent', ''));
+        $flag = trim((string) $request->input('flag', ''));
+        return [
+            'ip' => (string) $request->ip(),
+            'ua' => $ua !== '' ? mb_substr($ua, 0, 180) : '',
+            'client' => $flag !== '' ? mb_substr(strtolower($flag), 0, 80) : '',
+        ];
+    }
+
+    private function subscribeSignalBaseKey(array $campaign, int $userId): string
+    {
+        return "bait_split:router:{$campaign['id']}:{$campaign['router']['generation']}:subscribe:{$userId}";
+    }
+
+    private function recordSubscribeSignal(
+        array $campaign,
+        int $userId,
+        array $signal,
+        int $now
+    ): void {
+        if ($signal === []) {
+            return;
+        }
+        $base = $this->subscribeSignalBaseKey($campaign, $userId);
+        $ttl = 86400 * 14;
+        $ip = trim((string) ($signal['ip'] ?? ''));
+        $ua = trim((string) ($signal['ua'] ?? ''));
+        $client = trim((string) ($signal['client'] ?? ''));
+        if ($ip !== '') {
+            Redis::sadd($base . ':ips', $ip);
+            Redis::expire($base . ':ips', $ttl);
+        }
+        if ($ua !== '') {
+            Redis::sadd($base . ':uas', sha1($ua));
+            Redis::expire($base . ':uas', $ttl);
+        }
+        if ($client !== '') {
+            Redis::sadd($base . ':clients', $client);
+            Redis::expire($base . ':clients', $ttl);
+        }
+        Redis::lpush($base . ':pulls', (string) $now);
+        Redis::ltrim($base . ':pulls', 0, 49);
+        Redis::expire($base . ':pulls', $ttl);
     }
 
     /** @return array<int,int> 精确到池+IP的用户最后拉取时间 */
@@ -4072,6 +4128,49 @@ class BaitSplitService
             }
         } catch (\Throwable) {
             // 统计不可用时返回空值，不能影响用户列表。
+        }
+        return $stats;
+    }
+
+    private function subscribeSignalStats(array $campaign, array $userIds): array
+    {
+        $stats = [];
+        foreach ($this->normalizeIds($userIds) as $userId) {
+            $stats[$userId] = [
+                'ip_count' => 0,
+                'ua_count' => 0,
+                'client_count' => 0,
+                'fast_pull_count' => 0,
+                'recent_pull_count' => 0,
+                'last_pull_at' => 0,
+            ];
+        }
+        try {
+            foreach (array_keys($stats) as $userId) {
+                $base = $this->subscribeSignalBaseKey($campaign, (int) $userId);
+                $pulls = array_map(
+                    'intval',
+                    Redis::lrange($base . ':pulls', 0, 49) ?: []
+                );
+                rsort($pulls);
+                $fastPulls = 0;
+                for ($i = 0, $count = count($pulls) - 1; $i < $count; $i++) {
+                    $delta = $pulls[$i] - $pulls[$i + 1];
+                    if ($delta > 0 && $delta < 300) {
+                        $fastPulls++;
+                    }
+                }
+                $stats[$userId] = [
+                    'ip_count' => (int) Redis::scard($base . ':ips'),
+                    'ua_count' => (int) Redis::scard($base . ':uas'),
+                    'client_count' => (int) Redis::scard($base . ':clients'),
+                    'fast_pull_count' => $fastPulls,
+                    'recent_pull_count' => count($pulls),
+                    'last_pull_at' => $pulls[0] ?? 0,
+                ];
+            }
+        } catch (\Throwable) {
+            // 画像不可用不能影响墙事件分析。
         }
         return $stats;
     }
@@ -4267,6 +4366,8 @@ class BaitSplitService
 
         // 统计用户出现次数
         $userCounts = [];
+        $userEventTimes = [];
+        $userOldIps = [];
         foreach ($rows as $row) {
             // 优先用精确名单，没有就用疑似名单
             $exactIds = json_decode($row->exact_user_ids, true) ?: [];
@@ -4276,6 +4377,10 @@ class BaitSplitService
                 $userId = (int) $userId;
                 if ($userId > 0) {
                     $userCounts[$userId] = ($userCounts[$userId] ?? 0) + 1;
+                    $userEventTimes[$userId][] = (int) $row->event_at;
+                    if ((string) $row->old_ip !== '') {
+                        $userOldIps[$userId][(string) $row->old_ip] = true;
+                    }
                 }
             }
         }
@@ -4289,9 +4394,20 @@ class BaitSplitService
         if ($userIdList !== []) {
             $userRows = DB::table('v2_user')
                 ->whereIn('id', $userIdList)
-                ->select('id', 'email')
+                ->select('id', 'email', 'plan_id', 'invite_user_id', 'created_at')
                 ->get()
                 ->keyBy('id');
+            $planIds = $userRows->pluck('plan_id')->filter()->unique()->values()->all();
+            $planRows = DB::table('v2_plan')
+                ->whereIn('id', $planIds)
+                ->get()
+                ->keyBy('id');
+            $inviteCounts = DB::table('v2_user')
+                ->whereIn('invite_user_id', $userIdList)
+                ->select('invite_user_id', DB::raw('COUNT(*) as total'))
+                ->groupBy('invite_user_id')
+                ->pluck('total', 'invite_user_id');
+            $subscribeStats = $this->subscribeSignalStats($campaign, $userIdList);
             
             // 构建用户分组映射
             $router = $campaign['router'] ?? [];
@@ -4315,13 +4431,96 @@ class BaitSplitService
             
             foreach ($userCounts as $userId => $count) {
                 $user = $userRows[$userId] ?? null;
+                $score = $count * 3;
+                $reasons = ["墙事件命中 {$count} 次"];
+                $times = $userEventTimes[$userId] ?? [];
+                sort($times);
+                if (count($times) >= 2 && (end($times) - $times[0]) <= 86400) {
+                    $score += 3;
+                    $reasons[] = '24小时内多次命中';
+                }
+                $ipHitCount = count($userOldIps[$userId] ?? []);
+                if ($ipHitCount >= 2) {
+                    $score += 2;
+                    $reasons[] = "命中 {$ipHitCount} 个死IP";
+                }
+                $sub = $subscribeStats[$userId] ?? [
+                    'ip_count' => 0,
+                    'ua_count' => 0,
+                    'client_count' => 0,
+                    'fast_pull_count' => 0,
+                    'recent_pull_count' => 0,
+                    'last_pull_at' => 0,
+                ];
+                if ($sub['fast_pull_count'] > 0) {
+                    $score += 2;
+                    $reasons[] = '订阅拉取过密';
+                }
+                if ($sub['client_count'] >= 2 || $sub['ua_count'] >= 2) {
+                    $score += 2;
+                    $reasons[] = '多客户端/UA';
+                }
+                if ($sub['ip_count'] >= 3) {
+                    $score += 2;
+                    $reasons[] = "面板侧 {$sub['ip_count']} 个来源IP";
+                }
+                $plan = $user && $user->plan_id ? ($planRows[$user->plan_id] ?? null) : null;
+                $prices = [];
+                if ($plan) {
+                    foreach ([
+                        'month_price',
+                        'quarter_price',
+                        'half_year_price',
+                        'year_price',
+                        'two_year_price',
+                        'three_year_price',
+                        'onetime_price',
+                    ] as $priceField) {
+                        $value = (int) ($plan->{$priceField} ?? 0);
+                        if ($value > 0) {
+                            $prices[] = $value;
+                        }
+                    }
+                }
+                $minPrice = $prices !== [] ? min($prices) : 0;
+                if ($minPrice > 0 && $minPrice <= 1000) {
+                    $score += 1;
+                    $reasons[] = '低价套餐';
+                }
+                if ($user && (int) ($user->created_at ?? 0) > time() - 86400 * 14) {
+                    $score += 1;
+                    $reasons[] = '新账号';
+                }
+                $inviteCount = (int) ($inviteCounts[$userId] ?? 0);
+                if ($inviteCount > 0) {
+                    $score = max(0, $score - 2);
+                    $reasons[] = "已邀请 {$inviteCount} 人，降权";
+                }
+                $recommend = $score >= 8
+                    ? '建议隔离'
+                    : ($score >= 5 ? '建议观察' : '继续观察');
                 $users[] = [
                     'user_id' => $userId,
                     'email' => $user->email ?? '未知',
                     'count' => $count,
                     'pool_name' => $userPoolMap[$userId] ?? '默认组',
+                    'risk_score' => $score,
+                    'risk_reasons' => $reasons,
+                    'recommendation' => $recommend,
+                    'ip_hit_count' => $ipHitCount,
+                    'subscribe_ip_count' => $sub['ip_count'],
+                    'subscribe_ua_count' => $sub['ua_count'],
+                    'subscribe_client_count' => $sub['client_count'],
+                    'fast_pull_count' => $sub['fast_pull_count'],
+                    'recent_pull_count' => $sub['recent_pull_count'],
+                    'last_pull_at' => $sub['last_pull_at'],
                 ];
             }
+            usort(
+                $users,
+                fn(array $a, array $b): int => [$b['risk_score'], $b['count'], $b['user_id']]
+                    <=> [$a['risk_score'], $a['count'], $a['user_id']]
+            );
         }
 
         return [
