@@ -4163,9 +4163,14 @@ class BaitSplitService
         $limit = max(1, min(500, $limit));
         
         // 从数据库读取（持久化数据）
-        $query = DB::table('v2_bait_split_wall_events')
+        $baseQuery = DB::table('v2_bait_split_wall_events')
             ->where('campaign_id', $campaignId)
             ->orderByDesc('event_at');
+
+        $affectedRows = (clone $baseQuery)
+            ->limit($limit)
+            ->get(['pool_ids', 'pool_names']);
+        $query = clone $baseQuery;
         
         // 按池ID过滤（pool_ids 是 JSON 数组）
         if ($poolId !== null && $poolId !== '') {
@@ -4199,14 +4204,16 @@ class BaitSplitService
             ];
         }
         
-        // 收集所有涉及的池（去重）
+        // 收集最近事件涉及的池（去重）；不受当前池筛选影响，避免下拉框被筛到只剩一个池。
         $affectedPools = [];
         $seenPoolIds = [];
-        foreach ($events as $ev) {
-            foreach ($ev['pools'] as $p) {
-                if (!isset($seenPoolIds[$p['pool_id']])) {
-                    $seenPoolIds[$p['pool_id']] = true;
-                    $affectedPools[] = ['id' => $p['pool_id'], 'name' => $p['pool_name']];
+        foreach ($affectedRows as $row) {
+            $poolIds = json_decode($row->pool_ids, true) ?: [];
+            $poolNames = json_decode($row->pool_names, true) ?: [];
+            foreach ($poolIds as $i => $id) {
+                if (!isset($seenPoolIds[$id])) {
+                    $seenPoolIds[$id] = true;
+                    $affectedPools[] = ['id' => $id, 'name' => $poolNames[$i] ?? $id];
                 }
             }
         }
@@ -4225,7 +4232,8 @@ class BaitSplitService
         string $campaignId,
         ?int $startTime = null,
         ?int $endTime = null,
-        ?array $eventIds = null
+        ?array $eventIds = null,
+        ?string $poolId = null
     ): array {
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
@@ -4243,6 +4251,9 @@ class BaitSplitService
         }
         if ($endTime !== null) {
             $query->where('event_at', '<=', $endTime);
+        }
+        if ($poolId !== null && $poolId !== '') {
+            $query->whereRaw('JSON_CONTAINS(pool_ids, ?)', [json_encode($poolId)]);
         }
         
         $rows = $query->get();
