@@ -4007,7 +4007,10 @@ class BaitSplitService
 
     private function subscribeSignalFromRequest(Request $request): array
     {
-        $ua = trim((string) $request->header('User-Agent', ''));
+        $ua = trim((string) (
+            $request->header('X-Client-User-Agent')
+            ?: $request->header('User-Agent', '')
+        ));
         $flag = trim((string) $request->input('flag', ''));
         return [
             'ip' => (string) $request->ip(),
