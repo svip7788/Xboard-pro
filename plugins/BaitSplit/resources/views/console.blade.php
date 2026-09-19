@@ -333,8 +333,8 @@
                 <div id="wallAnalysisSummary" style="margin-bottom:12px;font-size:13px;color:var(--muted)"></div>
                 <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
                     <label style="font-size:13px;display:flex;align-items:center;gap:6px"><input type="checkbox" id="analysisSelectAll" style="width:16px;height:16px"> 全选</label>
-                    <button id="selectHighRisk" class="danger small">选风险≥8</button>
-                    <button id="selectWatchRisk" class="secondary small">选风险≥5</button>
+                    <button id="selectTopRisk" class="danger small">选前50</button>
+                    <button id="selectHighRisk" class="secondary small">选风险≥30</button>
                     <select id="analysisMoveTarget" style="width:200px;height:34px"></select>
                     <button id="analysisMoveBtn" class="small">迁移选中用户</button>
                     <span id="analysisSelectedCount" class="muted" style="font-size:12px"></span>
@@ -744,6 +744,14 @@ function selectByRisk(minScore){
     });
     updateAnalysisSelectedCount();
 }
+function selectTopRisk(limit){
+    analysisUsers.slice(0,limit).forEach((u,i)=>{
+        analysisSelected.add(u.user_id);
+        const cb=document.querySelectorAll('#analysisUsers input[type=checkbox]')[i];
+        if(cb)cb.checked=true;
+    });
+    updateAnalysisSelectedCount();
+}
 function renderAnalysisUsers(){
     const tbody=$('analysisUsers');tbody.textContent='';
     analysisSelected.clear();updateAnalysisSelectedCount();
@@ -764,14 +772,14 @@ function renderAnalysisUsers(){
         countLink.title=`点击勾选所有出现 ${u.count} 次的用户`;
         countLink.onclick=()=>selectByCount(u.count);
         countCell.appendChild(countLink);
-        const scoreCell=row.insertCell();scoreCell.textContent=u.risk_score||0;scoreCell.style.fontWeight='bold';scoreCell.style.color=(u.risk_score||0)>=8?'var(--danger)':(u.risk_score||0)>=5?'var(--warning)':'inherit';
+        const scoreCell=row.insertCell();scoreCell.textContent=u.risk_score||0;scoreCell.style.fontWeight='bold';scoreCell.style.color=(u.risk_score||0)>=30?'var(--danger)':(u.risk_score||0)>=20?'var(--warning)':'inherit';
         const profileCell=row.insertCell();profileCell.textContent=`IP ${u.subscribe_ip_count||0} / UA ${u.subscribe_ua_count||0} / 快拉 ${u.fast_pull_count||0}`;
         profileCell.title=`最近拉取 ${u.recent_pull_count||0} 次，客户端 ${u.subscribe_client_count||0} 种${u.last_pull_at?`，最近 ${formatTime(u.last_pull_at)}`:''}`;
         const reasonCell=row.insertCell();reasonCell.textContent=`${u.recommendation||'继续观察'}：${(u.risk_reasons||[]).join('、')}`;
     });
 }
-$('selectHighRisk').onclick=()=>selectByRisk(8);
-$('selectWatchRisk').onclick=()=>selectByRisk(5);
+$('selectTopRisk').onclick=()=>selectTopRisk(50);
+$('selectHighRisk').onclick=()=>selectByRisk(30);
 $('analysisSelectAll').onchange=$('analysisSelectAllHead').onchange=function(){
     const checked=this.checked;
     $('analysisSelectAll').checked=$('analysisSelectAllHead').checked=checked;
