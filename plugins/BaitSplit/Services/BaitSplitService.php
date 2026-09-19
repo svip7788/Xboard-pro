@@ -4791,14 +4791,12 @@ class BaitSplitService
                 'window_seconds' => $now - $windowStart,
                 'exposed_total' => $exposedTotal,
                 'suspect_count' => $stale ? 0 : count($poolSuspects),
-                'exact_count' => $stale ? 0 : count($exactSuspects),
+                'exact_count' => count($exactSuspects),
             ];
-            // 不管是否被墙，都收集用户ID（方便后续分析）
-            // 但如果是 stale（老IP首墙），曝光窗口不可信，不收集
-            if ($stale) {
-                continue;
+            // stale 只说明池级窗口不可信；精确到 IP 的记录仍然可靠。
+            if (!$stale) {
+                $suspectIds = array_merge($suspectIds, $poolSuspects);
             }
-            $suspectIds = array_merge($suspectIds, $poolSuspects);
             if ($exactSuspects !== []) {
                 $exactByPool[$poolId] = $exactSuspects;
             }
