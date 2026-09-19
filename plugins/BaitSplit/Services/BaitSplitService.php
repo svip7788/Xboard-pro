@@ -4371,6 +4371,7 @@ class BaitSplitService
         $userCounts = [];
         $userEventTimes = [];
         $userOldIps = [];
+        $userNightHits = [];
         foreach ($rows as $row) {
             // 优先用精确名单，没有就用疑似名单
             $exactIds = json_decode($row->exact_user_ids, true) ?: [];
@@ -4381,6 +4382,10 @@ class BaitSplitService
                 if ($userId > 0) {
                     $userCounts[$userId] = ($userCounts[$userId] ?? 0) + 1;
                     $userEventTimes[$userId][] = (int) $row->event_at;
+                    $hour = (int) date('G', (int) $row->event_at);
+                    if ($hour >= 1 && $hour < 9) {
+                        $userNightHits[$userId] = ($userNightHits[$userId] ?? 0) + 1;
+                    }
                     if ((string) $row->old_ip !== '') {
                         $userOldIps[$userId][(string) $row->old_ip] = true;
                     }
@@ -4447,6 +4452,11 @@ class BaitSplitService
                     $score += 2;
                     $reasons[] = "命中 {$ipHitCount} 个死IP";
                 }
+                $nightHits = (int) ($userNightHits[$userId] ?? 0);
+                if ($nightHits > 0) {
+                    $score += min(8, $nightHits * 2);
+                    $reasons[] = "夜间命中 {$nightHits} 次";
+                }
                 $sub = $subscribeStats[$userId] ?? [
                     'ip_count' => 0,
                     'ua_count' => 0,
@@ -4511,6 +4521,7 @@ class BaitSplitService
                     'risk_reasons' => $reasons,
                     'recommendation' => $recommend,
                     'ip_hit_count' => $ipHitCount,
+                    'night_hit_count' => $nightHits,
                     'subscribe_ip_count' => $sub['ip_count'],
                     'subscribe_ua_count' => $sub['ua_count'],
                     'subscribe_client_count' => $sub['client_count'],
