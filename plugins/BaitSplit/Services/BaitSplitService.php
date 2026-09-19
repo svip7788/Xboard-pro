@@ -879,28 +879,24 @@ class BaitSplitService
         $branches = $this->normalizeInvestigationBranches($router, $branches);
         $branchCount = count($branches);
         
-        // 筛选可移动用户（排除手动锁定的）
-        $movableUserIds = array_values(array_filter(
-            $node['user_ids'],
-            fn(int $userId): bool => !$this->overrideBlocksAutomation(
-                $router['overrides'][(string) $userId] ?? null
-            )
-        ));
+        // 管理员主动继续细分时，锁定在当前节点的用户也应参与拆分。
+        // createInvestigationChildren 会解除旧 override 并重新分配到子池。
+        $splitCandidateIds = $this->normalizeIds($node['user_ids']);
         
         // 只细分已拉取用户
         if ($onlyExposed) {
             $exposedMap = array_flip($this->poolExposureIds($campaign, $node['pool_id']));
             $userIds = array_values(array_filter(
-                $movableUserIds,
+                $splitCandidateIds,
                 fn(int $userId): bool => isset($exposedMap[$userId])
             ));
             // 未拉取用户保留在原节点
             $unpulledUserIds = array_values(array_filter(
-                $movableUserIds,
+                $splitCandidateIds,
                 fn(int $userId): bool => !isset($exposedMap[$userId])
             ));
         } else {
-            $userIds = $movableUserIds;
+            $userIds = $splitCandidateIds;
             $unpulledUserIds = [];
         }
         
@@ -922,22 +918,11 @@ class BaitSplitService
         $router['investigation_nodes'][$nodeId]['status'] = 'split';
         $router['investigation_nodes'][$nodeId]['updated_at'] = time();
         
-        // 更新原节点的 user_ids
-        // - 只细分已拉取：保留未拉取+锁定的用户
-        // - 细分全部：只保留锁定的用户（不参与自动分配的）
-        $lockedUserIds = array_values(array_filter(
-            $node['user_ids'],
-            fn(int $userId): bool => $this->overrideBlocksAutomation(
-                $router['overrides'][(string) $userId] ?? null
-            )
-        ));
+        // 更新原节点的 user_ids：只细分已拉取时保留未拉取用户；细分全部时父节点清空。
         if ($onlyExposed) {
-            $router['investigation_nodes'][$nodeId]['user_ids'] = array_values(
-                array_unique(array_merge($unpulledUserIds, $lockedUserIds))
-            );
+            $router['investigation_nodes'][$nodeId]['user_ids'] = $unpulledUserIds;
         } else {
-            // 细分全部用户时，只保留锁定的（不可移动的）
-            $router['investigation_nodes'][$nodeId]['user_ids'] = $lockedUserIds;
+            $router['investigation_nodes'][$nodeId]['user_ids'] = [];
         }
         
         if (
