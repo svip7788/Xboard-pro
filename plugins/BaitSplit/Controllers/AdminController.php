@@ -117,6 +117,22 @@ class AdminController extends PluginController
         );
     }
 
+    public function updateAutoResetOnWall(Request $request, string $campaignId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        $data = $request->validate([
+            'enabled' => ['required', 'boolean'],
+        ]);
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()->updateAutoResetOnWall(
+                $campaignId,
+                (bool) $data['enabled']
+            )
+        );
+    }
+
     public function createPing(Request $request): JsonResponse
     {
         if ($response = $this->ensureEnabled()) {

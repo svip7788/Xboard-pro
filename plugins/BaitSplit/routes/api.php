@@ -25,6 +25,7 @@ Route::prefix("api/v2/{$securePath}/plugin/bait-split")
         Route::delete('/campaigns/{campaignId}/wall-log/{eventId}', [AdminController::class, 'deleteWallEvent']);
         Route::post('/campaigns/{campaignId}/wall-log/analyze', [AdminController::class, 'analyzeWallEvents']);
         Route::post('/campaigns/{campaignId}/users/batch-move', [AdminController::class, 'batchMoveUsers']);
+        Route::post('/campaigns/{campaignId}/auto-reset-on-wall', [AdminController::class, 'updateAutoResetOnWall']);
         Route::get('/campaigns/{campaignId}/exposures', [AdminController::class, 'exposures']);
         Route::post('/campaigns', [AdminController::class, 'saveCampaign']);
         Route::delete('/campaigns/{campaignId}', [AdminController::class, 'deleteCampaign']);

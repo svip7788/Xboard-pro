@@ -6,6 +6,7 @@ use App\Models\Plugin as PluginModel;
 use App\Models\Server;
 use App\Models\User;
 use App\Support\Setting;
+use App\Utils\Helper;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
@@ -2993,6 +2994,7 @@ class BaitSplitService
             'untested_ids' => array_values($userIds),
             'investigation_nodes' => [],
             'wall_log' => [],
+            'auto_reset_on_wall' => false,
         ];
     }
 
@@ -3049,6 +3051,7 @@ class BaitSplitService
         $router['overrides'] = $overrides;
         $router['snapshot_user_ids'] = $this->normalizeIds($router['snapshot_user_ids']);
         $router['untested_ids'] = $this->normalizeIds($router['untested_ids']);
+        $router['auto_reset_on_wall'] = (bool) ($router['auto_reset_on_wall'] ?? false);
         // 跟墙记分已废弃，落地时直接丢掉，顺带给状态减重
         unset($router['wall_hits'], $router['wall_score'], $router['wall_last']);
         // 旧诱捕的嫌疑队列（fresh/dormant/suspect_queue/candidate_users 等）自
@@ -3339,6 +3342,7 @@ class BaitSplitService
         return [
             'enabled' => $router['enabled'],
             'config_version' => $router['config_version'],
+            'auto_reset_on_wall' => (bool) ($router['auto_reset_on_wall'] ?? false),
             'pools' => $pools,
             'snapshot_count' => count($router['snapshot_user_ids']),
             'untested_count' => count($router['untested_ids']),
@@ -4545,6 +4549,17 @@ class BaitSplitService
         return ['deleted' => true, 'event_id' => $eventId];
     }
 
+    public function updateAutoResetOnWall(string $campaignId, bool $enabled): array
+    {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $campaign['router']['auto_reset_on_wall'] = $enabled;
+        $state['campaigns'][$campaignId] = $campaign;
+        $this->saveState($state);
+
+        return $this->campaignStatus($campaign);
+    }
+
     /**
      * 批量迁移用户到指定池。
      */
@@ -5018,6 +5033,22 @@ class BaitSplitService
             $allExactIds = array_merge($allExactIds, $ids);
         }
         $allExactIds = array_values(array_unique($allExactIds));
+        $credentialResetCount = 0;
+        if (
+            $reason === 'blocked'
+            && (bool) ($router['auto_reset_on_wall'] ?? false)
+            && $allExactIds !== []
+        ) {
+            try {
+                $credentialResetCount = $this->resetUserCredentials($allExactIds);
+            } catch (\Throwable $e) {
+                Log::warning('BaitSplit 墙后自动重置用户凭据失败', [
+                    'campaign_id' => $campaign['id'],
+                    'user_count' => count($allExactIds),
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
 
         // 写入数据库（持久化存储）
         $poolIds = array_column($eventPools, 'pool_id');
@@ -5051,6 +5082,7 @@ class BaitSplitService
             'suspect_count' => count($suspectIds),
             'suspect_user_ids' => $suspectIds,
             'exact_user_ids' => $allExactIds,
+            'credential_reset_count' => $credentialResetCount,
         ];
         $router['wall_log'] = array_slice($router['wall_log'], -200);
 
@@ -5058,7 +5090,62 @@ class BaitSplitService
             'reason' => $reason,
             'mode' => 'exposure',
             'suspect_count' => count($suspectIds),
+            'exact_count' => count($allExactIds),
+            'credential_reset_count' => $credentialResetCount,
         ];
+    }
+
+    private function resetUserCredentials(array $userIds): int
+    {
+        $userIds = $this->normalizeIds($userIds);
+        if ($userIds === []) {
+            return 0;
+        }
+
+        $resetCount = 0;
+        foreach (array_chunk($userIds, 300) as $chunk) {
+            $oldTokens = DB::table('v2_user')
+                ->whereIn('id', $chunk)
+                ->pluck('token', 'id')
+                ->all();
+            if ($oldTokens === []) {
+                continue;
+            }
+
+            $ids = array_map('intval', array_keys($oldTokens));
+            $tokenCases = [];
+            $uuidCases = [];
+            $tokenBindings = [];
+            $uuidBindings = [];
+            foreach ($ids as $id) {
+                $tokenCases[] = 'WHEN ? THEN ?';
+                $tokenBindings[] = $id;
+                $tokenBindings[] = Helper::guid();
+                $uuidCases[] = 'WHEN ? THEN ?';
+                $uuidBindings[] = $id;
+                $uuidBindings[] = Helper::guid(true);
+            }
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $resetCount += DB::update(
+                'UPDATE v2_user SET token = CASE id ' . implode(' ', $tokenCases)
+                    . ' END, uuid = CASE id ' . implode(' ', $uuidCases)
+                    . ' END, updated_at = ? WHERE id IN (' . $placeholders . ')',
+                [
+                    ...$tokenBindings,
+                    ...$uuidBindings,
+                    time(),
+                    ...$ids,
+                ]
+            );
+
+            foreach ($oldTokens as $oldToken) {
+                if (is_string($oldToken) && $oldToken !== '') {
+                    Cache::forget("user_subscription_{$oldToken}");
+                }
+            }
+        }
+
+        return $resetCount;
     }
 
     private function routerPoolExposureKey(array $campaign, string $poolId): string
