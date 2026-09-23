@@ -4631,6 +4631,7 @@ class BaitSplitService
         foreach ($sourceExposureCleanup as $sourcePoolId => $cleanupUserIds) {
             $this->removeUserExposure($campaign, (string) $sourcePoolId, $cleanupUserIds);
         }
+        $this->removeUserExposure($campaign, $targetPoolId, $userIds);
 
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
