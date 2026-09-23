@@ -4415,10 +4415,12 @@ class BaitSplitService
             }
             $defaultPoolId = $this->poolIdByType($router, 'default');
             $userPoolMap = [];
+            $userPoolIdMap = [];
             foreach ($userIdList as $userId) {
                 $poolId = $this->classifiedPoolId($campaign, (int) $userId)
                     ?? $defaultPoolId;
                 $userPoolMap[(int) $userId] = $poolNameMap[$poolId] ?? $poolId;
+                $userPoolIdMap[(int) $userId] = $poolId;
             }
             
             foreach ($userCounts as $userId => $count) {
@@ -4500,6 +4502,7 @@ class BaitSplitService
                     'user_id' => $userId,
                     'email' => $user->email ?? '未知',
                     'count' => $count,
+                    'pool_id' => $userPoolIdMap[$userId] ?? '',
                     'pool_name' => $userPoolMap[$userId] ?? '默认组',
                     'risk_score' => $score,
                     'risk_reasons' => $reasons,
@@ -4580,14 +4583,19 @@ class BaitSplitService
 
         $now = time();
         $moved = 0;
+        $already = 0;
         $noteText = $note ?: '墙事件分析批量迁移';
-        $movingSet = array_flip($userIds);
+        $movedUserIds = [];
         $defaultPoolId = $this->poolIdByType($router, 'default');
         $sourceExposureCleanup = [];
 
         foreach ($userIds as $userId) {
             $sourcePoolId = $this->classifiedPoolId($campaign, (int) $userId)
                 ?? $defaultPoolId;
+            if ($sourcePoolId === $targetPoolId) {
+                $already++;
+                continue;
+            }
             if ($sourcePoolId !== $targetPoolId) {
                 $sourceExposureCleanup[$sourcePoolId][] = (int) $userId;
             }
@@ -4599,7 +4607,9 @@ class BaitSplitService
             ]);
             $router['assignments'][(string) $userId] = $targetPoolId;
             $moved++;
+            $movedUserIds[] = (int) $userId;
         }
+        $movingSet = array_flip($movedUserIds);
 
         // 用户被批量转走后，也要从旧排查树节点里移除，避免旧分支查看仍显示这些人。
         foreach ($router['investigation_nodes'] as &$node) {
@@ -4623,7 +4633,7 @@ class BaitSplitService
             $router['investigation_nodes'][$targetTreeNodeId]['user_ids'] = array_values(
                 array_unique(array_merge(
                     $router['investigation_nodes'][$targetTreeNodeId]['user_ids'],
-                    $userIds
+                    $movedUserIds
                 ))
             );
             $router['investigation_nodes'][$targetTreeNodeId]['updated_at'] = $now;
@@ -4631,7 +4641,7 @@ class BaitSplitService
         foreach ($sourceExposureCleanup as $sourcePoolId => $cleanupUserIds) {
             $this->removeUserExposure($campaign, (string) $sourcePoolId, $cleanupUserIds);
         }
-        $this->removeUserExposure($campaign, $targetPoolId, $userIds);
+        $this->removeUserExposure($campaign, $targetPoolId, $movedUserIds);
 
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
@@ -4639,6 +4649,7 @@ class BaitSplitService
         return [
             'campaign' => $this->campaignStatus($campaign),
             'moved_count' => $moved,
+            'already_count' => $already,
             'target_pool_id' => $targetPoolId,
             'target_pool_name' => $targetPool['name'] ?? $targetPoolId,
         ];

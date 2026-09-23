@@ -790,14 +790,16 @@ $('selectHighRisk').onclick=()=>selectByRisk(40);
 async function moveAnalysisRecommendation(recommendation){
     const targetPoolId=$('analysisMoveTarget').value;
     if(!targetPoolId)return toast('请选择目标分组','error');
-    const users=analysisUsers.filter(u=>(u.recommendation||'')===recommendation).map(u=>u.user_id);
-    if(!users.length)return toast(`没有${recommendation}用户`,'error');
-    if(!confirm(`确定将 ${users.length} 个「${recommendation}」用户迁移到选中的分组？`))return;
+    const matched=analysisUsers.filter(u=>(u.recommendation||'')===recommendation);
+    const users=matched.filter(u=>(u.pool_id||'')!==targetPoolId).map(u=>u.user_id);
+    const skipped=matched.length-users.length;
+    if(!users.length)return toast(matched.length?`这些${recommendation}用户已在目标组`:`没有${recommendation}用户`,'error');
+    if(!confirm(`确定将 ${users.length} 个「${recommendation}」用户迁移到选中的分组？${skipped?`（已在目标组 ${skipped} 个会跳过）`:''}`))return;
     try{
         loading(true,'正在迁移…');
         const result=await request(api('/users/batch-move'),{method:'POST',body:JSON.stringify({user_ids:users,target_pool_id:targetPoolId,note:`墙事件分析${recommendation}一键迁移`})});
         updateCurrent(result.campaign||result);
-        toast(`已迁移 ${result.moved_count} 个用户到「${result.target_pool_name}」`);
+        toast(`已迁移 ${result.moved_count} 个用户到「${result.target_pool_name}」${result.already_count?`，跳过 ${result.already_count} 个`:''}`);
         $('wallAnalysisModal').classList.remove('show');
     }catch(error){toast(error.message,'error')}finally{loading(false)}
 }
@@ -821,7 +823,7 @@ $('analysisMoveBtn').onclick=async()=>{
         loading(true,'正在迁移…');
         const result=await request(api('/users/batch-move'),{method:'POST',body:JSON.stringify({user_ids:[...analysisSelected],target_pool_id:targetPoolId,note:'墙事件分析批量迁移'})});
         updateCurrent(result.campaign||result);
-        toast(`已迁移 ${result.moved_count} 个用户到「${result.target_pool_name}」`);
+        toast(`已迁移 ${result.moved_count} 个用户到「${result.target_pool_name}」${result.already_count?`，跳过 ${result.already_count} 个`:''}`);
         $('wallAnalysisModal').classList.remove('show');
     }catch(error){toast(error.message,'error')}finally{loading(false)}
 };
