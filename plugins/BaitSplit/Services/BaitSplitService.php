@@ -4409,20 +4409,15 @@ class BaitSplitService
             // 构建用户分组映射
             $router = $campaign['router'] ?? [];
             $pools = $router['pools'] ?? [];
-            $assignments = $router['assignments'] ?? [];
-            if (!is_array($assignments)) {
-                $assignments = [];
-            }
             $poolNameMap = [];
             foreach ($pools as $pool) {
                 $poolNameMap[$pool['id']] = $pool['name'] ?? $pool['id'];
             }
-            // assignments 结构是 {userId: poolId}
+            $defaultPoolId = $this->poolIdByType($router, 'default');
             $userPoolMap = [];
-            foreach ($assignments as $userId => $poolId) {
-                if (!is_string($poolId)) {
-                    continue;
-                }
+            foreach ($userIdList as $userId) {
+                $poolId = $this->classifiedPoolId($campaign, (int) $userId)
+                    ?? $defaultPoolId;
                 $userPoolMap[(int) $userId] = $poolNameMap[$poolId] ?? $poolId;
             }
             
@@ -4586,6 +4581,7 @@ class BaitSplitService
         $now = time();
         $moved = 0;
         $noteText = $note ?: '墙事件分析批量迁移';
+        $movingSet = array_flip($userIds);
 
         foreach ($userIds as $userId) {
             $router['overrides'][(string) $userId] = $this->normalizeOverride([
@@ -4597,6 +4593,22 @@ class BaitSplitService
             $router['assignments'][(string) $userId] = $targetPoolId;
             $moved++;
         }
+
+        // 用户被批量转走后，也要从旧排查树节点里移除，避免旧分支查看仍显示这些人。
+        foreach ($router['investigation_nodes'] as &$node) {
+            if (($node['pool_id'] ?? '') === $targetPoolId) {
+                continue;
+            }
+            $before = count($node['user_ids']);
+            $node['user_ids'] = array_values(array_filter(
+                $node['user_ids'],
+                fn(int $userId): bool => !isset($movingSet[$userId])
+            ));
+            if (count($node['user_ids']) !== $before) {
+                $node['updated_at'] = $now;
+            }
+        }
+        unset($node);
 
         // 如果目标是树分支，更新 user_ids
         $targetTreeNodeId = $targetPool['tree_node_id'] ?? '';
