@@ -4582,8 +4582,15 @@ class BaitSplitService
         $moved = 0;
         $noteText = $note ?: '墙事件分析批量迁移';
         $movingSet = array_flip($userIds);
+        $defaultPoolId = $this->poolIdByType($router, 'default');
+        $sourceExposureCleanup = [];
 
         foreach ($userIds as $userId) {
+            $sourcePoolId = $this->classifiedPoolId($campaign, (int) $userId)
+                ?? $defaultPoolId;
+            if ($sourcePoolId !== $targetPoolId) {
+                $sourceExposureCleanup[$sourcePoolId][] = (int) $userId;
+            }
             $router['overrides'][(string) $userId] = $this->normalizeOverride([
                 'pool_id' => $targetPoolId,
                 'locked' => true,
@@ -4620,6 +4627,9 @@ class BaitSplitService
                 ))
             );
             $router['investigation_nodes'][$targetTreeNodeId]['updated_at'] = $now;
+        }
+        foreach ($sourceExposureCleanup as $sourcePoolId => $cleanupUserIds) {
+            $this->removeUserExposure($campaign, (string) $sourcePoolId, $cleanupUserIds);
         }
 
         $state['campaigns'][$campaignId] = $campaign;
