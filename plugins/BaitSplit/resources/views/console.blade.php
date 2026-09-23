@@ -340,6 +340,8 @@
                     <button id="selectTopRisk" class="danger small">选前50</button>
                     <button id="selectHighRisk" class="secondary small">选风险≥40</button>
                     <select id="analysisMoveTarget" style="width:200px;height:34px"></select>
+                    <button id="moveIsolationUsers" class="danger small">转移建议隔离</button>
+                    <button id="moveObservationUsers" class="warning small">转移建议观察</button>
                     <button id="analysisMoveBtn" class="small">迁移选中用户</button>
                     <span id="analysisSelectedCount" class="muted" style="font-size:12px"></span>
                 </div>
@@ -690,7 +692,7 @@ $('wallEventMoveBtn').onclick=async()=>{
     try{
         loading(true,'正在转移…');
         const result=await request(api('/users/batch-move'),{method:'POST',body:JSON.stringify({user_ids:userIds,target_pool_id:targetPoolId,note:`墙事件 ${wallEventToMove.old_ip} 用户转移`})});
-        updateCurrent(result);
+        updateCurrent(result.campaign||result);
         toast(`已转移 ${result.moved_count} 个用户到「${result.target_pool_name}」`);
         $('wallEventMoveModal').classList.remove('show');
     }catch(error){toast(error.message,'error')}finally{loading(false)}
@@ -785,6 +787,22 @@ function renderAnalysisUsers(){
 }
 $('selectTopRisk').onclick=()=>selectTopRisk(50);
 $('selectHighRisk').onclick=()=>selectByRisk(40);
+async function moveAnalysisRecommendation(recommendation){
+    const targetPoolId=$('analysisMoveTarget').value;
+    if(!targetPoolId)return toast('请选择目标分组','error');
+    const users=analysisUsers.filter(u=>(u.recommendation||'')===recommendation).map(u=>u.user_id);
+    if(!users.length)return toast(`没有${recommendation}用户`,'error');
+    if(!confirm(`确定将 ${users.length} 个「${recommendation}」用户迁移到选中的分组？`))return;
+    try{
+        loading(true,'正在迁移…');
+        const result=await request(api('/users/batch-move'),{method:'POST',body:JSON.stringify({user_ids:users,target_pool_id:targetPoolId,note:`墙事件分析${recommendation}一键迁移`})});
+        updateCurrent(result.campaign||result);
+        toast(`已迁移 ${result.moved_count} 个用户到「${result.target_pool_name}」`);
+        $('wallAnalysisModal').classList.remove('show');
+    }catch(error){toast(error.message,'error')}finally{loading(false)}
+}
+$('moveIsolationUsers').onclick=()=>moveAnalysisRecommendation('建议隔离');
+$('moveObservationUsers').onclick=()=>moveAnalysisRecommendation('建议观察');
 $('analysisSelectAll').onchange=$('analysisSelectAllHead').onchange=function(){
     const checked=this.checked;
     $('analysisSelectAll').checked=$('analysisSelectAllHead').checked=checked;
@@ -802,7 +820,7 @@ $('analysisMoveBtn').onclick=async()=>{
         if(!confirm(`确定将 ${analysisSelected.size} 个用户迁移到选中的分组？`))return;
         loading(true,'正在迁移…');
         const result=await request(api('/users/batch-move'),{method:'POST',body:JSON.stringify({user_ids:[...analysisSelected],target_pool_id:targetPoolId,note:'墙事件分析批量迁移'})});
-        updateCurrent(result);
+        updateCurrent(result.campaign||result);
         toast(`已迁移 ${result.moved_count} 个用户到「${result.target_pool_name}」`);
         $('wallAnalysisModal').classList.remove('show');
     }catch(error){toast(error.message,'error')}finally{loading(false)}
