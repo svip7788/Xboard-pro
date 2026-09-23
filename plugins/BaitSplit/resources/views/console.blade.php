@@ -782,7 +782,7 @@ function renderAnalysisUsers(){
         const scoreCell=row.insertCell();scoreCell.textContent=u.risk_score||0;scoreCell.style.fontWeight='bold';scoreCell.style.color=(u.risk_score||0)>=40?'var(--danger)':(u.risk_score||0)>=30?'var(--warning)':'inherit';
         const profileCell=row.insertCell();profileCell.textContent=`夜 ${u.night_hit_count||0} / IP ${u.subscribe_ip_count||0} / UA ${u.subscribe_ua_count||0} / 快拉 ${u.fast_pull_count||0}`;
         profileCell.title=`最近拉取 ${u.recent_pull_count||0} 次，客户端 ${u.subscribe_client_count||0} 种${u.last_pull_at?`，最近 ${formatTime(u.last_pull_at)}`:''}`;
-        const reasonCell=row.insertCell();reasonCell.textContent=`${u.recommendation||'继续观察'}：${(u.risk_reasons||[]).join('、')}`;
+        const reasonCell=row.insertCell();reasonCell.textContent=`${u.recommendation||'留高危观察'}：${(u.risk_reasons||[]).join('、')}`;
     });
 }
 $('selectTopRisk').onclick=()=>selectTopRisk(50);

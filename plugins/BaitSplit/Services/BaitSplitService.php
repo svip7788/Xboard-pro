@@ -4497,7 +4497,7 @@ class BaitSplitService
                 }
                 $recommend = $score >= 40
                     ? '建议隔离'
-                    : ($score >= 30 ? '建议观察' : '继续观察');
+                    : ($score >= 30 ? '建议观察' : '留高危观察');
                 $users[] = [
                     'user_id' => $userId,
                     'email' => $user->email ?? '未知',
