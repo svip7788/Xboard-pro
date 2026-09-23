@@ -24,6 +24,7 @@
         .empty{padding:20px;text-align:center;color:var(--muted);background:var(--bg);border-radius:6px;font-size:13px}.notice{display:none;padding:12px;border-radius:6px}.notice.error{color:#991b1b;background:#fee2e2}
         .toast{position:fixed;top:18px;left:50%;z-index:10020;max-width:calc(100% - 32px);padding:12px 18px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.15);opacity:0;visibility:hidden;transform:translate(-50%,-10px);transition:.2s;pointer-events:none;font-size:13px}.toast.show{opacity:1;visibility:visible;transform:translate(-50%,0)}.toast.success{color:#166534;background:#dcfce7}.toast.error{color:#991b1b;background:#fee2e2}
         .overlay,.modal{display:none;position:fixed;inset:0;z-index:10000;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.4)}.overlay.show,.modal.show{display:flex}.loading-box{display:flex;gap:10px;align-items:center;padding:14px 20px;background:#fff;border-radius:8px;font-size:13px}.spinner{width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:spin .7s linear infinite}.modal{z-index:10010}.modal-card{width:min(1000px,100%);max-height:88vh;overflow:auto;padding:24px;background:#fff;border-radius:10px}.modal-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px}.modal-tools{display:grid;grid-template-columns:1fr auto;gap:9px;margin:12px 0}.pagination{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px}@keyframes spin{to{transform:rotate(360deg)}}
+        .analysis-tools{display:grid;gap:10px;margin-bottom:12px;padding:12px;background:var(--bg);border:1px solid var(--line);border-radius:8px}.analysis-tools-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.analysis-tools-group{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:6px 8px;background:#fff;border:1px solid var(--line);border-radius:7px}.analysis-tools-title{font-size:12px;color:var(--muted);font-weight:600}.analysis-tools .target-select{width:220px}.analysis-tools .count-mode{width:86px}.analysis-tools .count-value{width:80px}
         .split{display:grid;grid-template-columns:1fr 1fr;gap:14px}.version{font-family:ui-monospace,monospace;font-size:12px}
         /* 树形排查 - 层次化样式 */
         .tree-list{display:flex;flex-direction:column;gap:0;position:relative;padding:8px 0}
@@ -335,19 +336,35 @@
                     <button class="secondary small" onclick="$('wallAnalysisModal').classList.remove('show')">关闭</button>
                 </div>
                 <div id="wallAnalysisSummary" style="margin-bottom:12px;font-size:13px;color:var(--muted)"></div>
-                <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
-                    <label style="font-size:13px;display:flex;align-items:center;gap:6px"><input type="checkbox" id="analysisSelectAll" style="width:16px;height:16px"> 全选</label>
-                    <button id="selectTopRisk" class="danger small">选前50</button>
-                    <button id="selectHighRisk" class="secondary small">选风险≥40</button>
-                    <select id="analysisMoveTarget" style="width:200px;height:34px"></select>
-                    <button id="moveIsolationUsers" class="danger small">转移建议隔离</button>
-                    <button id="moveObservationUsers" class="warning small">转移建议观察</button>
-                    <button id="analysisMoveBtn" class="small">迁移选中用户</button>
-                    <select id="analysisCountMode" style="width:74px;height:34px"><option value="lte">次数≤</option><option value="gte">次数≥</option><option value="eq">次数=</option></select>
-                    <input id="analysisCountValue" type="number" min="1" value="10" style="width:72px;height:34px">
-                    <button id="selectByCountRule" class="secondary small">勾选次数</button>
-                    <button id="moveByCountRule" class="small">转移次数</button>
-                    <span id="analysisSelectedCount" class="muted" style="font-size:12px"></span>
+                <div class="analysis-tools">
+                    <div class="analysis-tools-row">
+                        <div class="analysis-tools-group">
+                            <span class="analysis-tools-title">选择</span>
+                            <label style="font-size:13px;display:flex;align-items:center;gap:6px"><input type="checkbox" id="analysisSelectAll" style="width:16px;height:16px"> 全选</label>
+                            <button id="selectTopRisk" class="danger small">选前50</button>
+                            <button id="selectHighRisk" class="secondary small">选风险≥40</button>
+                            <span id="analysisSelectedCount" class="muted" style="font-size:12px"></span>
+                        </div>
+                        <div class="analysis-tools-group">
+                            <span class="analysis-tools-title">目标</span>
+                            <select id="analysisMoveTarget" class="target-select"></select>
+                            <button id="analysisMoveBtn" class="small">迁移选中用户</button>
+                        </div>
+                    </div>
+                    <div class="analysis-tools-row">
+                        <div class="analysis-tools-group">
+                            <span class="analysis-tools-title">按建议</span>
+                            <button id="moveIsolationUsers" class="danger small">转移建议隔离</button>
+                            <button id="moveObservationUsers" class="warning small">转移建议观察</button>
+                        </div>
+                        <div class="analysis-tools-group">
+                            <span class="analysis-tools-title">按次数</span>
+                            <select id="analysisCountMode" class="count-mode"><option value="lte">次数≤</option><option value="gte">次数≥</option><option value="eq">次数=</option></select>
+                            <input id="analysisCountValue" class="count-value" type="number" min="1" value="10">
+                            <button id="selectByCountRule" class="secondary small">勾选</button>
+                            <button id="moveByCountRule" class="small">转移</button>
+                        </div>
+                    </div>
                 </div>
                 <div class="scroll" style="max-height:400px">
                     <table>
