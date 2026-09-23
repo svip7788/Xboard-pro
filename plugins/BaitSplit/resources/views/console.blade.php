@@ -343,6 +343,10 @@
                     <button id="moveIsolationUsers" class="danger small">转移建议隔离</button>
                     <button id="moveObservationUsers" class="warning small">转移建议观察</button>
                     <button id="analysisMoveBtn" class="small">迁移选中用户</button>
+                    <select id="analysisCountMode" style="width:74px;height:34px"><option value="lte">次数≤</option><option value="gte">次数≥</option><option value="eq">次数=</option></select>
+                    <input id="analysisCountValue" type="number" min="1" value="10" style="width:72px;height:34px">
+                    <button id="selectByCountRule" class="secondary small">勾选次数</button>
+                    <button id="moveByCountRule" class="small">转移次数</button>
                     <span id="analysisSelectedCount" class="muted" style="font-size:12px"></span>
                 </div>
                 <div class="scroll" style="max-height:400px">
@@ -787,6 +791,44 @@ function renderAnalysisUsers(){
 }
 $('selectTopRisk').onclick=()=>selectTopRisk(50);
 $('selectHighRisk').onclick=()=>selectByRisk(40);
+function analysisCountRule(){
+    const value=Number($('analysisCountValue').value);
+    if(!Number.isFinite(value)||value<1){toast('请填写有效出现次数','error');return null}
+    const mode=$('analysisCountMode').value;
+    const label=mode==='gte'?`出现次数≥${value}`:mode==='eq'?`出现次数=${value}`:`出现次数≤${value}`;
+    const match=user=>mode==='gte'?Number(user.count||0)>=value:mode==='eq'?Number(user.count||0)===value:Number(user.count||0)<=value;
+    return {label,match};
+}
+function selectByCountRule(){
+    const rule=analysisCountRule();if(!rule)return;
+    analysisSelected.clear();
+    const checkboxes=document.querySelectorAll('#analysisUsers input[type=checkbox]');
+    analysisUsers.forEach((user,index)=>{
+        const checked=rule.match(user);
+        const cb=checkboxes[index];
+        if(cb)cb.checked=checked;
+        if(checked)analysisSelected.add(user.user_id);
+    });
+    updateAnalysisSelectedCount();
+    toast(`已勾选 ${analysisSelected.size} 个${rule.label}用户`);
+}
+async function moveByCountRule(){
+    const rule=analysisCountRule();if(!rule)return;
+    const targetPoolId=$('analysisMoveTarget').value;
+    if(!targetPoolId)return toast('请选择目标分组','error');
+    const matched=analysisUsers.filter(rule.match);
+    const users=matched.filter(u=>(u.pool_id||'')!==targetPoolId).map(u=>u.user_id);
+    const skipped=matched.length-users.length;
+    if(!users.length)return toast(matched.length?`${rule.label}用户已在目标组`:`没有${rule.label}用户`,'error');
+    if(!confirm(`确定将 ${users.length} 个「${rule.label}」用户迁移到选中的分组？${skipped?`（已在目标组 ${skipped} 个会跳过）`:''}`))return;
+    try{
+        loading(true,'正在迁移…');
+        const result=await request(api('/users/batch-move'),{method:'POST',body:JSON.stringify({user_ids:users,target_pool_id:targetPoolId,note:`墙事件分析${rule.label}一键迁移`})});
+        updateCurrent(result.campaign||result);
+        toast(`已迁移 ${result.moved_count} 个用户到「${result.target_pool_name}」${result.already_count?`，跳过 ${result.already_count} 个`:''}`);
+        $('wallAnalysisModal').classList.remove('show');
+    }catch(error){toast(error.message,'error')}finally{loading(false)}
+}
 async function moveAnalysisRecommendation(recommendation){
     const targetPoolId=$('analysisMoveTarget').value;
     if(!targetPoolId)return toast('请选择目标分组','error');
@@ -805,6 +847,8 @@ async function moveAnalysisRecommendation(recommendation){
 }
 $('moveIsolationUsers').onclick=()=>moveAnalysisRecommendation('建议隔离');
 $('moveObservationUsers').onclick=()=>moveAnalysisRecommendation('建议观察');
+$('selectByCountRule').onclick=selectByCountRule;
+$('moveByCountRule').onclick=moveByCountRule;
 $('analysisSelectAll').onchange=$('analysisSelectAllHead').onchange=function(){
     const checked=this.checked;
     $('analysisSelectAll').checked=$('analysisSelectAllHead').checked=checked;
