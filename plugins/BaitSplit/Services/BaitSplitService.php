@@ -343,21 +343,33 @@ class BaitSplitService
         if ($poolId === 'default') {
             throw new InvalidArgumentException('默认组不能删除');
         }
-        $hasAssignments = in_array($poolId, $router['assignments'], true);
-        if ($hasAssignments) {
+        if ($this->poolMemberIds($campaign, $poolId) !== []) {
             throw new InvalidArgumentException('该用户池仍有用户，不能删除');
-        }
-        foreach ($router['overrides'] as $override) {
-            if (
-                $this->overrideIsActive($override)
-                && $override['pool_id'] === $poolId
-            ) {
-                throw new InvalidArgumentException('该用户池仍被单用户规则引用');
-            }
         }
         foreach ($router['pools'] as $otherPool) {
             if (($otherPool['overflow_pool_id'] ?? '') === $poolId) {
                 throw new InvalidArgumentException('该用户池仍被其他用户池设为满员转入目标');
+            }
+        }
+        foreach ($router['assignments'] as $uid => $assigned) {
+            if ((string) $assigned === $poolId) {
+                unset($router['assignments'][$uid]);
+            }
+        }
+        foreach ($router['overrides'] as $uid => $override) {
+            if (($override['pool_id'] ?? '') !== $poolId) {
+                continue;
+            }
+            $override['pool_id'] = '';
+            if (
+                ($override['host'] ?? '') === ''
+                && ($override['node_hosts'] ?? []) === []
+                && ($override['server_name'] ?? '') === ''
+                && ($override['transport_host'] ?? '') === ''
+            ) {
+                unset($router['overrides'][$uid]);
+            } else {
+                $router['overrides'][$uid] = $override;
             }
         }
         $this->snapshotRouterConfig($router);
@@ -449,6 +461,9 @@ class BaitSplitService
             throw new InvalidArgumentException('必须指定用户池或单用户域名');
         }
         $campaign['router']['overrides'][(string) $userId] = $override;
+        if ($override['pool_id'] !== '') {
+            $campaign['router']['assignments'][(string) $userId] = $override['pool_id'];
+        }
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
         return $this->campaignStatus($campaign);
