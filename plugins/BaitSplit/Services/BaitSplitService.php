@@ -3594,7 +3594,7 @@ class BaitSplitService
     }
 
     /**
-     * 换址上报的地址：公网 IPv4 或域名。
+     * 换址上报的地址：公网 IPv4 / IPv6 或域名。
      *
      * 有的目标不是裸 IP，而是一个解析到中转的域名，换址时上游报的就是域名。
      * 私网和保留地址仍然挡掉，免得一次上报把整池的人指进内网。
@@ -3602,17 +3602,21 @@ class BaitSplitService
     private function normalizePublicHost(mixed $host): string
     {
         $raw = trim((string) $host);
-        $host = rtrim(strtolower($raw), '.');
+        $host = strtolower($raw);
+        if (str_starts_with($host, '[') && str_ends_with($host, ']')) {
+            $host = substr($host, 1, -1);
+        } else {
+            $host = rtrim($host, '.');
+        }
         if (filter_var(
             $host,
             FILTER_VALIDATE_IP,
-            FILTER_FLAG_IPV4
-                | FILTER_FLAG_NO_PRIV_RANGE
+            FILTER_FLAG_NO_PRIV_RANGE
                 | FILTER_FLAG_NO_RES_RANGE
         )) {
             return $host;
         }
-        // 私网 IPv4 和 IPv6 也能过 HOSTNAME 校验，先把 IP 形态全排掉再认域名
+        // 私网/保留 IP 也可能带点，先把 IP 形态全排掉再认域名。
         if (
             $host !== ''
             && strlen($host) <= 253
@@ -4991,8 +4995,11 @@ class BaitSplitService
                 // 域名池由别处维护，只认地址型的池
                 if (
                     $targetId === ''
-                    || filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)
-                        === false
+                    || filter_var(
+                        $host,
+                        FILTER_VALIDATE_IP,
+                        FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+                    ) === false
                 ) {
                     continue;
                 }

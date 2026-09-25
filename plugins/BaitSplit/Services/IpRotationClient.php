@@ -105,7 +105,13 @@ class IpRotationClient
             return null;
         }
         $ip = trim((string) ($data['ip'] ?? ''));
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+        if (
+            filter_var(
+                $ip,
+                FILTER_VALIDATE_IP,
+                FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+            ) === false
+        ) {
             return null;
         }
         return [
