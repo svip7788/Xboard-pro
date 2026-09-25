@@ -46,6 +46,7 @@ class BaitSplitService
 
     public function filterServers(array $servers, User $user, ?Request $request = null): array
     {
+        $applied = false;
         foreach ($this->state()['campaigns'] as $campaign) {
             if (
                 ($campaign['router']['enabled'] ?? false)
@@ -62,7 +63,10 @@ class BaitSplitService
                     (string) $userId
                 ] ?? null;
                 if (!$override && $assignedPoolId === null) {
-                    return [];
+                    if (!$applied) {
+                        return [];
+                    }
+                    continue;
                 }
                 $assignedPool = $assignedPoolId !== null
                     ? ($router['pools'][$assignedPoolId] ?? null)
@@ -74,9 +78,14 @@ class BaitSplitService
                     && ($router['investigation_nodes'][$treeNodeId]['status'] ?? null)
                         === 'blocked'
                 ) {
-                    return [];
+                    if (!$applied) {
+                        return [];
+                    }
+                    continue;
                 }
-                return $this->filterRoutedServers($servers, $user, $campaign, $request);
+                $servers = $this->filterRoutedServers($servers, $user, $campaign, $request);
+                $applied = true;
+                continue;
             }
             if (
                 !$campaign['serving']
@@ -3494,7 +3503,16 @@ class BaitSplitService
 
     private function serverKeepsOriginalHost(array $server): bool
     {
-        return (string) ($server['type'] ?? '') === Server::TYPE_VLESS;
+        // IPv4 的 vless 跟用户池走，换地址接口才会出现在订阅里。
+        // IPv6 仍用节点表里的地址，避免被收成 IPv4。
+        if ((string) ($server['type'] ?? '') !== Server::TYPE_VLESS) {
+            return false;
+        }
+        return filter_var(
+            (string) ($server['host'] ?? ''),
+            FILTER_VALIDATE_IP,
+            FILTER_FLAG_IPV6
+        ) !== false;
     }
 
     private function applyConnectionOverrides(
