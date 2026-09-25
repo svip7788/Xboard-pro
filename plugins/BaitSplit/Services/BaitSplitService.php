@@ -92,7 +92,9 @@ class BaitSplitService
 
             foreach ($servers as &$server) {
                 if (in_array((int) ($server['id'] ?? 0), $campaign['target_server_ids'], true)) {
-                    $server['host'] = $assignment['host'];
+                    if (!$this->serverKeepsOriginalHost($server)) {
+                        $server['host'] = $assignment['host'];
+                    }
                 }
             }
             unset($server);
@@ -2895,7 +2897,7 @@ class BaitSplitService
                 continue;
             }
             $host = $override
-                ? $this->hostFromRule($override, $serverId)
+                ? $this->hostForServerRule($server, $override, $serverId)
                 : '';
             $selectedPool = null;
             foreach ($poolIds as $poolId) {
@@ -2903,7 +2905,7 @@ class BaitSplitService
                 if (!$candidate || !$this->poolIsUsable($candidate)) {
                     continue;
                 }
-                $candidateHost = $this->hostFromRule($candidate, $serverId);
+                $candidateHost = $this->hostForServerRule($server, $candidate, $serverId);
                 if ($candidateHost === '') {
                     continue;
                 }
@@ -3444,6 +3446,20 @@ class BaitSplitService
     private function hostFromRule(array $rule, int $serverId): string
     {
         return (string) (($rule['node_hosts'][(string) $serverId] ?? '') ?: ($rule['host'] ?? ''));
+    }
+
+    private function hostForServerRule(array $server, array $rule, int $serverId): string
+    {
+        if ($this->serverKeepsOriginalHost($server)) {
+            return (string) (($rule['node_hosts'][(string) $serverId] ?? '') ?: ($server['host'] ?? ''));
+        }
+
+        return $this->hostFromRule($rule, $serverId);
+    }
+
+    private function serverKeepsOriginalHost(array $server): bool
+    {
+        return (string) ($server['type'] ?? '') === Server::TYPE_VLESS;
     }
 
     private function applyConnectionOverrides(
