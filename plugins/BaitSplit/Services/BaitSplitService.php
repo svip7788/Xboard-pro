@@ -117,19 +117,24 @@ class BaitSplitService
 
     public function failClosedServers(array $servers, User $user): array
     {
+        $managedServerIds = [];
         foreach ($this->state()['campaigns'] as $campaign) {
             if (
                 ($campaign['router']['enabled'] ?? false)
                 && $this->campaignMatchesGroup($campaign, (int) $user->group_id)
             ) {
-                $managedServerIds = array_flip($campaign['target_server_ids']);
-                return array_values(array_filter(
-                    $servers,
-                    fn(array $server): bool => !isset(
-                        $managedServerIds[(int) ($server['id'] ?? 0)]
-                    )
-                ));
+                foreach ($campaign['target_server_ids'] as $serverId) {
+                    $managedServerIds[(int) $serverId] = true;
+                }
             }
+        }
+        if ($managedServerIds !== []) {
+            return array_values(array_filter(
+                $servers,
+                fn(array $server): bool => !isset(
+                    $managedServerIds[(int) ($server['id'] ?? 0)]
+                )
+            ));
         }
         return $servers;
     }
