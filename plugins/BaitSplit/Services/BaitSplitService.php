@@ -387,19 +387,19 @@ class BaitSplitService
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
         if ($enabled) {
-            foreach ($state['campaigns'] as $other) {
-                if (
-                    $other['id'] !== $campaignId
-                    && $this->campaignsShareGroup($other, $campaign)
-                    && (($other['router']['enabled'] ?? false) || $other['serving'])
-                ) {
-                    throw new InvalidArgumentException('同一用户组已有运行中的域名任务');
-                }
-            }
             $campaign['target_server_ids'] = array_values(array_diff(
                 $this->managedServerIds($campaign['target_group_ids']),
                 $campaign['excluded_server_ids']
             ));
+            foreach ($state['campaigns'] as $other) {
+                if (
+                    $other['id'] !== $campaignId
+                    && $this->campaignsConflictOnGroupsAndServers($other, $campaign)
+                    && (($other['router']['enabled'] ?? false) || $other['serving'])
+                ) {
+                    throw new InvalidArgumentException('同一用户组和节点已有运行中的域名任务');
+                }
+            }
             if ($campaign['target_server_ids'] === []) {
                 throw new InvalidArgumentException('目标权限组暂无可用节点');
             }
@@ -1660,16 +1660,21 @@ class BaitSplitService
 
         $state = $this->state();
         $campaignId = $campaignId ?: (string) Str::uuid();
+        $candidateCampaign = [
+            'target_group_ids' => $targetGroupIds,
+            'target_server_ids' => $targetServerIds,
+            'excluded_server_ids' => $excludedServerIds,
+        ];
         foreach ($state['campaigns'] as $otherId => $otherCampaign) {
             if (
                 $otherId !== $campaignId
-                && array_intersect(
-                    $targetGroupIds,
-                    $otherCampaign['target_group_ids']
-                ) !== []
+                && $this->campaignsConflictOnGroupsAndServers(
+                    $otherCampaign,
+                    $candidateCampaign
+                )
             ) {
                 throw new InvalidArgumentException(
-                    '所选用户组已属于其他任务，请先从原任务移除'
+                    '所选用户组和节点已属于其他任务，请先从原任务移除'
                 );
             }
         }
@@ -1753,9 +1758,9 @@ class BaitSplitService
             if (
                 $other['id'] !== $campaignId
                 && ($other['serving'] || ($other['router']['enabled'] ?? false))
-                && $this->campaignsShareGroup($other, $campaign)
+                && $this->campaignsConflictOnGroupsAndServers($other, $campaign)
             ) {
-                throw new InvalidArgumentException('同一用户组已有运行中的排查任务');
+                throw new InvalidArgumentException('同一用户组和节点已有运行中的排查任务');
             }
         }
 
@@ -2304,6 +2309,36 @@ class BaitSplitService
             $left['target_group_ids'],
             $right['target_group_ids']
         ) !== [];
+    }
+
+    private function campaignsConflictOnGroupsAndServers(array $left, array $right): bool
+    {
+        if (!$this->campaignsShareGroup($left, $right)) {
+            return false;
+        }
+
+        return array_intersect(
+            $this->campaignServerIdsForConflict($left),
+            $this->campaignServerIdsForConflict($right)
+        ) !== [];
+    }
+
+    private function campaignServerIdsForConflict(array $campaign): array
+    {
+        $serverIds = $this->normalizeIds($campaign['target_server_ids'] ?? []);
+        if ($serverIds !== []) {
+            return $serverIds;
+        }
+
+        $groupIds = $this->normalizeIds($campaign['target_group_ids'] ?? []);
+        if ($groupIds === []) {
+            return [];
+        }
+
+        return array_values(array_diff(
+            $this->managedServerIds($groupIds),
+            $this->normalizeIds($campaign['excluded_server_ids'] ?? [])
+        ));
     }
 
     private function matchesPath(int $userId, array $campaign, ?array $path = null): bool
