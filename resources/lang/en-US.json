@@ -42,6 +42,7 @@
     "Not enough remaining subscription time to exchange": "Not enough remaining subscription time to exchange",
     "Exchange failed, please try again later": "Exchange failed, please try again later",
     "Only renewal of the current plan can start from today": "Only renewal of the current plan can start from today",
+    "Remaining subscription time is too long to start from today": "More than one month remains, so it cannot restart from today. Please use time exchange or buy a reset package",
     "Subscription plan does not exist": "Subscription plan does not exist",
     "The coupon code cannot be used for this subscription": "The coupon code cannot be used for this subscription",
     "The current required minimum withdrawal commission is :limit": "The current required minimum withdrawal commission is :limit",

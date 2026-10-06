@@ -33,6 +33,7 @@
     "Not enough remaining subscription time to exchange": "剩餘訂閱時長不足，無法兌換",
     "Exchange failed, please try again later": "兌換失敗，請稍後重試",
     "Only renewal of the current plan can start from today": "只有續費當前套餐才能從今天開始計算",
+    "Remaining subscription time is too long to start from today": "剩餘時長超過一個月，不能從今天重新計時，請使用時長兌換或購買重置包",
     "This subscription has expired, please change to another subscription": "訂閱已過期，請更換其它訂閱",
     "This plan is no longer available, please choose another plan": "該套餐已下架，請更換其它套餐",
     "Coupon failed": "優惠券使用失敗",

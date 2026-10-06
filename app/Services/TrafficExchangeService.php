@@ -21,6 +21,8 @@ class TrafficExchangeService
 
     public const MODES = [self::MODE_REMAIN, self::MODE_MONTH];
 
+    public const RESTART_MAX_DAYS = 31;
+
     public function __construct(
         private readonly TrafficResetService $trafficResetService
     ) {
@@ -61,9 +63,21 @@ class TrafficExchangeService
             'next_reset_at' => $user->next_reset_at,
             // 单位：分，与套餐接口的旧版价格字段一致
             'reset_price' => $resetPrice !== null ? (int) round((float) $resetPrice * 100) : null,
-            'restart_available' => $enabled && $active && (bool) $plan->renew,
+            'restart_available' => $enabled && $active && (bool) $plan->renew && $this->canRestart($user),
+            'restart_max_days' => self::RESTART_MAX_DAYS,
             'modes' => $modes,
         ];
+    }
+
+    /**
+     * 剩余时长超过一个月时不允许从今天重新计时，避免误操作作废多月时长
+     */
+    public function canRestart(User $user): bool
+    {
+        if ($user->expired_at === null) {
+            return false;
+        }
+        return (int) $user->expired_at - time() <= self::RESTART_MAX_DAYS * 86400;
     }
 
     /**

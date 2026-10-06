@@ -98,7 +98,7 @@ class OrderService
             $orderService->setVipDiscount($user);
             $orderService->setOrderType($user);
             if ($restart) {
-                $orderService->setRestart();
+                $orderService->setRestart($user);
             }
             $orderService->setInvite(user: $user);
 
@@ -216,14 +216,18 @@ class OrderService
     /**
      * @throws ApiException
      */
-    public function setRestart(): void
+    public function setRestart(User $user): void
     {
         $order = $this->order;
-        if (!app(TrafficExchangeService::class)->isEnabled()) {
+        $exchangeService = app(TrafficExchangeService::class);
+        if (!$exchangeService->isEnabled()) {
             throw new ApiException(__('Traffic exchange is not enabled'));
         }
         if ((int) $order->type !== Order::TYPE_RENEWAL || !isset(self::STR_TO_TIME[$order->period])) {
             throw new ApiException(__('Only renewal of the current plan can start from today'));
+        }
+        if (!$exchangeService->canRestart($user)) {
+            throw new ApiException(__('Remaining subscription time is too long to start from today'));
         }
         $order->restart = true;
     }

@@ -42,6 +42,7 @@
     "Not enough remaining subscription time to exchange": "Недостаточно оставшегося времени подписки для обмена",
     "Exchange failed, please try again later": "Обмен не удался, попробуйте позже",
     "Only renewal of the current plan can start from today": "Начать с сегодняшнего дня можно только при продлении текущего тарифа",
+    "Remaining subscription time is too long to start from today": "Осталось больше месяца, начать с сегодняшнего дня нельзя. Используйте обмен времени или купите пакет сброса",
     "Subscription plan does not exist": "Тарифный план не существует",
     "The coupon code cannot be used for this subscription": "Код купона не может быть использован для этой подписки",
     "The current required minimum withdrawal commission is :limit": "Текущая минимальная комиссия для вывода: :limit",
