@@ -435,7 +435,8 @@ class OrderService
 
     private function buyByPeriod(Order $order, Plan $plan)
     {
-        $restart = (bool) $order->restart;
+        // 开通时再校验一次，避免下单后又续了长时长导致被作废
+        $restart = (bool) $order->restart && app(TrafficExchangeService::class)->canRestart($this->user);
         if ($restart) {
             // 续费立即生效：从现在起算新周期并重置流量，原剩余时长作废
             app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER, [

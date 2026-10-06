@@ -162,7 +162,7 @@ class TrafficResetService
    */
   private function getNextMonthFirstDay(Carbon $from): Carbon
   {
-    return $from->copy()->addMonth()->startOfMonth();
+    return $from->copy()->startOfMonth()->addMonthNoOverflow();
   }
 
   /**

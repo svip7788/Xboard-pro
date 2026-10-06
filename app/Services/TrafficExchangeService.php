@@ -129,14 +129,15 @@ class TrafficExchangeService
      */
     private function calculate(User $user, string $mode, Carbon $now): ?array
     {
-        if (!$user->plan || $user->expired_at === null || $user->next_reset_at === null) {
+        if (!$user->plan || $user->expired_at === null) {
             return null;
         }
 
         $tz = config('app.timezone');
         $expiredAt = Carbon::createFromTimestamp((int) $user->expired_at, $tz);
-        $nextResetAt = Carbon::createFromTimestamp((int) $user->next_reset_at, $tz);
-        if ($expiredAt->lte($now) || $nextResetAt->lte($now)) {
+        // 不信任库里的 next_reset_at（可能被直接改库导致过期），按当前到期日重新计算
+        $nextResetAt = $this->trafficResetService->calculateNextResetTime($user)?->setTimezone($tz);
+        if (!$nextResetAt || $expiredAt->lte($now) || $nextResetAt->lte($now) || $nextResetAt->gt($expiredAt)) {
             return null;
         }
 
