@@ -16,7 +16,7 @@ class TrafficExchangeService
 {
     // 扣除本周期剩余时间，新周期从现在开始
     public const MODE_REMAIN = 'remain';
-    // 扣除一个月到期时间，重置日不变
+    // 扣除一个月到期时间，重置日不变，仅用于每月1号重置的套餐
     public const MODE_MONTH = 'month';
 
     public const MODES = [self::MODE_REMAIN, self::MODE_MONTH];
@@ -153,7 +153,8 @@ class TrafficExchangeService
             }
             $newExpiredAt = $now->copy()->addMonthsNoOverflow($cycles);
         } elseif ($mode === self::MODE_MONTH) {
-            if (!in_array($method, [Plan::RESET_TRAFFIC_MONTHLY, Plan::RESET_TRAFFIC_FIRST_DAY_MONTH], true)) {
+            // 按到期日重置的套餐用 remain 模式，扣得更少且对用户更划算
+            if ($method !== Plan::RESET_TRAFFIC_FIRST_DAY_MONTH) {
                 return null;
             }
             $newExpiredAt = $expiredAt->copy()->subMonthNoOverflow();
