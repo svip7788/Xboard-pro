@@ -158,7 +158,7 @@ class PlanService
         }
 
         if (!$this->plan->show && $this->plan->renew && !app(UserService::class)->isAvailable($user)) {
-            throw new ApiException(__('This subscription has expired, please change to another subscription'));
+            throw new ApiException(__('This plan is no longer available, please choose another plan'));
         }
     }
 
