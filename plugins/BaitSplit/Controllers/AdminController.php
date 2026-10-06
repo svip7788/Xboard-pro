@@ -678,6 +678,92 @@ class AdminController extends PluginController
         );
     }
 
+    public function batchSaveOverrides(Request $request, string $campaignId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        $data = $request->validate([
+            'lines' => ['nullable', 'string'],
+            'items' => ['nullable', 'array'],
+            'default_host' => ['nullable', 'string', 'max:253'],
+            'pool_id' => ['nullable', 'string', 'max:80'],
+            'locked' => ['nullable', 'boolean'],
+            'note' => ['nullable', 'string', 'max:200'],
+            'expires_at' => ['nullable', 'integer', 'min:0'],
+            'release_assignment' => ['nullable', 'boolean'],
+        ]);
+        $items = $data['items'] ?? [];
+        if (($data['lines'] ?? '') !== '') {
+            $items = array_merge(
+                $items,
+                array_values(array_filter(preg_split('/\R/', (string) $data['lines']) ?: []))
+            );
+        }
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()->batchSaveUserOverrides(
+                $campaignId,
+                $items,
+                (string) ($data['default_host'] ?? ''),
+                (string) ($data['pool_id'] ?? ''),
+                (bool) ($data['locked'] ?? true),
+                (string) ($data['note'] ?? ''),
+                (int) ($data['expires_at'] ?? 0),
+                (bool) ($data['release_assignment'] ?? false)
+            )
+        );
+    }
+
+    public function migratePoolOverrides(Request $request, string $campaignId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        $data = $request->validate([
+            'source_pool_id' => ['required', 'string', 'max:80'],
+            'host' => ['nullable', 'string', 'max:253'],
+            'only_pulled' => ['nullable', 'boolean'],
+            'note' => ['nullable', 'string', 'max:200'],
+        ]);
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()->migratePoolUsersToOverrides(
+                $campaignId,
+                $data['source_pool_id'],
+                (string) ($data['host'] ?? ''),
+                (bool) ($data['only_pulled'] ?? false),
+                (string) ($data['note'] ?? '')
+            )
+        );
+    }
+
+    public function independentObservationOverrides(Request $request, string $campaignId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        $q = (string) $request->query('q', '');
+        $page = max(1, (int) $request->query('page', 1));
+        $perPage = min(100, max(10, (int) $request->query('per_page', 50)));
+        return $this->executeRead(
+            fn() => BaitSplitService::fromDatabase()->independentObservationOverrideUsers(
+                $campaignId,
+                $q,
+                $page,
+                $perPage
+            )
+        );
+    }
+
+    public function restoreObservationOverrides(string $campaignId): JsonResponse
+    {
+        if ($response = $this->ensureEnabled()) {
+            return $response;
+        }
+        return $this->execute(
+            fn() => BaitSplitService::fromDatabase()->restoreLegacyObservationOverrides($campaignId)
+        );
+    }
+
     public function deleteOverride(string $campaignId, int $userId): JsonResponse
     {
         if ($response = $this->ensureEnabled()) {

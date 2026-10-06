@@ -53,6 +53,10 @@ Route::prefix("api/v2/{$securePath}/plugin/bait-split")
         Route::get('/campaigns/{campaignId}/investigations/{nodeId}/users', [AdminController::class, 'investigationNodeUsers']);
         Route::get('/campaigns/{campaignId}/users/search', [AdminController::class, 'searchUsers']);
         Route::get('/campaigns/{campaignId}/overrides', [AdminController::class, 'overrides']);
+        Route::get('/campaigns/{campaignId}/overrides/independent-observation', [AdminController::class, 'independentObservationOverrides']);
+        Route::post('/campaigns/{campaignId}/overrides/batch', [AdminController::class, 'batchSaveOverrides']);
+        Route::post('/campaigns/{campaignId}/overrides/migrate-pool', [AdminController::class, 'migratePoolOverrides']);
+        Route::post('/campaigns/{campaignId}/overrides/restore-observation', [AdminController::class, 'restoreObservationOverrides']);
         Route::post('/campaigns/{campaignId}/overrides/{userId}', [AdminController::class, 'saveOverride']);
         Route::delete('/campaigns/{campaignId}/overrides/{userId}', [AdminController::class, 'deleteOverride']);
     });

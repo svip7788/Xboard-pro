@@ -485,11 +485,328 @@ class BaitSplitService
         return $this->campaignStatus($campaign);
     }
 
+    public function batchSaveUserOverrides(
+        string $campaignId,
+        array $items,
+        string $defaultHost = '',
+        string $poolId = '',
+        bool $locked = true,
+        string $note = '',
+        int $expiresAt = 0,
+        bool $releaseAssignment = false
+    ): array {
+        if ($items === []) {
+            throw new InvalidArgumentException('请至少填写一个用户');
+        }
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $router = &$campaign['router'];
+        $defaultHost = $this->normalizeOptionalHost($defaultHost);
+        $poolId = trim($poolId);
+        if ($poolId !== '' && !isset($router['pools'][$poolId])) {
+            throw new InvalidArgumentException('指定用户池不存在');
+        }
+
+        $parsed = $this->parseOverrideBatchItems($items, $defaultHost);
+        $users = $this->resolveOverrideUsers(
+            $campaign,
+            array_column($parsed, 'user_id'),
+            array_column($parsed, 'email')
+        );
+        $updated = 0;
+        $invalid = [];
+        foreach ($parsed as $item) {
+            $key = $item['user_id'] > 0
+                ? 'id:' . $item['user_id']
+                : 'email:' . strtolower($item['email']);
+            $user = $users[$key] ?? null;
+            if (!$user) {
+                $invalid[] = $item['raw'];
+                continue;
+            }
+            $host = $item['host'];
+            if ($poolId === '' && $host === '') {
+                $invalid[] = $item['raw'];
+                continue;
+            }
+            $router['overrides'][(string) $user['id']] = $this->normalizeOverride([
+                'pool_id' => $poolId,
+                'host' => $host,
+                'node_hosts' => [],
+                'server_name' => '',
+                'transport_host' => '',
+                'locked' => $locked,
+                'note' => $note,
+                'expires_at' => $expiresAt,
+                'updated_at' => time(),
+            ]);
+            if ($releaseAssignment) {
+                unset($router['assignments'][(string) $user['id']]);
+            }
+            $updated++;
+        }
+        if ($updated <= 0) {
+            throw new InvalidArgumentException('没有可写入的用户规则');
+        }
+        $state['campaigns'][$campaignId] = $campaign;
+        $this->saveState($state);
+        return [
+            'campaign' => $this->campaignStatus($campaign),
+            'updated_count' => $updated,
+            'invalid' => $invalid,
+        ];
+    }
+
+    public function migratePoolUsersToOverrides(
+        string $campaignId,
+        string $sourcePoolId,
+        string $host = '',
+        bool $onlyPulled = false,
+        string $note = ''
+    ): array {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $router = &$campaign['router'];
+        $pool = $router['pools'][$sourcePoolId] ?? null;
+        if (!$pool) {
+            throw new InvalidArgumentException('找不到来源用户池');
+        }
+        $host = $this->normalizeOptionalHost($host);
+        if ($host === '') {
+            $host = $this->hostFromRule($pool, 0);
+            if ($host === '') {
+                $host = (string) (array_values((array) ($pool['node_hosts'] ?? []))[0] ?? '');
+            }
+        }
+        if ($host === '') {
+            throw new InvalidArgumentException('来源用户池没有可迁移的域名或 IP');
+        }
+        $userIds = $this->poolMemberIds($campaign, $sourcePoolId);
+        if ($onlyPulled) {
+            $exposed = array_flip($this->poolExposureIds($campaign, $sourcePoolId));
+            $userIds = array_values(array_filter(
+                $userIds,
+                fn(int $userId): bool => isset($exposed[$userId])
+            ));
+        }
+        $now = time();
+        foreach ($userIds as $userId) {
+            $router['overrides'][(string) $userId] = $this->normalizeOverride([
+                'pool_id' => '',
+                'host' => $host,
+                'locked' => true,
+                'note' => $note !== '' ? $note : "从{$pool['name']}迁移为单用户指定 IP",
+                'updated_at' => $now,
+            ]);
+            unset($router['assignments'][(string) $userId]);
+        }
+        $state['campaigns'][$campaignId] = $campaign;
+        $this->saveState($state);
+        return [
+            'campaign' => $this->campaignStatus($campaign),
+            'source_pool_name' => (string) ($pool['name'] ?? $sourcePoolId),
+            'host' => $host,
+            'migrated_count' => count($userIds),
+        ];
+    }
+
+    public function independentObservationOverrideUsers(
+        string $campaignId,
+        string $keyword = '',
+        int $page = 1,
+        int $perPage = 50
+    ): array {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $router = $campaign['router'];
+        $userIds = [];
+        foreach ($router['overrides'] as $userId => $override) {
+            if ($this->standaloneOverrideLabel($router, $override) !== '') {
+                $userIds[] = (int) $userId;
+            }
+        }
+
+        $keyword = trim($keyword);
+        $query = User::query()
+            ->whereIn('id', $userIds)
+            ->whereIn('group_id', $campaign['target_group_ids']);
+        if ($keyword !== '') {
+            $matchedIds = [];
+            foreach ($userIds as $userId) {
+                $override = $router['overrides'][(string) $userId] ?? [];
+                $sourceName = $this->standaloneOverrideLabel($router, $override);
+                $haystack = implode(' ', array_filter([
+                    (string) ($override['host'] ?? ''),
+                    implode(' ', (array) ($override['node_hosts'] ?? [])),
+                    (string) ($override['note'] ?? ''),
+                    $sourceName,
+                ]));
+                if ($haystack !== '' && str_contains($haystack, $keyword)) {
+                    $matchedIds[] = $userId;
+                }
+            }
+            $query->where(function ($q) use ($keyword, $matchedIds): void {
+                $q->where('id', $keyword)
+                    ->orWhere('email', 'like', "%{$keyword}%");
+                if ($matchedIds !== []) {
+                    $q->orWhereIn('id', $matchedIds);
+                }
+            });
+        }
+
+        $total = $query->count();
+        $lastPage = max(1, (int) ceil($total / $perPage));
+        $page = max(1, min($page, $lastPage));
+        $rows = $query->orderByDesc('id')
+            ->offset(($page - 1) * $perPage)
+            ->limit($perPage)
+            ->get(['id', 'email', 'group_id'])
+            ->map(fn($u) => ['id' => $u->id, 'email' => $u->email, 'group_id' => $u->group_id])
+            ->toArray();
+
+        $items = array_map(function (array $user) use ($campaign, $router): array {
+            $override = $router['overrides'][(string) $user['id']];
+            $sourcePool = $this->migratedOverrideSourcePool($router, $override);
+            $sourceName = $this->standaloneOverrideLabel($router, $override);
+            $poolId = (string) ($sourcePool['id'] ?? $this->effectivePoolId($campaign, $user['id']));
+            $stats = $this->poolExposureStats($campaign, $poolId, [(int) $user['id']]);
+            $stat = $stats[(int) $user['id']] ?? ['count' => 0, 'last_at' => 0];
+            $host = (string) ($override['host'] ?? '');
+            $lastPulledAt = max(
+                (int) ($stat['last_at'] ?? 0),
+                $this->poolIpExposureLastAt($campaign, $poolId, $host, (int) $user['id'])
+            );
+            return $user + [
+                'source_pool_id' => $poolId,
+                'source_pool_name' => $sourceName,
+                'override' => $override,
+                'pulled' => $lastPulledAt > 0,
+                'pull_count' => (int) ($stat['count'] ?? 0),
+                'last_pulled_at' => $lastPulledAt,
+            ];
+        }, $rows);
+
+        return [
+            'items' => $items,
+            'pagination' => [
+                'page' => $page,
+                'per_page' => $perPage,
+                'last_page' => $lastPage,
+                'total' => $total,
+            ],
+        ];
+    }
+
+    public function persistIndependentObservationOverrideSources(string $campaignId): array
+    {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $router = &$campaign['router'];
+        $updated = 0;
+        $now = time();
+        foreach ($router['overrides'] as $userId => $override) {
+            if (($override['note'] ?? '') !== '独立观察组迁移为单用户指定 IP') {
+                continue;
+            }
+            $sourcePool = $this->migratedOverrideSourcePool($router, $override);
+            $sourceName = (string) ($sourcePool['name'] ?? '');
+            if (!str_starts_with($sourceName, '独立观察-')) {
+                continue;
+            }
+            $override['note'] = "{$sourceName} 迁移为单用户指定 IP";
+            $override['updated_at'] = $now;
+            $router['overrides'][$userId] = $this->normalizeOverride($override);
+            $updated++;
+        }
+        if ($updated > 0) {
+            $router['config_version']++;
+            $state['campaigns'][$campaignId] = $campaign;
+            $this->saveState($state);
+        }
+        return [
+            'campaign' => $this->campaignStatus($campaign),
+            'updated_count' => $updated,
+        ];
+    }
+
+    public function deleteIndependentObservationPools(string $campaignId): array
+    {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $router = &$campaign['router'];
+        $deleted = 0;
+        $blocked = [];
+        foreach ($router['pools'] as $poolId => $pool) {
+            if (!str_starts_with((string) ($pool['name'] ?? ''), '独立观察-')) {
+                continue;
+            }
+            if ($this->poolMemberIds($campaign, (string) $poolId) !== []) {
+                $blocked[] = (string) ($pool['name'] ?? $poolId);
+                continue;
+            }
+            unset($router['pools'][$poolId]);
+            foreach ($router['assignments'] as $userId => $assignedPoolId) {
+                if ((string) $assignedPoolId === (string) $poolId) {
+                    unset($router['assignments'][$userId]);
+                }
+            }
+            $deleted++;
+        }
+        if ($blocked !== []) {
+            throw new InvalidArgumentException('这些独立观察组仍有用户，未删除：' . implode('、', $blocked));
+        }
+        if ($deleted > 0) {
+            $router['config_version']++;
+            $state['campaigns'][$campaignId] = $campaign;
+            $this->saveState($state);
+        }
+        return [
+            'campaign' => $this->campaignStatus($campaign),
+            'deleted_count' => $deleted,
+        ];
+    }
+
+    public function restoreLegacyObservationOverrides(string $campaignId): array
+    {
+        $state = $this->state();
+        $campaign = $this->requireRouterCampaign($state, $campaignId);
+        $router = &$campaign['router'];
+        $restored = ['观察组' => 0, '疑似安全' => 0];
+        foreach ($router['overrides'] as $userId => $override) {
+            if (($override['note'] ?? '') !== '独立观察组迁移为单用户指定 IP') {
+                continue;
+            }
+            $sourcePool = $this->migratedOverrideSourcePool($router, $override);
+            $sourceName = (string) ($sourcePool['name'] ?? '');
+            if (!array_key_exists($sourceName, $restored)) {
+                continue;
+            }
+            unset($router['overrides'][$userId]);
+            $router['assignments'][(string) (int) $userId] = (string) $sourcePool['id'];
+            $restored[$sourceName]++;
+        }
+        $router['config_version']++;
+        $state['campaigns'][$campaignId] = $campaign;
+        $this->saveState($state);
+        return [
+            'campaign' => $this->campaignStatus($campaign),
+            'restored' => $restored,
+            'restored_count' => array_sum($restored),
+        ];
+    }
+
     public function deleteUserOverride(string $campaignId, int $userId): array
     {
         $state = $this->state();
         $campaign = $this->requireRouterCampaign($state, $campaignId);
-        unset($campaign['router']['overrides'][(string) $userId]);
+        $router = &$campaign['router'];
+        unset($router['overrides'][(string) $userId]);
+        if (!isset($router['assignments'][(string) $userId])) {
+            $defaultPoolId = $this->poolIdByType($router, 'default');
+            if ($defaultPoolId !== '') {
+                $router['assignments'][(string) $userId] = $defaultPoolId;
+            }
+        }
         $state['campaigns'][$campaignId] = $campaign;
         $this->saveState($state);
         return $this->campaignStatus($campaign);
@@ -671,9 +988,24 @@ class BaitSplitService
             ->whereIn('group_id', $campaign['target_group_ids']);
         $keyword = trim($keyword);
         if ($keyword !== '') {
-            $query->where(function ($q) use ($keyword): void {
+            $matchedOverrideIds = [];
+            foreach ($campaign['router']['overrides'] as $userId => $override) {
+                $haystack = implode(' ', array_filter([
+                    (string) ($override['pool_id'] ?? ''),
+                    (string) ($override['host'] ?? ''),
+                    implode(' ', (array) ($override['node_hosts'] ?? [])),
+                    (string) ($override['note'] ?? ''),
+                ]));
+                if ($haystack !== '' && str_contains($haystack, $keyword)) {
+                    $matchedOverrideIds[] = (int) $userId;
+                }
+            }
+            $query->where(function ($q) use ($keyword, $matchedOverrideIds): void {
                 $q->where('id', $keyword)
                     ->orWhere('email', 'like', "%{$keyword}%");
+                if ($matchedOverrideIds !== []) {
+                    $q->orWhereIn('id', $matchedOverrideIds);
+                }
             });
         }
         $total = $query->count();
@@ -685,6 +1017,32 @@ class BaitSplitService
             ->get(['id', 'email', 'group_id'])
             ->map(fn($u) => ['id' => $u->id, 'email' => $u->email, 'group_id' => $u->group_id])
             ->toArray();
+        $statsByUser = [];
+        foreach ($rows as $user) {
+            $userId = (int) $user['id'];
+            $poolId = $this->effectivePoolId($campaign, $userId);
+            $stats = $this->poolExposureStats($campaign, $poolId, [$userId]);
+            $stat = $stats[$userId] ?? ['count' => 0, 'last_at' => 0];
+            $override = $campaign['router']['overrides'][(string) $userId] ?? [];
+            $hosts = array_values(array_unique(array_filter(array_merge(
+                [(string) ($override['host'] ?? '')],
+                array_values((array) ($override['node_hosts'] ?? []))
+            ))));
+            $hostLastAt = 0;
+            foreach ($hosts as $host) {
+                $hostLastAt = max(
+                    $hostLastAt,
+                    $this->poolIpExposureLastAt($campaign, $poolId, $host, $userId)
+                );
+            }
+            $statsByUser[$userId] = [
+                'pull_count' => (int) ($stat['count'] ?? 0),
+                'last_pulled_at' => max((int) ($stat['last_at'] ?? 0), $hostLastAt),
+                'pulled' => $hosts !== []
+                    ? $hostLastAt > 0
+                    : (int) ($stat['count'] ?? 0) > 0,
+            ];
+        }
         $items = array_map(function (array $user) use ($campaign): array {
             $override = $campaign['router']['overrides'][(string) $user['id']];
             return $user + [
@@ -693,6 +1051,14 @@ class BaitSplitService
                 'active' => $this->overrideIsActive($override),
             ];
         }, $rows);
+        $items = array_map(
+            fn(array $user): array => $user + ($statsByUser[(int) $user['id']] ?? [
+                'pulled' => false,
+                'pull_count' => 0,
+                'last_pulled_at' => 0,
+            ]),
+            $items
+        );
         return [
             'items' => $items,
             'pagination' => [
@@ -702,6 +1068,81 @@ class BaitSplitService
                 'total' => $total,
             ],
         ];
+    }
+
+    private function parseOverrideBatchItems(array $items, string $defaultHost): array
+    {
+        $parsed = [];
+        foreach ($items as $item) {
+            if (is_string($item)) {
+                $item = ['raw' => $item];
+            }
+            if (!is_array($item)) {
+                continue;
+            }
+            $raw = trim((string) ($item['raw'] ?? ''));
+            $userId = max(0, (int) ($item['user_id'] ?? 0));
+            $email = strtolower(trim((string) ($item['email'] ?? '')));
+            $host = $this->normalizeOptionalHost($item['host'] ?? $defaultHost);
+            if ($raw !== '') {
+                $parts = str_contains($raw, '--')
+                    ? preg_split('/\s*--\s*/', $raw, 2)
+                    : (preg_split('/[\s,，]+/', $raw) ?: []);
+                $first = trim((string) ($parts[0] ?? ''));
+                $second = trim((string) ($parts[1] ?? ''));
+                if ($userId <= 0 && $email === '') {
+                    if (ctype_digit($first)) {
+                        $userId = (int) $first;
+                    } elseif (filter_var($first, FILTER_VALIDATE_EMAIL)) {
+                        $email = strtolower($first);
+                    }
+                }
+                if ($host === '' && $second !== '') {
+                    $host = $this->normalizeOptionalHost($second);
+                }
+            }
+            if ($userId <= 0 && $email === '') {
+                continue;
+            }
+            $parsed[] = [
+                'user_id' => $userId,
+                'email' => $email,
+                'host' => $host,
+                'raw' => $raw !== '' ? $raw : ($userId > 0 ? (string) $userId : $email),
+            ];
+        }
+        return $parsed;
+    }
+
+    /**
+     * @return array<string, array{id:int,email:string}>
+     */
+    private function resolveOverrideUsers(
+        array $campaign,
+        array $userIds,
+        array $emails
+    ): array {
+        $userIds = $this->normalizeIds($userIds);
+        $emails = array_values(array_unique(array_filter(array_map(
+            fn($email): string => strtolower(trim((string) $email)),
+            $emails
+        ))));
+        $query = User::query()->whereIn('group_id', $campaign['target_group_ids']);
+        $query->where(function (Builder $builder) use ($userIds, $emails): void {
+            if ($userIds !== []) {
+                $builder->orWhereIn('id', $userIds);
+            }
+            if ($emails !== []) {
+                $builder->orWhereIn('email', $emails);
+            }
+        });
+        $users = [];
+        foreach ($query->get(['id', 'email']) as $user) {
+            $row = ['id' => (int) $user->id, 'email' => $user->email];
+            $users['id:' . (int) $user->id] = $row;
+            $users['email:' . strtolower($user->email)] = $row;
+        }
+        return $users;
     }
 
     public function rollbackRouterConfig(string $campaignId): array
@@ -3497,6 +3938,55 @@ class BaitSplitService
         return (string) (($rule['node_hosts'][(string) $serverId] ?? '') ?: ($rule['host'] ?? ''));
     }
 
+    private function migratedOverrideSourcePool(array $router, array $override): ?array
+    {
+        $overrideHosts = array_values(array_unique(array_filter(array_merge(
+            [(string) ($override['host'] ?? '')],
+            array_values((array) ($override['node_hosts'] ?? []))
+        ))));
+        if ($overrideHosts === []) {
+            return null;
+        }
+        foreach ($router['pools'] as $poolId => $pool) {
+            $poolHosts = array_values(array_unique(array_filter(array_merge(
+                [(string) ($pool['host'] ?? '')],
+                array_values((array) ($pool['node_hosts'] ?? []))
+            ))));
+            if (array_intersect($overrideHosts, $poolHosts) !== []) {
+                return ['id' => (string) $poolId] + $pool;
+            }
+        }
+        return null;
+    }
+
+    private function independentObservationSourceName(array $router, array $override): string
+    {
+        $note = trim((string) ($override['note'] ?? ''));
+        if (preg_match('/^(独立观察-\S+)/u', $note, $matches)) {
+            return $matches[1];
+        }
+        if ($note !== '独立观察组迁移为单用户指定 IP') {
+            return '';
+        }
+        $sourcePool = $this->migratedOverrideSourcePool($router, $override);
+        $sourceName = (string) ($sourcePool['name'] ?? '');
+        return str_starts_with($sourceName, '独立观察-') ? $sourceName : '';
+    }
+
+    private function standaloneOverrideLabel(array $router, array $override): string
+    {
+        $sourceName = $this->independentObservationSourceName($router, $override);
+        if ($sourceName !== '') {
+            return $sourceName;
+        }
+        $hasHost = ($override['host'] ?? '') !== ''
+            || array_values((array) ($override['node_hosts'] ?? [])) !== [];
+        if (($override['pool_id'] ?? '') !== '' || !$hasHost) {
+            return '';
+        }
+        return trim((string) ($override['note'] ?? '')) ?: '手动指定';
+    }
+
     private function hostForServerRule(array $server, array $rule, int $serverId): string
     {
         if ($this->serverKeepsOriginalHost($server)) {
@@ -4163,6 +4653,25 @@ class BaitSplitService
         }
     }
 
+    private function poolIpExposureLastAt(
+        array $campaign,
+        string $poolId,
+        string $ip,
+        int $userId
+    ): int {
+        if ($ip === '' || $userId <= 0) {
+            return 0;
+        }
+        try {
+            return (int) Redis::hget(
+                $this->routerPoolIpExposureLastKey($campaign, $poolId, $ip),
+                (string) $userId
+            );
+        } catch (\Throwable) {
+            return 0;
+        }
+    }
+
     private function poolExposureIds(array $campaign, string $poolId): array
     {
         try {
@@ -4509,11 +5018,15 @@ class BaitSplitService
             $defaultPoolId = $this->poolIdByType($router, 'default');
             $userPoolMap = [];
             $userPoolIdMap = [];
+            $standaloneOverrideMap = [];
             foreach ($userIdList as $userId) {
                 $poolId = $this->classifiedPoolId($campaign, (int) $userId)
                     ?? $defaultPoolId;
                 $userPoolMap[(int) $userId] = $poolNameMap[$poolId] ?? $poolId;
                 $userPoolIdMap[(int) $userId] = $poolId;
+                $override = $router['overrides'][(string) (int) $userId] ?? null;
+                $standaloneOverrideMap[(int) $userId] = is_array($override)
+                    && $this->standaloneOverrideLabel($router, $override) !== '';
             }
             
             foreach ($userCounts as $userId => $count) {
@@ -4597,6 +5110,7 @@ class BaitSplitService
                     'count' => $count,
                     'pool_id' => $userPoolIdMap[$userId] ?? '',
                     'pool_name' => $userPoolMap[$userId] ?? '默认组',
+                    'standalone_override' => (bool) ($standaloneOverrideMap[$userId] ?? false),
                     'risk_score' => $score,
                     'risk_reasons' => $reasons,
                     'recommendation' => $recommend,

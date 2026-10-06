@@ -21,6 +21,7 @@
         .pool-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}.pool{padding:16px;background:var(--bg);border:1px solid var(--line);border-radius:6px}.pool:hover{border-color:#cbd5e1}.pool-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.pool-head strong{font-size:14px}.pool .host{font-family:ui-monospace,monospace;font-size:12px;color:var(--muted);padding:8px 10px;background:#fff;border-radius:4px;margin:10px 0;word-break:break-all}.pool .meta{font-size:12px;color:var(--muted)}.host-tools{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.ping-result{font-size:12px;font-weight:600}.ping-result.ok{color:var(--success)}.ping-result.warn{color:var(--warning)}.ping-result.bad{color:var(--danger)}
         .node-list{max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px}.node{display:flex;align-items:center;gap:9px;padding:8px 12px;border-bottom:1px solid var(--line);cursor:pointer;font-size:13px}.node:last-child{border:0}.node:hover{background:var(--bg)}.node input{width:16px;height:16px}.node small{margin-left:auto;color:var(--muted)}
         table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:10px 12px;text-align:left}th{font-weight:500;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line)}td{border-bottom:1px solid var(--line)}tr:hover td{background:var(--bg)}.scroll{max-height:350px;overflow:auto}
+        .ip-list-table{table-layout:fixed}.ip-list-table th,.ip-list-table td{vertical-align:middle}.ip-list-table .user-cell,.ip-list-table .source-cell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ip-list-table .ip-cell .host-tools{display:grid;grid-template-columns:minmax(118px,1fr) auto;align-items:center;gap:6px 8px}.ip-list-table .ip-cell .ping-result{grid-column:1/-1;white-space:nowrap}.ip-list-table .time-cell,.ip-list-table .state-cell{white-space:nowrap}.ip-list-table .note-cell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
         .empty{padding:20px;text-align:center;color:var(--muted);background:var(--bg);border-radius:6px;font-size:13px}.notice{display:none;padding:12px;border-radius:6px}.notice.error{color:#991b1b;background:#fee2e2}
         .toast{position:fixed;top:18px;left:50%;z-index:10020;max-width:calc(100% - 32px);padding:12px 18px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.15);opacity:0;visibility:hidden;transform:translate(-50%,-10px);transition:.2s;pointer-events:none;font-size:13px}.toast.show{opacity:1;visibility:visible;transform:translate(-50%,0)}.toast.success{color:#166534;background:#dcfce7}.toast.error{color:#991b1b;background:#fee2e2}
         .overlay,.modal{display:none;position:fixed;inset:0;z-index:10000;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,.4)}.overlay.show,.modal.show{display:flex}.loading-box{display:flex;gap:10px;align-items:center;padding:14px 20px;background:#fff;border-radius:8px;font-size:13px}.spinner{width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:spin .7s linear infinite}.modal{z-index:10010}.modal-card{width:min(1000px,100%);max-height:88vh;overflow:auto;padding:24px;background:#fff;border-radius:10px}.modal-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px}.modal-tools{display:grid;grid-template-columns:1fr auto;gap:9px;margin:12px 0}.pagination{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px}@keyframes spin{to{transform:rotate(360deg)}}
@@ -133,6 +134,12 @@
         <p id="transferHint" class="hint"></p>
         <div class="field"><label>转入用户池</label><select id="transferTarget"></select></div>
         <button id="confirmTransfer">确认一键转移</button>
+    </div></div>
+    <div id="singleUserMoveModal" class="modal"><div class="modal-card" style="width:min(520px,100%)">
+        <div class="modal-head"><h2>转移独立 IP 用户</h2><button id="closeSingleUserMove" class="secondary">关闭</button></div>
+        <p id="singleUserMoveHint" class="hint"></p>
+        <div class="field"><label>转入用户池</label><select id="singleUserMoveTarget"></select></div>
+        <button id="confirmSingleUserMove" class="warning">确认转移并解除单用户 IP</button>
     </div></div>
     <div id="startInvestigationModal" class="modal"><div class="modal-card" style="width:min(520px,100%)">
         <div class="modal-head"><h2>进入树形排查</h2><button id="closeStartInvestigation" class="secondary">关闭</button></div>
@@ -261,7 +268,7 @@
             <div id="searchResults" style="margin-top:12px"></div>
         </section>
 
-        <section class="card">
+        <section class="card" id="overrides">
             <h2>编辑单用户规则</h2>
             <div class="field"><label>用户</label><input id="overrideUser" placeholder="先从左侧搜索选择"></div>
             <div class="field"><label>指定用户池</label><select id="overridePool"></select></div>
@@ -272,16 +279,54 @@
             <button id="saveOverride">保存用户规则</button>
         </section>
 
+        <section class="card">
+            <h2>批量指定单用户 IP</h2>
+            <input id="batchOverrideHost" type="hidden">
+            <select id="batchOverridePool" style="display:none"></select>
+            <input id="batchReleaseAssignment" type="checkbox" style="display:none">
+            <input id="batchOverrideNote" type="hidden" value="批量指定 IP">
+            <div class="field"><label>用户列表</label><textarea id="batchOverrideLines" placeholder="每行一个：2744354158@qq.com--154.81.14.38 或 用户ID--IP"></textarea></div>
+            <button id="saveBatchOverrides">批量保存规则</button>
+        </section>
+
+        <section class="card" style="display:none">
+            <h2>分组迁移为单用户 IP</h2>
+            <div class="field"><label>来源用户池</label><select id="migrateSourcePool"></select></div>
+            <div class="field"><label>迁移后的 IP/域名（留空使用来源池当前地址）</label><input id="migrateOverrideHost"></div>
+            <div class="field"><label><input id="migrateOnlyPulled" type="checkbox" style="width:auto;height:auto"> 只迁移已拉取用户</label></div>
+            <div class="field"><label>备注</label><input id="migrateOverrideNote" placeholder="从分组迁移为单用户指定 IP"></div>
+            <button id="migratePoolOverrides" class="warning">迁移为单用户规则</button>
+        </section>
+
         <section class="card wide">
+            <div class="topbar">
+                <h2>独立用户 IP 列表 <span id="independentOverrideCount" class="pill off">0</span></h2>
+                <div class="actions">
+                    <input type="text" id="independentOverrideSearch" placeholder="搜索用户/IP/来源" style="width:180px">
+                    <button id="searchIndependentOverrides" class="secondary">搜索</button>
+                    <button id="refreshIndependentOverrides" class="secondary">刷新</button>
+                    <button id="pingIndependentOverrides" class="secondary">一键 Ping 本页 IP</button>
+                    <button id="moveSelectedIndependent" class="warning" disabled>转移选中</button>
+                    <span id="independentSelectedCount" class="hint"></span>
+                </div>
+            </div>
+            <div class="scroll" style="max-height:320px"><table class="ip-list-table"><colgroup><col style="width:42px"><col style="width:210px"><col style="width:130px"><col style="width:220px"><col style="width:90px"><col style="width:105px"><col><col style="width:120px"></colgroup><thead><tr><th><input id="independentSelectAll" type="checkbox" style="width:16px;height:16px"></th><th>用户</th><th>来源</th><th>指定 IP</th><th>观察时长</th><th>拉取状态</th><th>备注</th><th>操作</th></tr></thead><tbody id="independentOverrideRows"></tbody></table></div>
+            <div class="actions" style="margin-top:8px;justify-content:space-between">
+                <span id="independentOverridePage" class="hint">第 1 / 1 页</span>
+                <div><button id="prevIndependentOverrides" class="secondary small" disabled>上一页</button> <button id="nextIndependentOverrides" class="secondary small" disabled>下一页</button></div>
+            </div>
+        </section>
+
+        <section class="card wide" style="display:none">
             <div class="topbar">
                 <h2>已生效的单用户规则 <span id="overrideCount" class="pill off">0</span></h2>
                 <div class="actions">
-                    <input type="text" id="overrideSearch" placeholder="搜索用户ID或邮箱" style="width:160px">
+                    <input type="text" id="overrideSearch" placeholder="搜索用户/IP/备注" style="width:160px">
                     <button id="searchOverrides" class="secondary">搜索</button>
                     <button id="refreshOverrides" class="secondary">刷新</button>
                 </div>
             </div>
-            <div class="scroll" style="max-height:320px"><table><thead><tr><th>用户</th><th>用户池</th><th>指定域名/IP</th><th>锁定</th><th>备注</th><th>操作</th></tr></thead><tbody id="overrideRows"></tbody></table></div>
+            <div class="scroll" style="max-height:320px"><table><thead><tr><th>用户</th><th>用户池</th><th>指定域名/IP</th><th>拉取状态</th><th>锁定</th><th>备注</th><th>操作</th></tr></thead><tbody id="overrideRows"></tbody></table></div>
             <div class="actions" style="margin-top:8px;justify-content:space-between">
                 <span id="overridePage" class="hint">第 1 / 1 页</span>
                 <div><button id="prevOverrides" class="secondary small" disabled>上一页</button> <button id="nextOverrides" class="secondary small" disabled>下一页</button></div>
@@ -304,6 +349,8 @@
                 <span style="color:var(--muted)">至</span>
                 <input type="datetime-local" id="wallEndTime" style="width:180px;height:34px" title="结束时间">
                 <button id="analyzeWall" class="secondary small">分析选中/时间段</button>
+                <textarea id="suspectIpLines" placeholder="诱饵IP，每行一个" style="width:180px;height:58px;font-size:12px"></textarea>
+                <button id="recommendSuspects" class="warning small">推荐名单</button>
                 <span id="wallSelectedCount" class="muted" style="font-size:12px"></span>
             </div>
             <div class="scroll" style="max-height:320px"><table><thead><tr><th style="width:30px"><input type="checkbox" id="wallSelectAllHead" style="width:16px;height:16px"></th><th>时间</th><th>类型</th><th>旧IP→新IP</th><th>受影响池</th><th>窗口内拉取</th><th>拿到过该地址</th><th>操作</th></tr></thead><tbody id="wallEvents"></tbody></table></div>
@@ -336,6 +383,13 @@
                     <button class="secondary small" onclick="$('wallAnalysisModal').classList.remove('show')">关闭</button>
                 </div>
                 <div id="wallAnalysisSummary" style="margin-bottom:12px;font-size:13px;color:var(--muted)"></div>
+                <div id="suspectEmailBox" style="display:none;margin-bottom:12px">
+                    <div class="actions" style="justify-content:space-between;margin-bottom:6px">
+                        <span class="hint">可疑邮箱名单</span>
+                        <button id="copySuspectEmails" class="secondary small">复制名单</button>
+                    </div>
+                    <textarea id="suspectEmailLines" readonly style="height:120px;font-family:ui-monospace,monospace"></textarea>
+                </div>
                 <div class="analysis-tools">
                     <div class="analysis-tools-row">
                         <div class="analysis-tools-group">
@@ -386,6 +440,7 @@ document.addEventListener('click',e=>{if(!e.target.closest('#routerDropdown'))$(
 let meta={groups:[],servers:[]},campaigns=[],current=null,noticeTimer=null,refreshing=false;
 let poolModal={poolId:'',poolName:'',page:1,lastPage:1,total:0,q:'',filter:''};
 let transferSource=null;
+let singleUserMove=null;
 let splitTreeNodeId='';
 const mergeTreeNodeIds=new Set();
 const pingStates=new Map();
@@ -433,6 +488,7 @@ function getTransferTargets(excludePoolId=''){const poolTargets=pools().filter(i
 function poolTypeName(type){return {default:'默认组',probe:'排查组',observation:'观察组',safe:'安全组',emergency:'应急组',custom:'自定义组',danger:'危险组',blacklist:'黑名单'}[type]||type||'未知类型'}
 function poolStatusName(status){return {available:'可用',active:'使用中',standby:'备用',suspected:'疑似被墙',blocked:'已被墙'}[status]||status||'未知状态'}
 function formatTime(value){return value?new Date(Number(value)*1000).toLocaleString():'-'}
+function formatDuration(seconds){seconds=Math.max(0,Math.floor(Number(seconds)||0));const days=Math.floor(seconds/86400),hours=Math.floor(seconds%86400/3600),minutes=Math.floor(seconds%3600/60);if(days>0)return `${days}天${hours}小时`;if(hours>0)return `${hours}小时${minutes}分钟`;return `${minutes}分钟`}
 function option(select,value,label,selected=false){const item=document.createElement('option');item.value=value;item.textContent=label;item.selected=selected;select.appendChild(item)}
 function fillSelect(id,items,value='',emptyLabel=''){const select=$(id);select.textContent='';if(emptyLabel)option(select,'',emptyLabel,value==='');items.forEach(item=>option(select,item.id,item.name,item.id===value))}
 function groupNames(groupIds){const names=(groupIds||[]).map(id=>meta.groups.find(group=>Number(group.id)===Number(id))?.name).filter(Boolean);return names.join('、')}
@@ -448,6 +504,17 @@ function renderPingTarget(container,host,fallback='未配置域名'){
     const text=document.createElement('span');
     text.textContent=host||fallback;
     container.appendChild(text);
+    if(!host)return;
+    const button=document.createElement('button'),result=document.createElement('span');
+    button.className='secondary small';
+    button.dataset.pingHost=host;
+    result.className='ping-result';
+    result.dataset.pingHost=host;
+    button.onclick=()=>pingTarget(host);
+    container.append(button,result);
+    applyPingState(host,button,result)
+}
+function attachPingButton(container,host){
     if(!host)return;
     const button=document.createElement('button'),result=document.createElement('span');
     button.className='secondary small';
@@ -618,8 +685,12 @@ function renderMergeTreeFields(){renderBranchFields('mergeTreeCount','mergeTreeB
 function treeMergeableCount(rootId,nodes=router()?.investigation_nodes||[]){return nodes.filter(node=>node.root_id===rootId&&!node.children.length&&node.status!=='archived').reduce((sum,node)=>sum+node.mergeable_count,0)}
 function updateMergeTreeButton(){const button=$('openMergeTree');button.textContent=`重组/合并旧树（${mergeTreeNodeIds.size}）`;button.disabled=mergeTreeNodeIds.size<1;const nodes=router()?.investigation_nodes||[];const parentIds=nodes.filter(n=>n.children.length>0).map(n=>n.id);const allCollapsed=parentIds.length>0&&parentIds.every(id=>treeCollapsed.has(id));$('toggleAllTrees').textContent=allCollapsed?'全部展开':'全部收起';$('toggleAllTrees').style.display=parentIds.length?'':'none'}
 function openMergeTree(){const nodes=router()?.investigation_nodes||[],selected=nodes.filter(node=>mergeTreeNodeIds.has(node.id));if(!selected.length)return toast('请至少选择一个最上层根组','error');$('mergeTreeHint').textContent=`已选择 ${selected.length} 棵旧树，共 ${selected.reduce((sum,node)=>sum+treeMergeableCount(node.id,nodes),0)} 名用户。被墙分支全部用户都会打乱重组，手动锁定用户不移动，成功后旧树直接删除。`;$('mergeTreeName').value=selected.length>1?'合并排查树':'重组排查树';$('mergeTreeCount').value=2;renderMergeTreeFields();$('mergeTreeModal').classList.add('show')}
-function renderOverridePoolOptions(){fillSelect('overridePool',pools(),$('overridePool').value,'仅使用单独域名')}
-function resetTaskEditors(){$('poolId').value='';$('poolName').value='';$('poolHost').value='';$('poolWebhookId').value='';$('poolCapacity').value=0;$('poolNote').value='';$('userSearch').value='';$('searchResults').textContent='';$('overrideUser').value='';delete $('overrideUser').dataset.id;$('overrideHost').value='';$('overrideNote').value='';$('overrideExpires').value='';$('overrideSearch').value='';$('usersModal').classList.remove('show');$('transferModal').classList.remove('show');$('splitTreeModal').classList.remove('show');$('mergeTreeModal').classList.remove('show');$('treeHostModal').classList.remove('show');transferSource=null;splitTreeNodeId='';mergeTreeNodeIds.clear();updateMergeTreeButton();poolModal={poolId:'',poolName:'',page:1,lastPage:1,total:0,q:''};overrideModal={page:1,lastPage:1,total:0,q:''}}
+function renderOverridePoolOptions(){
+    fillSelect('overridePool',pools(),$('overridePool').value,'仅使用单独域名');
+    fillSelect('batchOverridePool',pools(),$('batchOverridePool').value,'仅使用单独 IP');
+    fillSelect('migrateSourcePool',pools(),$('migrateSourcePool').value,'选择来源用户池')
+}
+function resetTaskEditors(){$('poolId').value='';$('poolName').value='';$('poolHost').value='';$('poolWebhookId').value='';$('poolCapacity').value=0;$('poolNote').value='';$('userSearch').value='';$('searchResults').textContent='';$('overrideUser').value='';delete $('overrideUser').dataset.id;$('overrideHost').value='';$('overrideNote').value='';$('overrideExpires').value='';$('overrideSearch').value='';$('independentOverrideSearch').value='';$('batchOverrideHost').value='';$('batchOverrideLines').value='';$('batchOverrideNote').value='';$('migrateOverrideHost').value='';$('migrateOverrideNote').value='';$('usersModal').classList.remove('show');$('transferModal').classList.remove('show');$('splitTreeModal').classList.remove('show');$('mergeTreeModal').classList.remove('show');$('treeHostModal').classList.remove('show');transferSource=null;splitTreeNodeId='';mergeTreeNodeIds.clear();updateMergeTreeButton();poolModal={poolId:'',poolName:'',page:1,lastPage:1,total:0,q:''};overrideModal={page:1,lastPage:1,total:0,q:''};independentOverrideModal={page:1,lastPage:1,total:0,q:''}}
 function renderCurrent(){current||=blankCampaign();$('campaignName').value=current.name||'';$('campaignIdDisplay').value=current.id||'';$('copyCampaignId').disabled=!current.id;const autoReset=$('autoResetOnWall');if(autoReset){autoReset.checked=!!router()?.auto_reset_on_wall;autoReset.disabled=!current.id||!router()}renderGroups();renderNodes();renderStatus();renderPools();renderInvestigationTree();renderOverridePoolOptions();$('deleteCampaign').disabled=!current.id||router()?.enabled}
 function updateCurrent(campaign){const index=campaigns.findIndex(item=>item.id===campaign.id);if(index>=0)campaigns[index]=campaign;else campaigns.push(campaign);current=campaign;renderCampaigns();renderCurrent()}
 async function refresh(full=true){const id=current?.id,isDraft=current&&current.id==='';if(full){const data=await request('/meta');meta={groups:data.groups,servers:data.servers};campaigns=data.campaigns}else campaigns=await request('/campaigns');if(isDraft&&!full){renderCampaigns();return}current=campaigns.find(item=>item.id===id)||campaigns[0]||blankCampaign();renderCampaigns();if(full)renderCurrent();else{renderStatus();renderPools();renderInvestigationTree()}}
@@ -627,8 +698,106 @@ async function showTreeUsers(node=null,page=null,filter=null){if(node){poolModal
 function reloadPagedUsers(page){return poolModal.mode==='tree'?showTreeUsers(null,page):showPoolUsers(null,page)}
 async function showPoolUsers(pool=null,page=null,filter=null){if(pool){poolModal={poolId:pool.id,poolName:pool.name,page:1,lastPage:1,total:0,q:'',filter:'',mode:'pool'};$('poolUserSearch').value='';updateFilterButtons('')}if(!poolModal.poolId)return;if(page!==null)poolModal.page=page;if(filter!==null)poolModal.filter=filter;const campaignId=current?.id;loading(true,'正在加载用户…');try{const filterParam=poolModal.filter?`&filter=${poolModal.filter}`:'';const result=await request(api(`/pools/${encodeURIComponent(poolModal.poolId)}/users?q=${encodeURIComponent(poolModal.q)}&page=${poolModal.page}&per_page=50${filterParam}`));if(current?.id!==campaignId)return;poolModal.page=result.pagination.page;poolModal.lastPage=result.pagination.last_page;poolModal.total=result.pagination.total;$('poolUserTools').style.display='grid';$('poolUserPagination').style.display='flex';const filterLabel=poolModal.filter==='pulled'?' (已拉取)':poolModal.filter==='unpulled'?' (未拉取)':'';$('usersTitle').textContent=`${poolModal.poolName}用户${filterLabel}（${poolModal.total}）`;$('usersStateHead').textContent='当前组';$('usersActionHead').textContent='操作';$('usersBody').textContent='';const targets=getTransferTargets(poolModal.poolId);result.items.forEach(user=>{const row=$('usersBody').insertRow();row.insertCell().textContent=user.id;row.insertCell().textContent=user.email;row.insertCell().textContent=user.pulled?'已拉取':'未拉取';row.insertCell().textContent=user.pull_count>0?user.pull_count:user.pulled?'历史已拉取':'0';row.insertCell().textContent=formatTime(user.last_pulled_at);const cell=row.insertCell(),wrap=document.createElement('div'),select=document.createElement('select'),moveBtn=document.createElement('button'),editBtn=document.createElement('button');wrap.className='actions';select.style.minWidth='130px';option(select,'','--选择目标--');targets.forEach(t=>option(select,t.id,t.name));moveBtn.className='small';moveBtn.textContent='移动';moveBtn.onclick=async()=>{if(!select.value)return toast('请选择目标','error');if(!confirm(`把 ${user.email} 移动到"${select.options[select.selectedIndex].textContent}"？`))return;try{updateCurrent(await request(api(`/overrides/${user.id}`),{method:'POST',body:JSON.stringify({pool_id:select.value,host:'',node_hosts:{},server_name:'',transport_host:'',locked:true,note:`从${poolModal.poolName}手动移动`,expires_at:0})}));await showPoolUsers(null,poolModal.page);await loadOverrides();toast('用户已移动')}catch(error){toast(error.message,'error')}};editBtn.className='secondary small';editBtn.textContent='规则';editBtn.onclick=()=>openUserOverride(user.id,user.email);wrap.append(select,moveBtn,editBtn);cell.appendChild(wrap)});if(!result.items.length){const row=$('usersBody').insertRow(),cell=row.insertCell();cell.colSpan=6;cell.className='hint';cell.textContent='没有符合条件的用户'}$('poolUserPage').textContent=`第 ${poolModal.page} / ${poolModal.lastPage} 页，共 ${poolModal.total} 人`;$('prevPoolUsers').disabled=poolModal.page<=1;$('nextPoolUsers').disabled=poolModal.page>=poolModal.lastPage;$('usersModal').classList.add('show')}catch(error){toast(error.message,'error')}finally{loading(false)}}
 
+let independentOverrideModal={page:1,lastPage:1,total:0,q:''};
+let independentOverrideHosts=[];
+const independentSelected=new Map();
+function updateIndependentSelected(){
+    const count=independentSelected.size;
+    $('independentSelectedCount').textContent=count?`已选 ${count} 人`:'';
+    $('moveSelectedIndependent').disabled=count<1;
+    const boxes=[...document.querySelectorAll('#independentOverrideRows input[type=checkbox][data-user-id]')];
+    $('independentSelectAll').checked=boxes.length>0&&boxes.every(box=>box.checked);
+}
+async function loadIndependentOverrides(page=null){
+    const campaignId=current?.id,body=$('independentOverrideRows');
+    if(!body)return;
+    if(!campaignId||!router())return;
+    if(page!==null)independentOverrideModal.page=page;
+    const result=await request(api(`/overrides/independent-observation?q=${encodeURIComponent(independentOverrideModal.q)}&page=${independentOverrideModal.page}&per_page=50`));
+    if(current?.id!==campaignId)return;
+    independentOverrideModal.page=result.pagination.page;independentOverrideModal.lastPage=result.pagination.last_page;independentOverrideModal.total=result.pagination.total;
+    $('independentOverrideCount').textContent=result.pagination.total;
+    $('independentOverridePage').textContent=`第 ${independentOverrideModal.page} / ${independentOverrideModal.lastPage} 页，共 ${independentOverrideModal.total} 条`;
+    $('prevIndependentOverrides').disabled=independentOverrideModal.page<=1;$('nextIndependentOverrides').disabled=independentOverrideModal.page>=independentOverrideModal.lastPage;
+    body.textContent='';
+    independentOverrideHosts=[];
+    independentSelected.clear();updateIndependentSelected();
+    result.items.forEach(user=>{
+        const row=body.insertRow();
+        const checkCell=row.insertCell();
+        const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.dataset.userId=user.id;checkbox.style.cssText='width:16px;height:16px';
+        checkbox.onchange=()=>{if(checkbox.checked)independentSelected.set(user.id,user);else independentSelected.delete(user.id);updateIndependentSelected()};
+        checkCell.appendChild(checkbox);
+        const userCell=row.insertCell();userCell.className='user-cell';userCell.textContent=`${user.id} / ${user.email}`;userCell.title=userCell.textContent;
+        const sourceCell=row.insertCell();sourceCell.className='source-cell';sourceCell.textContent=user.source_pool_name||user.source_pool_id||'-';sourceCell.title=sourceCell.textContent;
+        const hosts=user.override.host||Object.values(user.override.node_hosts||{}).join(', ')||'-';
+        const hostCell=row.insertCell();
+        hostCell.className='ip-cell';
+        if(hosts!=='-'){
+            const wrap=document.createElement('div');wrap.className='host-tools';
+            const text=document.createElement('span');text.textContent=hosts;
+            wrap.appendChild(text);
+            hosts.split(',').map(v=>v.trim()).filter(Boolean).slice(0,3).forEach(host=>{independentOverrideHosts.push(host);attachPingButton(wrap,host)});
+            hostCell.appendChild(wrap);
+        }else hostCell.textContent='-';
+        const observed=row.insertCell(),startedAt=Number(user.override.updated_at||0);
+        observed.className='time-cell';
+        observed.textContent=startedAt?formatDuration(Date.now()/1000-startedAt):'-';
+        observed.title=startedAt?`开始：${formatTime(startedAt)}`:'';
+        const pulled=row.insertCell();
+        pulled.className='state-cell';
+        pulled.textContent=user.pulled?`已拉取 ${user.pull_count||0}`:'未拉取';
+        pulled.title=user.last_pulled_at?formatTime(user.last_pulled_at):'';
+        const noteCell=row.insertCell();noteCell.className='note-cell';noteCell.textContent=user.override.note||'-';noteCell.title=noteCell.textContent;
+        const cell=row.insertCell(),move=document.createElement('button'),button=document.createElement('button');
+        move.className='secondary small';move.textContent='转移';move.style.marginRight='6px';
+        move.onclick=()=>openSingleUserMove(user);
+        button.className='danger small';button.textContent='解除';
+        button.onclick=async()=>{try{updateCurrent(await request(api(`/overrides/${user.id}`),{method:'DELETE'}));await Promise.all([loadIndependentOverrides(independentOverrideModal.page),loadOverrides(overrideModal.page)]);toast('独立 IP 规则已解除')}catch(error){toast(error.message,'error')}};
+        cell.append(move,button)
+    });
+    if(!result.items.length){const row=body.insertRow(),cell=row.insertCell();cell.colSpan=8;cell.className='hint';cell.textContent=independentOverrideModal.q?'没有匹配的独立观察 IP':'暂无独立观察 IP'}
+}
 let overrideModal={page:1,lastPage:1,total:0,q:''};
-async function loadOverrides(page=null){const campaignId=current?.id,body=$('overrideRows');if(!body)return;if(!campaignId||!router()){body.textContent='';$('overrideCount').textContent='0';return}if(page!==null)overrideModal.page=page;const result=await request(api(`/overrides?q=${encodeURIComponent(overrideModal.q)}&page=${overrideModal.page}&per_page=50`));if(current?.id!==campaignId)return;overrideModal.page=result.pagination.page;overrideModal.lastPage=result.pagination.last_page;overrideModal.total=result.pagination.total;$('overrideCount').textContent=result.pagination.total;$('overridePage').textContent=`第 ${overrideModal.page} / ${overrideModal.lastPage} 页，共 ${overrideModal.total} 条`;$('prevOverrides').disabled=overrideModal.page<=1;$('nextOverrides').disabled=overrideModal.page>=overrideModal.lastPage;body.textContent='';result.items.forEach(user=>{const row=body.insertRow();row.insertCell().textContent=`${user.id} / ${user.email}`;row.insertCell().textContent=user.pool_id||'-';row.insertCell().textContent=user.override.host||Object.values(user.override.node_hosts||{}).join(', ')||'-';row.insertCell().textContent=user.override.locked?'是':'否';row.insertCell().textContent=user.override.note||'-';const cell=row.insertCell(),button=document.createElement('button');button.className='danger small';button.textContent='解除';button.onclick=async()=>{try{updateCurrent(await request(api(`/overrides/${user.id}`),{method:'DELETE'}));await loadOverrides(overrideModal.page);toast('规则已解除')}catch(error){toast(error.message,'error')}};cell.appendChild(button)});if(!result.items.length){const row=body.insertRow(),cell=row.insertCell();cell.colSpan=6;cell.className='hint';cell.textContent=overrideModal.q?'没有匹配的规则':'暂无手动规则'}}
+async function loadOverrides(page=null){
+    const campaignId=current?.id,body=$('overrideRows');
+    if(!body)return;
+    if(!campaignId||!router()){body.textContent='';$('overrideCount').textContent='0';return}
+    if(page!==null)overrideModal.page=page;
+    const result=await request(api(`/overrides?q=${encodeURIComponent(overrideModal.q)}&page=${overrideModal.page}&per_page=50`));
+    if(current?.id!==campaignId)return;
+    overrideModal.page=result.pagination.page;overrideModal.lastPage=result.pagination.last_page;overrideModal.total=result.pagination.total;
+    $('overrideCount').textContent=result.pagination.total;
+    $('overridePage').textContent=`第 ${overrideModal.page} / ${overrideModal.lastPage} 页，共 ${overrideModal.total} 条`;
+    $('prevOverrides').disabled=overrideModal.page<=1;$('nextOverrides').disabled=overrideModal.page>=overrideModal.lastPage;
+    body.textContent='';
+    result.items.forEach(user=>{
+        const row=body.insertRow();
+        row.insertCell().textContent=`${user.id} / ${user.email}`;
+        row.insertCell().textContent=user.pool_id||'-';
+        const hosts=user.override.host||Object.values(user.override.node_hosts||{}).join(', ')||'-';
+        const hostCell=row.insertCell();
+        if(hosts!=='-'){
+            const wrap=document.createElement('div');wrap.className='host-tools';
+            const text=document.createElement('span');text.textContent=hosts;
+            wrap.appendChild(text);
+            hosts.split(',').map(v=>v.trim()).filter(Boolean).slice(0,3).forEach(host=>attachPingButton(wrap,host));
+            hostCell.appendChild(wrap);
+        }else hostCell.textContent='-';
+        const pulled=row.insertCell();
+        pulled.textContent=user.pulled?`已拉取 ${user.pull_count||0}`:'未拉取';
+        pulled.title=user.last_pulled_at?formatTime(user.last_pulled_at):'';
+        row.insertCell().textContent=user.override.locked?'是':'否';
+        row.insertCell().textContent=user.override.note||'-';
+        const cell=row.insertCell(),edit=document.createElement('button'),button=document.createElement('button');
+        edit.className='secondary small';edit.textContent='编辑';edit.style.marginRight='6px';
+        edit.onclick=()=>{$('overrideUser').value=`${user.id} / ${user.email}`;$('overrideUser').dataset.id=user.id;$('overridePool').value=user.override.pool_id||'';$('overrideHost').value=user.override.host||'';$('overrideLocked').checked=user.override.locked??true;$('overrideNote').value=user.override.note||'';$('overrideExpires').value=user.override.expires_at?new Date(user.override.expires_at*1000).toISOString().slice(0,16):'';document.getElementById('overrides').scrollIntoView({behavior:'smooth'})};
+        button.className='danger small';button.textContent='解除';
+        button.onclick=async()=>{try{updateCurrent(await request(api(`/overrides/${user.id}`),{method:'DELETE'}));await loadOverrides(overrideModal.page);toast('规则已解除')}catch(error){toast(error.message,'error')}};
+        cell.append(edit,button)
+    });
+    if(!result.items.length){const row=body.insertRow(),cell=row.insertCell();cell.colSpan=7;cell.className='hint';cell.textContent=overrideModal.q?'没有匹配的规则':'暂无手动规则'}
+}
 let wallData=null;
 function wallReasonLabel(reason){return {blocked:'被墙',machine:'机器挂壁'}[reason]||reason||'-'}
 const wallSelected=new Set();
@@ -731,7 +900,10 @@ $('wallSelectAll').onchange=$('wallSelectAllHead').onchange=function(){
 };
 // 分析墙事件
 let analysisUsers=[];
-$('analyzeWall').onclick=async()=>{
+function suspectIps(){
+    return $('suspectIpLines').value.split(/\s+/).map(v=>v.trim()).filter(Boolean);
+}
+async function runWallAnalysis(limit=null,ips=[]){
     try{
         const startTime=$('wallStartTime').value?Math.floor(new Date($('wallStartTime').value).getTime()/1000):null;
         const endTime=$('wallEndTime').value?Math.floor(new Date($('wallEndTime').value).getTime()/1000):null;
@@ -740,14 +912,25 @@ $('analyzeWall').onclick=async()=>{
         if(!startTime&&!endTime&&!eventIds){return toast('请选择事件或设置时间范围','error')}
         loading(true,'正在分析…');
         const result=await request(api('/wall-log/analyze'),{method:'POST',body:JSON.stringify({start_time:startTime,end_time:endTime,event_ids:eventIds,pool_id:poolId})});
-        analysisUsers=result.users||[];
-        $('wallAnalysisSummary').textContent=`共分析 ${result.event_count} 条被墙事件，涉及 ${analysisUsers.length} 个用户`;
+        const allUsers=result.users||[];
+        const recommendable=limit?allUsers.filter(user=>user.pool_name!=='封禁组'&&!user.standalone_override):allUsers;
+        analysisUsers=limit?recommendable.slice(0,limit):allUsers;
+        $('wallAnalysisSummary').textContent=limit
+            ? `共分析 ${result.event_count} 条被墙事件，涉及 ${allUsers.length} 个用户；排除封禁/已独立观察 ${allUsers.length-recommendable.length} 个，已推荐 ${analysisUsers.length} 个${ips.length?`，匹配 ${ips.length} 个诱饵 IP`:''}`
+            : `共分析 ${result.event_count} 条被墙事件，涉及 ${analysisUsers.length} 个用户`;
+        $('suspectEmailBox').style.display=limit?'block':'none';
+        $('suspectEmailLines').value=limit
+            ? analysisUsers.map((user,index)=>ips[index]?`${user.email}--${ips[index]}`:user.email).join('\n')
+            : '';
         renderAnalysisUsers();
         // 填充迁移目标
         fillSelect('analysisMoveTarget',getTransferTargets(),'','选择目标分组');
         $('wallAnalysisModal').classList.add('show');
     }catch(error){toast(error.message,'error')}finally{loading(false)}
-};
+}
+$('analyzeWall').onclick=()=>runWallAnalysis();
+$('recommendSuspects').onclick=()=>{const ips=suspectIps();if(!ips.length)return toast('请先填写诱饵 IP，每行一个','error');runWallAnalysis(ips.length,ips)};
+$('copySuspectEmails').onclick=async()=>{const text=$('suspectEmailLines').value.trim();if(!text)return toast('没有可复制的邮箱','error');try{await navigator.clipboard.writeText(text);toast('已复制可疑邮箱名单')}catch{toast('复制失败，请手动复制','error')}};
 const analysisSelected=new Set();
 function updateAnalysisSelectedCount(){const count=analysisSelected.size;$('analysisSelectedCount').textContent=count>0?`已选 ${count} 人`:''}
 function selectByCount(count){
@@ -889,12 +1072,37 @@ $('analysisMoveBtn').onclick=async()=>{
         $('wallAnalysisModal').classList.remove('show');
     }catch(error){toast(error.message,'error')}finally{loading(false)}
 };
+async function reloadIndependentOverrides(page=1,text='正在加载独立用户 IP…'){
+    try{
+        loading(true,text);
+        ['refreshIndependentOverrides','searchIndependentOverrides','prevIndependentOverrides','nextIndependentOverrides'].forEach(id=>$(id).disabled=true);
+        await loadIndependentOverrides(page);
+    }catch(error){toast(error.message,'error')}
+    finally{
+        loading(false);
+        ['refreshIndependentOverrides','searchIndependentOverrides'].forEach(id=>$(id).disabled=false);
+        $('prevIndependentOverrides').disabled=independentOverrideModal.page<=1;
+        $('nextIndependentOverrides').disabled=independentOverrideModal.page>=independentOverrideModal.lastPage;
+    }
+}
+$('refreshIndependentOverrides').onclick=()=>{independentOverrideModal.q='';$('independentOverrideSearch').value='';reloadIndependentOverrides(1,'正在刷新独立用户 IP…')};
+$('searchIndependentOverrides').onclick=()=>{independentOverrideModal.q=$('independentOverrideSearch').value.trim();reloadIndependentOverrides(1,'正在搜索独立用户 IP…')};
+$('independentOverrideSearch').onkeydown=event=>{if(event.key==='Enter')$('searchIndependentOverrides').click()};
+$('prevIndependentOverrides').onclick=()=>reloadIndependentOverrides(independentOverrideModal.page-1);
+$('nextIndependentOverrides').onclick=()=>reloadIndependentOverrides(independentOverrideModal.page+1);
+$('pingIndependentOverrides').onclick=async()=>{const hosts=[...new Set(independentOverrideHosts)];if(!hosts.length)return toast('当前页没有可 Ping 的 IP','error');const button=$('pingIndependentOverrides');button.disabled=true;try{await Promise.all(hosts.map(host=>pingTarget(host)))}finally{button.disabled=false}};
+$('closeSingleUserMove').onclick=()=>{singleUserMove=null;$('singleUserMoveModal').classList.remove('show')};
+$('singleUserMoveModal').onclick=event=>{if(event.target===$('singleUserMoveModal'))$('closeSingleUserMove').click()};
+$('independentSelectAll').onchange=()=>{const checked=$('independentSelectAll').checked;document.querySelectorAll('#independentOverrideRows input[type=checkbox][data-user-id]').forEach(box=>{box.checked=checked;box.dispatchEvent(new Event('change'))})};
+$('moveSelectedIndependent').onclick=()=>{const users=[...independentSelected.values()];if(!users.length)return;singleUserMove=users;$('singleUserMoveHint').textContent=`已选 ${users.length} 人，将转入目标组，并解除这些用户的单用户 IP。`;fillSelect('singleUserMoveTarget',getTransferTargets(),'','选择目标组');$('singleUserMoveModal').classList.add('show')};
+function openSingleUserMove(user){singleUserMove=[user];$('singleUserMoveHint').textContent=`${user.id} / ${user.email} 将转入目标组，并解除当前单用户 IP。`;fillSelect('singleUserMoveTarget',getTransferTargets(),'','选择目标组');$('singleUserMoveModal').classList.add('show')}
+$('confirmSingleUserMove').onclick=async()=>{const users=Array.isArray(singleUserMove)?singleUserMove:singleUserMove?[singleUserMove]:[];if(!users.length)return;const targetPoolId=$('singleUserMoveTarget').value;if(!targetPoolId)return toast('请选择目标组','error');const userIds=users.map(user=>user.id);try{loading(true,'正在转移…');await request(api('/users/batch-move'),{method:'POST',body:JSON.stringify({user_ids:userIds,target_pool_id:targetPoolId,note:'独立用户 IP 手动转移'})});await Promise.all(userIds.map(userId=>request(api(`/overrides/${userId}`),{method:'DELETE'})));await refresh(false);$('closeSingleUserMove').click();await Promise.all([loadIndependentOverrides(independentOverrideModal.page),loadOverrides(overrideModal.page)]);toast(`已转移并解除 ${userIds.length} 个单用户 IP`)}catch(error){toast(error.message,'error')}finally{loading(false)}};
 $('refreshOverrides').onclick=()=>{overrideModal.q='';$('overrideSearch').value='';loadOverrides(1).catch(error=>toast(error.message,'error'))};
 $('searchOverrides').onclick=()=>{overrideModal.q=$('overrideSearch').value.trim();loadOverrides(1).catch(error=>toast(error.message,'error'))};
 $('overrideSearch').onkeydown=event=>{if(event.key==='Enter')$('searchOverrides').click()};
 $('prevOverrides').onclick=()=>loadOverrides(overrideModal.page-1).catch(error=>toast(error.message,'error'));
 $('nextOverrides').onclick=()=>loadOverrides(overrideModal.page+1).catch(error=>toast(error.message,'error'));
-$('campaignSelect').onchange=async event=>{const selectedId=event.target.value;try{loading(true,'正在切换任务…');await refresh(false);current=campaigns.find(item=>item.id===selectedId)||blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent();await loadOverrides();await loadWallLog(true).catch(()=>{})}catch(error){toast(error.message,'error')}finally{loading(false)}};
+$('campaignSelect').onchange=async event=>{const selectedId=event.target.value;try{loading(true,'正在切换任务…');await refresh(false);current=campaigns.find(item=>item.id===selectedId)||blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent();await Promise.all([loadIndependentOverrides(),loadOverrides()]);await loadWallLog(true).catch(()=>{})}catch(error){toast(error.message,'error')}finally{loading(false)}};
 $('newCampaign').onclick=()=>{current=blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent()};
 $('copyCampaignId').onclick=async()=>{const id=current?.id||$('campaignIdDisplay').value;if(!id)return toast('请先保存任务','error');try{await navigator.clipboard.writeText(id);toast(`campaign_id 已复制：${id}`)}catch{toast('复制失败，请手动选中复制','error')}};
 $('deleteCampaign').onclick=async()=>{try{if(!confirm(`删除“${current.name}”？`))return;campaigns=await request(api(''),{method:'DELETE'});current=campaigns[0]||blankCampaign();resetTaskEditors();renderCampaigns();renderCurrent();await loadOverrides();toast('任务已删除')}catch(error){toast(error.message,'error')}};
@@ -904,6 +1112,8 @@ $('toggleRouter').onclick=async()=>{try{const enable=!router().enabled;if(!confi
 $('poolType').onchange=()=>renderPoolOverflowOptions($('poolId').value,$('poolOverflow').value);$('newPool').onclick=()=>editPool();$('savePool').onclick=async()=>{try{const data={id:$('poolId').value||null,webhook_id:$('poolWebhookId').value.trim()||null,name:$('poolName').value.trim(),type:$('poolType').value,host:$('poolHost').value.trim(),node_hosts:{},server_name:'',transport_host:'',status:$('poolStatus').value,capacity:Number($('poolCapacity').value)||0,overflow_pool_id:$('poolOverflow').value,enabled:$('poolEnabled').checked,note:$('poolNote').value.trim()};updateCurrent(await request(api('/pools'),{method:'POST',body:JSON.stringify(data)}));editPool();toast('用户池已保存')}catch(error){toast(error.message,'error')}};
 $('searchUser').onclick=async()=>{try{const rows=await request(api(`/users/search?q=${encodeURIComponent($('userSearch').value.trim())}`)),box=$('searchResults');box.textContent='';rows.forEach(user=>{const row=document.createElement('div'),head=document.createElement('div'),title=document.createElement('strong'),button=document.createElement('button'),poolLine=document.createElement('div'),hostLine=document.createElement('div');row.className='pool';head.className='pool-head';title.textContent=`${user.id} · ${user.email}`;button.className='secondary small';button.textContent='设置';button.onclick=()=>{$('overrideUser').value=`${user.id} / ${user.email}`;$('overrideUser').dataset.id=user.id;$('overridePool').value=user.override?.pool_id||user.pool_id||'';$('overrideHost').value=user.override?.host||'';$('overrideLocked').checked=user.override?.locked??true;$('overrideNote').value=user.override?.note||'';$('overrideExpires').value=user.override?.expires_at?new Date(user.override.expires_at*1000).toISOString().slice(0,16):''};head.append(title,button);poolLine.className='meta';poolLine.textContent=`用户池：${user.pool_name} · ${poolTypeName(user.pool_type)} · ${poolStatusName(user.pool_status)}`;hostLine.className='meta';hostLine.textContent=`域名/IP：${user.pool_hosts?.join('、')||'未配置'}`;row.append(head,poolLine,hostLine);box.appendChild(row)});if(!rows.length)box.innerHTML='<div class="empty">未找到用户</div>'}catch(error){toast(error.message,'error')}};
 $('saveOverride').onclick=async()=>{try{const userId=Number($('overrideUser').dataset.id);if(!userId)throw new Error('请先搜索并选择用户');const expires=$('overrideExpires').value?Math.floor(new Date($('overrideExpires').value).getTime()/1000):0;updateCurrent(await request(api(`/overrides/${userId}`),{method:'POST',body:JSON.stringify({pool_id:$('overridePool').value||null,host:$('overrideHost').value.trim(),node_hosts:{},server_name:'',transport_host:'',locked:$('overrideLocked').checked,note:$('overrideNote').value.trim(),expires_at:expires})}));await loadOverrides();toast('用户规则已保存')}catch(error){toast(error.message,'error')}};
+$('saveBatchOverrides').onclick=async()=>{try{const lines=$('batchOverrideLines').value.trim();if(!lines)throw new Error('请填写用户列表');if(!lines.split(/\n/).some(line=>/\S+\s*--\s*\S+/.test(line.trim())))throw new Error('格式为：邮箱或用户ID--IP');if(!confirm('批量写入单用户 IP 规则？'))return;loading(true,'正在批量保存…');const result=await request(api('/overrides/batch'),{method:'POST',body:JSON.stringify({lines,default_host:'',pool_id:'',locked:true,note:'批量指定 IP',release_assignment:false})});updateCurrent(result.campaign);await Promise.all([loadIndependentOverrides(1),loadOverrides(1)]);toast(`已写入 ${result.updated_count} 条规则${result.invalid?.length?`，无效 ${result.invalid.length} 条`:''}`)}catch(error){toast(error.message,'error')}finally{loading(false)}};
+$('migratePoolOverrides').onclick=async()=>{try{const sourcePoolId=$('migrateSourcePool').value;if(!sourcePoolId)throw new Error('请选择来源用户池');const pool=pools().find(p=>p.id===sourcePoolId);if(!confirm(`把「${pool?.name||sourcePoolId}」用户迁移为单用户 IP 规则？迁移后会从原分组释放。`))return;loading(true,'正在迁移…');const result=await request(api('/overrides/migrate-pool'),{method:'POST',body:JSON.stringify({source_pool_id:sourcePoolId,host:$('migrateOverrideHost').value.trim(),only_pulled:$('migrateOnlyPulled').checked,note:$('migrateOverrideNote').value.trim()})});updateCurrent(result.campaign);await loadOverrides(1);toast(`已迁移 ${result.migrated_count} 人到单用户 IP：${result.host}`)}catch(error){toast(error.message,'error')}finally{loading(false)}};
 function updateFilterButtons(activeFilter){['filterPulled','filterUnpulled','filterAll'].forEach(id=>{const btn=$(id);if(btn)btn.classList.toggle('active',activeFilter==={filterPulled:'pulled',filterUnpulled:'unpulled',filterAll:''}[id])})}
 function reloadPagedUsersWithFilter(filter){poolModal.filter=filter;updateFilterButtons(filter);reloadPagedUsers(1)}
 function openUserOverride(userId,email){$('overrideUser').value=`${userId} / ${email}`;$('overrideUser').dataset.id=userId;$('overridePool').value=poolModal.poolId||'';$('overrideHost').value='';$('overrideLocked').checked=true;$('overrideNote').value='';$('overrideExpires').value='';$('usersModal').classList.remove('show');document.getElementById('overrides').scrollIntoView({behavior:'smooth'})}
@@ -934,6 +1144,7 @@ async function boot(){
         return;
     }
     $('authWarning').style.display='none';
+    await loadIndependentOverrides().catch(error=>toast(`独立观察列表加载失败：${error.message}`,'error'));
     await loadOverrides().catch(()=>{});
     await loadWallLog(true).catch(()=>{});
     loading(false);
