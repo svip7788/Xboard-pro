@@ -36,8 +36,12 @@ class TrafficResetService
    * 以及 next_reset_at 被计算出一个往后滑两格的值。
    * 订单/手动触发是强制 reset，不做二次校验。
    */
-  public function performReset(User $user, string $triggerSource = TrafficResetLog::SOURCE_MANUAL): bool
-  {
+  public function performReset(
+    User $user,
+    string $triggerSource = TrafficResetLog::SOURCE_MANUAL,
+    array $metadata = [],
+    ?int $expiredAt = null
+  ): bool {
     $autoTriggers = [
       TrafficResetLog::SOURCE_AUTO,
       TrafficResetLog::SOURCE_CRON,
@@ -46,7 +50,7 @@ class TrafficResetService
     $needRecheck = in_array($triggerSource, $autoTriggers, true);
 
     try {
-      return DB::transaction(function () use ($user, $triggerSource, $needRecheck) {
+      return DB::transaction(function () use ($user, $triggerSource, $needRecheck, $metadata, $expiredAt) {
         $fresh = User::lockForUpdate()->find($user->id);
         if (!$fresh) {
           return false;
@@ -60,6 +64,9 @@ class TrafficResetService
         $oldDownload = $fresh->d ?? 0;
         $oldTotal = $oldUpload + $oldDownload;
 
+        if ($expiredAt !== null) {
+          $fresh->expired_at = $expiredAt;
+        }
         $nextResetTime = $this->calculateNextResetTime($fresh);
 
         $fresh->update([
@@ -71,6 +78,9 @@ class TrafficResetService
         ]);
 
         // 保证调用方拿到的 $user 实例也看到最新值（buyByPeriod 里依赖这些字段）
+        if ($expiredAt !== null) {
+          $user->expired_at = $fresh->expired_at;
+        }
         $user->u = 0;
         $user->d = 0;
         $user->last_reset_at = $fresh->last_reset_at;
@@ -86,6 +96,7 @@ class TrafficResetService
           'new_upload' => 0,
           'new_download' => 0,
           'new_total' => 0,
+          'metadata' => $metadata ?: null,
         ]);
 
         $this->clearUserCache($fresh);
@@ -137,6 +148,16 @@ class TrafficResetService
   }
 
   /**
+   * Resolve the plan's reset method, following the system setting when unset.
+   */
+  public function getEffectiveResetMethod(Plan $plan): int
+  {
+    return $plan->reset_traffic_method === Plan::RESET_TRAFFIC_FOLLOW_SYSTEM
+      ? (int) admin_setting('reset_traffic_method', Plan::RESET_TRAFFIC_MONTHLY)
+      : (int) $plan->reset_traffic_method;
+  }
+
+  /**
    * Get the first day of the next month.
    */
   private function getNextMonthFirstDay(Carbon $from): Carbon
@@ -159,22 +180,23 @@ class TrafficResetService
     $resetDay = $expiredAt->day;
     $resetTime = [$expiredAt->hour, $expiredAt->minute, $expiredAt->second];
     
-    $currentMonthTarget = $from->copy()->day($resetDay)->setTime(...$resetTime);
+    $currentMonthTarget = $this->clampedDate($from->year, $from->month, $resetDay, $resetTime);
     if ($currentMonthTarget->timestamp > $from->timestamp) {
       return $currentMonthTarget;
     }
-    
-    $nextMonthTarget = $from->copy()->startOfMonth()->addMonths(1)->day($resetDay)->setTime(...$resetTime);
-    
-    if ($nextMonthTarget->month !== ($from->month % 12) + 1) {
-      $nextMonth = ($from->month % 12) + 1;
-      $nextYear = $from->year + ($from->month === 12 ? 1 : 0);
-      $lastDayOfNextMonth = Carbon::create($nextYear, $nextMonth, 1)->endOfMonth()->day;
-      $targetDay = min($resetDay, $lastDayOfNextMonth);
-      $nextMonthTarget = Carbon::create($nextYear, $nextMonth, $targetDay)->setTime(...$resetTime);
-    }
-    
-    return $nextMonthTarget;
+
+    $nextMonth = $from->copy()->startOfMonth()->addMonthNoOverflow();
+    return $this->clampedDate($nextMonth->year, $nextMonth->month, $resetDay, $resetTime);
+  }
+
+  /**
+   * Build a date in the given month, clamping the day to the month's last day (e.g. 31st -> Feb 28th).
+   */
+  private function clampedDate(int $year, int $month, int $day, array $time): Carbon
+  {
+    $tz = config('app.timezone');
+    $lastDay = Carbon::create($year, $month, 1, 0, 0, 0, $tz)->daysInMonth;
+    return Carbon::create($year, $month, min($day, $lastDay), $time[0], $time[1], $time[2], $tz);
   }
 
   /**
@@ -201,21 +223,12 @@ class TrafficResetService
     $resetDay = $expiredAt->day;
     $resetTime = [$expiredAt->hour, $expiredAt->minute, $expiredAt->second];
 
-    $currentYearTarget = $from->copy()->month($resetMonth)->day($resetDay)->setTime(...$resetTime);
+    $currentYearTarget = $this->clampedDate($from->year, $resetMonth, $resetDay, $resetTime);
     if ($currentYearTarget->timestamp > $from->timestamp) {
       return $currentYearTarget;
     }
-    
-    $nextYearTarget = $from->copy()->startOfYear()->addYears(1)->month($resetMonth)->day($resetDay)->setTime(...$resetTime);
-    
-    if ($nextYearTarget->month !== $resetMonth) {
-      $nextYear = $from->year + 1;
-      $lastDayOfMonth = Carbon::create($nextYear, $resetMonth, 1)->endOfMonth()->day;
-      $targetDay = min($resetDay, $lastDayOfMonth);
-      $nextYearTarget = Carbon::create($nextYear, $resetMonth, $targetDay)->setTime(...$resetTime);
-    }
-    
-    return $nextYearTarget;
+
+    return $this->clampedDate($from->year + 1, $resetMonth, $resetDay, $resetTime);
   }
 
 

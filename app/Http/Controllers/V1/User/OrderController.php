@@ -81,7 +81,8 @@ class OrderController extends Controller
             $user,
             $plan,
             $request->input('period'),
-            $request->input('coupon_code')
+            $request->input('coupon_code'),
+            $request->boolean('restart')
         );
 
         return $this->success($order->trade_no);

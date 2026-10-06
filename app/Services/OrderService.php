@@ -61,6 +61,7 @@ class OrderService
      * @param Plan $plan
      * @param string $period
      * @param string|null $couponCode
+     * @param bool $restart 续费立即生效，到期日从开通时重新计算
      * @return Order
      * @throws ApiException
      */
@@ -69,6 +70,7 @@ class OrderService
         Plan $plan,
         string $period,
         ?string $couponCode = null,
+        bool $restart = false,
     ): Order {
         $userService = app(UserService::class);
         $planService = new PlanService($plan);
@@ -76,7 +78,7 @@ class OrderService
         $planService->validatePurchase($user, $period);
         HookManager::call('order.create.before', [$user, $plan, $period, $couponCode]);
 
-        return DB::transaction(function () use ($user, $plan, $period, $couponCode, $userService) {
+        return DB::transaction(function () use ($user, $plan, $period, $couponCode, $restart, $userService) {
             $newPeriod = PlanService::getPeriodKey($period);
 
             $order = new Order([
@@ -95,6 +97,9 @@ class OrderService
 
             $orderService->setVipDiscount($user);
             $orderService->setOrderType($user);
+            if ($restart) {
+                $orderService->setRestart();
+            }
             $orderService->setInvite(user: $user);
 
             if ($user->balance && $order->total_amount > 0) {
@@ -208,6 +213,21 @@ class OrderService
         }
     }
 
+    /**
+     * @throws ApiException
+     */
+    public function setRestart(): void
+    {
+        $order = $this->order;
+        if (!app(TrafficExchangeService::class)->isEnabled()) {
+            throw new ApiException(__('Traffic exchange is not enabled'));
+        }
+        if ((int) $order->type !== Order::TYPE_RENEWAL || !isset(self::STR_TO_TIME[$order->period])) {
+            throw new ApiException(__('Only renewal of the current plan can start from today'));
+        }
+        $order->restart = true;
+    }
+
     public function setVipDiscount(User $user)
     {
         $order = $this->order;
@@ -301,7 +321,8 @@ class OrderService
 
             $now = now();
             $totalSeconds = $expiredAt->timestamp - $firstOrderAt;
-            $remainSeconds = max(0, $expiredAt->timestamp - $now->timestamp);
+            // 用时长换流量、续费立即生效都会让实际到期早于按订单推算的到期，取两者较早者
+            $remainSeconds = max(0, min($expiredAt->timestamp, (int) $user->expired_at) - $now->timestamp);
             $cycleRatio = $totalSeconds > 0 ? $remainSeconds / $totalSeconds : 0;
 
             // 原套餐可能已被管理员删除,此时 $plan 为 null。
@@ -410,8 +431,16 @@ class OrderService
 
     private function buyByPeriod(Order $order, Plan $plan)
     {
+        $restart = (bool) $order->restart;
+        if ($restart) {
+            // 续费立即生效：从现在起算新周期并重置流量，原剩余时长作废
+            app(TrafficResetService::class)->performReset($this->user, TrafficResetLog::SOURCE_ORDER, [
+                'restart' => true,
+                'old_expired_at' => $this->user->expired_at,
+            ]);
+        }
         // change plan process
-        if ((int) $order->type === Order::TYPE_UPGRADE) {
+        if ((int) $order->type === Order::TYPE_UPGRADE || $restart) {
             $this->user->expired_at = time();
         }
         $this->user->transfer_enable = $plan->transfer_enable * 1073741824;

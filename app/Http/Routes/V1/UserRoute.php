@@ -13,6 +13,7 @@ use App\Http\Controllers\V1\User\ServerController;
 use App\Http\Controllers\V1\User\StatController;
 use App\Http\Controllers\V1\User\TelegramController;
 use App\Http\Controllers\V1\User\TicketController;
+use App\Http\Controllers\V1\User\TrafficExchangeController;
 use App\Http\Controllers\V1\User\UserController;
 use Illuminate\Contracts\Routing\Registrar;
 
@@ -40,6 +41,9 @@ class UserRoute
             $router->get('/subscribe/lockStatus', [UserController::class, 'subscribeLockStatus']);
             $router->post('/subscribe/unlock', [UserController::class, 'unlockSubscribe']);
             $router->post('/subscribe/lock', [UserController::class, 'lockSubscribe']);
+            // Traffic exchange
+            $router->get('/traffic-exchange/options', [TrafficExchangeController::class, 'options']);
+            $router->post('/traffic-exchange/exchange', [TrafficExchangeController::class, 'exchange']);
             // Order
             $router->post('/order/save', [OrderController::class, 'save']);
             $router->post('/order/checkout', [OrderController::class, 'checkout']);

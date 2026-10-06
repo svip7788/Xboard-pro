@@ -40,6 +40,8 @@ class ConfigSave extends FormRequest
         'plan_change_enable' => '',
         'reset_traffic_method' => 'in:0,1,2,3,4',
         'surplus_enable' => '',
+        'traffic_exchange_enable' => 'boolean',
+        'traffic_exchange_threshold' => 'integer|min:1|max:100',
         'new_order_event_id' => '',
         'renew_order_event_id' => '',
         'change_order_event_id' => '',

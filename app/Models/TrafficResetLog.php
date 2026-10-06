@@ -66,6 +66,7 @@ class TrafficResetLog extends Model
     public const SOURCE_USER_ACCESS = 'user_access';
     public const SOURCE_ORDER = 'order';
     public const SOURCE_GIFT_CARD = 'gift_card';
+    public const SOURCE_TIME_EXCHANGE = 'time_exchange';
 
     /**
      * 获取重置类型的多语言名称
@@ -93,6 +94,7 @@ class TrafficResetLog extends Model
             self::SOURCE_API => __('traffic_reset.source.api'),
             self::SOURCE_CRON => __('traffic_reset.source.cron'),
             self::SOURCE_USER_ACCESS => __('traffic_reset.source.user_access'),
+            self::SOURCE_TIME_EXCHANGE => __('traffic_reset.source.time_exchange'),
         ];
     }
 
