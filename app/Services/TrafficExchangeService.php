@@ -3,9 +3,11 @@
 namespace App\Services;
 
 use App\Exceptions\ApiException;
+use App\Models\Order;
 use App\Models\Plan;
 use App\Models\TrafficResetLog;
 use App\Models\User;
+use App\Utils\Helper;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
@@ -22,6 +24,9 @@ class TrafficExchangeService
     public const MODES = [self::MODE_REMAIN, self::MODE_MONTH];
 
     public const RESTART_MAX_DAYS = 31;
+
+    // 兑换记录订单的 callback_no 前缀，格式 time_exchange:{mode}:{旧到期}:{新到期}
+    public const ORDER_MARK = 'time_exchange';
 
     public function __construct(
         private readonly TrafficResetService $trafficResetService
@@ -103,9 +108,10 @@ class TrafficExchangeService
                 throw new ApiException(__('Not enough remaining subscription time to exchange'));
             }
 
+            $oldExpiredAt = (int) $fresh->expired_at;
             $reset = $this->trafficResetService->performReset($fresh, TrafficResetLog::SOURCE_TIME_EXCHANGE, [
                 'mode' => $mode,
-                'old_expired_at' => (int) $fresh->expired_at,
+                'old_expired_at' => $oldExpiredAt,
                 'new_expired_at' => $result['new_expired_at'],
                 'deduct_seconds' => $result['deduct_seconds'],
             ], $result['new_expired_at']);
@@ -114,8 +120,28 @@ class TrafficExchangeService
                 throw new ApiException(__('Exchange failed, please try again later'));
             }
 
+            $this->createOrderRecord($fresh, $mode, $oldExpiredAt, $result['new_expired_at']);
+
             return $result;
         });
+    }
+
+    /**
+     * 写一条 0 元已完成订单，便于用户和客服在订单中查到兑换记录
+     */
+    private function createOrderRecord(User $user, string $mode, int $oldExpiredAt, int $newExpiredAt): void
+    {
+        Order::create([
+            'user_id' => $user->id,
+            'plan_id' => $user->plan_id,
+            'type' => Order::TYPE_RESET_TRAFFIC,
+            'period' => Plan::PERIOD_RESET_TRAFFIC,
+            'trade_no' => Helper::generateOrderNo(),
+            'callback_no' => implode(':', [self::ORDER_MARK, $mode, $oldExpiredAt, $newExpiredAt]),
+            'total_amount' => 0,
+            'status' => Order::STATUS_COMPLETED,
+            'paid_at' => time(),
+        ]);
     }
 
     private function reachedThreshold(User $user): bool

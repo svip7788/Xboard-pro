@@ -277,6 +277,8 @@ class OrderService
     {
         return Order::where('user_id', $user->id)
             ->whereNotIn('status', [Order::STATUS_PENDING, Order::STATUS_CANCELLED])
+            ->where(fn($query) => $query->whereNull('callback_no')
+                ->orWhere('callback_no', 'not like', TrafficExchangeService::ORDER_MARK . ':%'))
             ->first();
     }
 
