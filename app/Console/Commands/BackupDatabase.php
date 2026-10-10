@@ -28,6 +28,7 @@ class BackupDatabase extends Command
         }
 
         // 数据库备份逻辑
+        $compressedBackupPath = null;
         try{
             if (config('database.default') === 'mysql'){
                 $databaseBackupPath = storage_path('backup/' .  now()->format('Y-m-d_H-i-s') . '_' . config('database.connections.mysql.database') . '_database_backup.sql');
@@ -94,7 +95,10 @@ class BackupDatabase extends Command
         }catch(\Exception $e){
             Log::channel('backup')->error("😔：数据库备份失败 \n" . $e);
             $this->error("😔：数据库备份失败\n" . $e);
-            File::delete($compressedBackupPath);
+            if ($compressedBackupPath) {
+                File::delete($compressedBackupPath);
+            }
+            return self::FAILURE;
         }
     }
 }

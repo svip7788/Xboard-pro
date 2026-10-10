@@ -263,6 +263,7 @@ class AdminRoute
             ], function ($router) {
                 $router->get('/check', [\App\Http\Controllers\V2\Admin\UpdateController::class, 'checkUpdate']);
                 $router->post('/execute', [\App\Http\Controllers\V2\Admin\UpdateController::class, 'executeUpdate']);
+                $router->get('/status', [\App\Http\Controllers\V2\Admin\UpdateController::class, 'status']);
             });
 
             // Theme

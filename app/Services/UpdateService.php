@@ -18,6 +18,9 @@ class UpdateService
     const CACHE_UPDATE_LOCK = 'UPDATE_LOCK';
     const CACHE_VERSION = 'CURRENT_VERSION';
     const CACHE_VERSION_DATE = 'CURRENT_VERSION_DATE';
+    const CACHE_UPDATE_RESULT = 'UPDATE_RESULT';
+    const CHECK_CACHE_SECONDS = 600;
+    const LOCK_SECONDS = 3600;
     
     /**
      * Get current version from cache or generate new one
@@ -56,8 +59,15 @@ class UpdateService
         Log::info('Version cache updated (fallback): ' . date('Ymd') . '-' . $fallbackHash);
     }
 
-    public function checkForUpdates(): array
+    public function checkForUpdates(bool $force = false): array
     {
+        if (!$force) {
+            $cached = Cache::get(self::CACHE_UPDATE_INFO);
+            $fresh = now()->timestamp - (int) $this->getLastCheckTime() < self::CHECK_CACHE_SECONDS;
+            if ($cached && $fresh && ($cached['current_version'] ?? null) === $this->getCurrentCommit()) {
+                return $cached;
+            }
+        }
         try {
             // Get current version commit
             $currentCommit = $this->getCurrentCommit();
@@ -76,7 +86,7 @@ class UpdateService
             $response = Http::withHeaders([
                 'Accept' => 'application/vnd.github.v3+json',
                 'User-Agent' => 'XBoard-Update-Checker'
-            ])->get(self::GITHUB_API_URL . '?per_page=50');
+            ])->timeout(15)->get(self::GITHUB_API_URL . '?per_page=50');
 
             if ($response->successful()) {
                 $commits = $response->json();
@@ -165,133 +175,200 @@ class UpdateService
         }
     }
 
-    public function executeUpdate(): array
+    public function logPath(): string
     {
-        // Check for new version first
-        $updateInfo = $this->checkForUpdates();
-        if ($updateInfo['is_local_newer']) {
-            return [
-                'success' => false,
-                'message' => __('update.local_newer')
-            ];
-        }
-        if (!$updateInfo['has_update']) {
-            return [
-                'success' => false,
-                'message' => __('update.already_latest')
-            ];
-        }
+        return storage_path('logs/self-update.log');
+    }
 
-        // Check for update lock
-        if (Cache::get(self::CACHE_UPDATE_LOCK)) {
-            return [
-                'success' => false,
-                'message' => __('update.process_running')
-            ];
+    /**
+     * 校验后在后台启动 xboard:self-update，避免更新过程被 HTTP 超时打断
+     */
+    public function startUpdate(): array
+    {
+        $updateInfo = $this->checkForUpdates(true);
+        if (!empty($updateInfo['is_local_newer'])) {
+            return ['success' => false, 'message' => __('update.local_newer')];
+        }
+        if (empty($updateInfo['has_update'])) {
+            return ['success' => false, 'message' => __('update.already_latest')];
+        }
+        if (!Cache::add(self::CACHE_UPDATE_LOCK, true, now()->addSeconds(self::LOCK_SECONDS))) {
+            return ['success' => false, 'message' => __('update.process_running')];
         }
 
-        // 记录回滚点：当前 HEAD commit
-        $rollbackPoint = null;
-        try {
-            $head = Process::run('git rev-parse HEAD');
-            if ($head->successful()) {
-                $rollbackPoint = trim($head->output());
-            }
-        } catch (\Throwable $e) {
-            Log::warning('Failed to capture rollback HEAD: ' . $e->getMessage());
-        }
+        Cache::forget(self::CACHE_UPDATE_RESULT);
+        File::put($this->logPath(), sprintf("[%s] 开始更新 %s -> %s\n", date('H:i:s'), $updateInfo['current_version'], $updateInfo['latest_version']));
 
-        try {
-            // Set update lock
-            Cache::put(self::CACHE_UPDATE_LOCK, true, now()->addMinutes(30));
-
-            // 1. Backup database
-            $this->backupDatabase();
-
-            // 2. Pull latest code
-            $result = $this->pullLatestCode();
-            if (!$result['success']) {
-                throw new \Exception($result['message']);
-            }
-
-            // 3. Run database migrations
-            $this->runMigrations();
-
-            // 4. Clear cache
-            $this->clearCache();
-
-            // 5. Create update flag
-            $this->createUpdateFlag();
-
-            // 6. Restart Octane + Horizon if running
-            $this->restartOctane();
-            $this->restartHorizon();
-
-            // Remove update lock
+        $result = Process::path(base_path())->run(sprintf(
+            'nohup %s artisan xboard:self-update < /dev/null >> %s 2>&1 &',
+            escapeshellarg($this->phpBinary()),
+            escapeshellarg($this->logPath())
+        ));
+        if (!$result->successful()) {
             Cache::forget(self::CACHE_UPDATE_LOCK);
+            return ['success' => false, 'message' => __('update.failed', ['error' => $result->errorOutput()])];
+        }
 
-            // Format update logs
-            $logMessages = array_map(function($log) {
-                return sprintf("- %s (%s): %s", 
-                    $log['version'],
-                    date('Y-m-d H:i', strtotime($log['date'])),
-                    $log['message']
-                );
-            }, $updateInfo['update_logs']);
+        return [
+            'success' => true,
+            'message' => '更新已开始',
+            'from_version' => $updateInfo['current_version'],
+            'to_version' => $updateInfo['latest_version'],
+        ];
+    }
 
-            return [
-                'success' => true,
-                'message' => __('update.success', [
-                    'from' => $updateInfo['current_version'],
-                    'to' => $updateInfo['latest_version']
-                ]),
-                'version' => $updateInfo['latest_version'],
-                'update_info' => [
-                    'from_version' => $updateInfo['current_version'],
-                    'to_version' => $updateInfo['latest_version'],
-                    'update_logs' => $logMessages,
-                    'author' => $updateInfo['author'],
-                    'published_at' => $updateInfo['published_at']
-                ]
-            ];
+    public function getUpdateStatus(): array
+    {
+        $log = '';
+        $path = $this->logPath();
+        if (is_file($path)) {
+            $size = filesize($path);
+            $fp = fopen($path, 'r');
+            if ($size > 32768) {
+                fseek($fp, -32768, SEEK_END);
+            }
+            $log = (string) stream_get_contents($fp);
+            fclose($fp);
+        }
 
-        } catch (\Exception $e) {
-            Log::error('Update execution failed: ' . $e->getMessage());
+        $lock = Cache::get(self::CACHE_UPDATE_LOCK);
+        if (is_int($lock) && function_exists('posix_kill') && !posix_kill($lock, 0) && posix_get_last_error() !== 1) {
+            $this->saveResult(false, '更新进程意外退出，请查看日志或 SSH 处理');
+            $lock = null;
+        }
 
-            // 回滚到之前的 HEAD（如果记录到了）
+        return [
+            'running' => (bool) $lock,
+            'result' => Cache::get(self::CACHE_UPDATE_RESULT),
+            'current_version' => $this->getCurrentCommit(),
+            'log' => $log,
+        ];
+    }
+
+    /**
+     * 由 xboard:self-update 调用，调用方须已持有更新锁
+     */
+    public function runUpdate(callable $output): array
+    {
+        $step = function (string $msg) use ($output) {
+            $output(sprintf('[%s] %s', date('H:i:s'), $msg));
+        };
+
+        $from = $this->getCurrentCommit();
+        $rollbackPoint = null;
+        $head = Process::path(base_path())->run('git rev-parse HEAD');
+        if ($head->successful()) {
+            $rollbackPoint = trim($head->output());
+        }
+
+        try {
+            Process::run(sprintf('git config --global --add safe.directory %s', escapeshellarg(base_path())));
+
+            $artisan = escapeshellarg($this->phpBinary()) . ' artisan ';
+
+            $step('备份数据库...');
+            $this->runStep($artisan . 'backup:database', 900, $output);
+
+            $step('拉取最新代码...');
+            $this->runStep('git fetch origin master', 120, $output);
+            $this->runStep('git reset --hard origin/master', 60, $output);
+
+            $step('安装依赖...');
+            $this->runStep($this->composerCommand() . ' install --optimize-autoloader --no-interaction', 900, $output);
+
+            // 代码和 vendor 已替换，当前进程不能再加载新类，收尾交给新进程
+            $this->runStep($artisan . 'xboard:self-update --finish --from=' . escapeshellarg($from), 1200, $output);
+            return ['success' => true];
+        } catch (\Throwable $e) {
+            $step('更新失败: ' . $e->getMessage());
+
             $rollbackMsg = '';
             if ($rollbackPoint) {
                 try {
-                    Process::run(sprintf('git reset --hard %s', escapeshellarg($rollbackPoint)));
-                    Process::run('composer install --no-dev --optimize-autoloader');
+                    $step('回滚到 ' . substr($rollbackPoint, 0, 7) . '...');
+                    $this->runStep(sprintf('git reset --hard %s', escapeshellarg($rollbackPoint)), 60, $output);
+                    $this->runStep($this->composerCommand() . ' install --optimize-autoloader --no-interaction', 900, $output);
                     $this->updateVersionCache();
-                    $rollbackMsg = ' (已自动回滚到 ' . substr($rollbackPoint, 0, 7) . ')';
-                    Log::info('Rollback to ' . $rollbackPoint . ' succeeded');
+                    $rollbackMsg = '（已自动回滚到 ' . substr($rollbackPoint, 0, 7) . '）';
                 } catch (\Throwable $rollbackErr) {
-                    $rollbackMsg = ' (回滚也失败: ' . $rollbackErr->getMessage() . '，请 SSH 处理)';
-                    Log::error('Rollback failed: ' . $rollbackErr->getMessage());
+                    $rollbackMsg = '（回滚也失败: ' . $rollbackErr->getMessage() . '，请 SSH 处理）';
                 }
             }
 
-            Cache::forget(self::CACHE_UPDATE_LOCK);
-
-            return [
-                'success' => false,
-                'message' => __('update.failed', ['error' => $e->getMessage()]) . $rollbackMsg
-            ];
+            $message = '更新失败: ' . $e->getMessage() . $rollbackMsg;
+            $step($message);
+            return $this->saveResult(false, $message);
         }
     }
 
-    protected function restartHorizon(): void
+    /**
+     * 新代码进程中执行：迁移、清缓存、重载服务并记录结果
+     */
+    public function finishUpdate(callable $output, string $from): array
     {
-        try {
-            $result = Process::run('php artisan horizon:terminate');
-            if ($result->successful()) {
-                Log::info('Horizon terminated, supervisor will respawn.');
-            }
-        } catch (\Throwable $e) {
-            Log::warning('Failed to terminate Horizon: ' . $e->getMessage());
+        $step = function (string $msg) use ($output) {
+            $output(sprintf('[%s] %s', date('H:i:s'), $msg));
+        };
+        $artisan = escapeshellarg($this->phpBinary()) . ' artisan ';
+
+        $step('迁移数据库并刷新插件/主题...');
+        $this->runStep($artisan . 'xboard:update', 600, $output);
+
+        $step('清理缓存...');
+        foreach (['config:clear', 'view:clear', 'route:clear'] as $cmd) {
+            $this->runStep($artisan . $cmd, 120, $output);
         }
+
+        $this->createUpdateFlag();
+        $this->restartOctane();
+
+        $message = __('update.success', ['from' => $from, 'to' => $this->getCurrentCommit()]);
+        $step($message);
+        return $this->saveResult(true, $message);
+    }
+
+    protected function saveResult(bool $success, string $message): array
+    {
+        $result = ['success' => $success, 'message' => $message, 'finished_at' => now()->timestamp];
+        Cache::forget(self::CACHE_UPDATE_INFO);
+        Cache::put(self::CACHE_UPDATE_RESULT, $result, now()->addDay());
+        Cache::forget(self::CACHE_UPDATE_LOCK);
+        return $result;
+    }
+
+    protected function runStep(string $command, int $timeout, callable $output): void
+    {
+        $result = Process::path(base_path())
+            ->timeout($timeout)
+            ->env(['COMPOSER_ALLOW_SUPERUSER' => '1', 'COMPOSER_HOME' => getenv('COMPOSER_HOME') ?: storage_path('composer')])
+            ->run($command, function (string $type, string $buffer) use ($output) {
+                foreach (preg_split('/\r?\n/', rtrim($buffer)) as $line) {
+                    if ($line !== '') {
+                        $output('  ' . $line);
+                    }
+                }
+            });
+        if (!$result->successful()) {
+            throw new \RuntimeException(sprintf('%s 退出码 %d', $command, $result->exitCode()));
+        }
+    }
+
+    protected function phpBinary(): string
+    {
+        $bin = PHP_BINARY;
+        if ($bin === '' || str_contains(basename($bin), 'fpm')) {
+            $cli = PHP_BINDIR . '/php';
+            return is_executable($cli) ? $cli : 'php';
+        }
+        return $bin;
+    }
+
+    protected function composerCommand(): string
+    {
+        $phar = base_path('composer.phar');
+        return is_file($phar)
+            ? escapeshellarg($this->phpBinary()) . ' ' . escapeshellarg($phar)
+            : 'composer';
     }
 
     protected function getCurrentCommit(): string
@@ -325,78 +402,6 @@ class UpdateService
     {
         // Use 7 characters for commit hash
         return substr($hash, 0, 7);
-    }
-
-    protected function backupDatabase(): void
-    {
-        try {
-            // Use existing backup command
-            Process::run('php artisan backup:database');
-            
-            if (!Process::result()->successful()) {
-                throw new \Exception(__('update.backup_failed', ['error' => Process::result()->errorOutput()]));
-            }
-        } catch (\Exception $e) {
-            Log::error('Database backup failed: ' . $e->getMessage());
-            throw $e;
-        }
-    }
-
-    protected function pullLatestCode(): array
-    {
-        try {
-            // Get current project root directory
-            $basePath = base_path();
-            
-            // Ensure git configuration is correct
-            Process::run(sprintf('git config --global --add safe.directory %s', $basePath));
-            
-            // Pull latest code
-            Process::run('git fetch origin master');
-            Process::run('git reset --hard origin/master');
-
-            // Update dependencies
-            Process::run('composer install --no-dev --optimize-autoloader');
-
-            // Update version cache after pulling new code
-            $this->updateVersionCache();
-
-            return ['success' => true];
-        } catch (\Exception $e) {
-            return [
-                'success' => false,
-                'message' => __('update.code_update_failed', ['error' => $e->getMessage()])
-            ];
-        }
-    }
-
-    protected function runMigrations(): void
-    {
-        try {
-            Process::run('php artisan migrate --force');
-        } catch (\Exception $e) {
-            Log::error('Migration failed: ' . $e->getMessage());
-            throw new \Exception(__('update.migration_failed', ['error' => $e->getMessage()]));
-        }
-    }
-
-    protected function clearCache(): void
-    {
-        try {
-            $commands = [
-                'php artisan config:clear',
-                'php artisan cache:clear',
-                'php artisan view:clear',
-                'php artisan route:clear'
-            ];
-
-            foreach ($commands as $command) {
-                Process::run($command);
-            }
-        } catch (\Exception $e) {
-            Log::error('Cache clearing failed: ' . $e->getMessage());
-            throw new \Exception(__('update.cache_clear_failed', ['error' => $e->getMessage()]));
-        }
     }
 
     protected function createUpdateFlag(): void

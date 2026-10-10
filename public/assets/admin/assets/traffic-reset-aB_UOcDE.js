@@ -1,0 +1,1 @@
+import{a as s}from"./index-DW9S-hAu.js";const a={logs:(t={})=>s.raw("get","/traffic-reset/logs",t),stats:t=>s.get("/traffic-reset/stats",{days:t}),userHistory:(t,e)=>s.get(`/traffic-reset/user/${t}/history`,{limit:e}),resetUser:(t,e)=>s.post("/traffic-reset/reset-user",{user_id:t,reason:e})};export{a as t};
