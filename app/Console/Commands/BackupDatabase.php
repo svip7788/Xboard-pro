@@ -11,6 +11,8 @@ use Symfony\Component\Process\Process;
 class BackupDatabase extends Command
 {
     protected $signature = 'backup:database {upload?}';
+
+    const KEEP_LOCAL = 5;
     protected $description = '备份数据库并上传到 Google Cloud Storage';
 
     public function handle()
@@ -73,6 +75,11 @@ class BackupDatabase extends Command
             }
             if (!$isUpload){
                 $this->info("🎉：数据库成功备份到：$compressedBackupPath");
+                $old = array_slice(array_reverse(File::glob(storage_path('backup/*_database_backup.sql.gz'))), self::KEEP_LOCAL);
+                File::delete($old);
+                if ($old) {
+                    $this->info('🧹：已清理 ' . count($old) . ' 个旧备份，保留最近 ' . self::KEEP_LOCAL . ' 个');
+                }
             }else{
                 // 传到云盘
                 $this->info("5️⃣：开始将备份上传到Google Cloud");
