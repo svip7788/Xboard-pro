@@ -32,6 +32,14 @@ compose.yaml
 compose.host.yaml
 compose.split.yaml
 .scribe
+storage/composer/
+storage/.psysh/
+
+# 本地测试产物
+storage/.xbt_auth
+storage/fake_v2bx.mjs
+storage/v2bx-test/
+storage/xb_test.sqlite*
 
 # 服务器凭据文件（敏感信息）
 服务器

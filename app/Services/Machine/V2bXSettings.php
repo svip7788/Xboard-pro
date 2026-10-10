@@ -14,7 +14,7 @@ class V2bXSettings
 {
     public static function repo(): string
     {
-        return trim((string) admin_setting('v2bx_repo', '')) ?: 'svip7788/V2bX';
+        return trim((string) admin_setting('v2bx_repo', '')) ?: 'svip7788/V2bX-pro';
     }
 
     public static function version(): string
