@@ -76,8 +76,18 @@ class MachineInstallJob implements ShouldQueue, ShouldBeEncrypted
             if (preg_match('/BACKED_UP:(\S+)/', $ssh->exec(V2bXScripts::BACKUP_CONFIG, 30)[1], $m)) {
                 $logger->line("已备份旧配置到 {$m[1]}");
             }
-            $ssh->writeFile('/etc/V2bX/config.json', V2bXSettings::machineConfig($machine->id, $machine->token, $this->options['core'] ?? 'auto'), 0600);
-            $logger->line('写入 /etc/V2bX/config.json（机器模式）');
+            $core = $this->options['core'] ?? 'auto';
+            [$setCode, $setOut] = $ssh->exec(V2bXScripts::machineSet(V2bXSettings::panelUrl(), $machine->id, $machine->token, $core), 30);
+            if ($setCode === 0) {
+                $logger->line(str_contains($setOut, 'MACHINE_added')
+                    ? '已追加到 /etc/V2bX/config.json，本机同时接入多个面板'
+                    : '写入 /etc/V2bX/config.json（机器模式）');
+            } elseif (str_contains($setOut, 'unknown command')) {
+                $ssh->writeFile('/etc/V2bX/config.json', V2bXSettings::machineConfig($machine->id, $machine->token, $core), 0600);
+                $logger->line('写入 /etc/V2bX/config.json（机器模式）');
+            } else {
+                throw new \RuntimeException('写入机器配置失败: ' . trim($setOut));
+            }
             foreach (self::DEFAULT_FILES as $name) {
                 $path = "/etc/V2bX/{$name}.json";
                 if ($ssh->exec('test -s ' . escapeshellarg($path), 10)[0] !== 0) {

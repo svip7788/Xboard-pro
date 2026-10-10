@@ -93,6 +93,19 @@ fi
 $S rm -f /etc/V2bX/heartbeat.sh /etc/V2bX/agent.env
 SH;
 
+    /** 合并写入机器配置：已接入其他面板时追加为多站，同一面板则更新凭据 */
+    public static function machineSet(string $panelUrl, int $machineId, string $token, string $core): string
+    {
+        return sprintf(
+            "if [ \"\$(id -u)\" -ne 0 ]; then S=sudo; else S=''; fi\n"
+            . '$S env V2BX_MACHINE_TOKEN=%s /usr/local/V2bX/V2bX machine set -c /etc/V2bX/config.json --panel %s --machine-id %d --core %s 2>&1',
+            escapeshellarg($token),
+            escapeshellarg($panelUrl),
+            $machineId,
+            escapeshellarg($core)
+        );
+    }
+
     public static function install(string $repo, string $version): string
     {
         return strtr(self::resource('install.sh'), ['__REPO__' => $repo, '__VERSION__' => $version]);
