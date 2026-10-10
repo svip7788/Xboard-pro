@@ -17,8 +17,10 @@ use Illuminate\Support\Str;
  * @property int|null $last_seen_at 最后心跳时间
  * @property array|null $load_status 负载状态
  * @property string|null $host 机器地址
- * @property int $ssh_port SSH 端口（仅用于首次安装预填）
- * @property string $ssh_user SSH 用户（仅用于首次安装预填）
+ * @property int $ssh_port SSH 端口
+ * @property string $ssh_user SSH 用户
+ * @property string|null $ssh_password SSH 密码（APP_KEY 加密存储）
+ * @property string|null $ssh_key SSH 私钥（APP_KEY 加密存储）
  * @property string|null $v2bx_status V2bX 服务状态
  * @property string|null $v2bx_version V2bX 版本
  * @property \Illuminate\Support\Carbon $created_at
@@ -37,11 +39,13 @@ class ServerMachine extends Model
         'last_seen_at' => 'integer',
         'load_status' => 'array',
         'ssh_port' => 'integer',
+        'ssh_password' => 'encrypted',
+        'ssh_key' => 'encrypted',
         'created_at' => 'timestamp',
         'updated_at' => 'timestamp',
     ];
 
-    protected $hidden = ['token'];
+    protected $hidden = ['token', 'ssh_password', 'ssh_key'];
 
     public static function wsAliveKey(int $id): string
     {

@@ -40,6 +40,8 @@ class MachineController extends Controller
                     'host' => $machine->host,
                     'ssh_port' => $machine->ssh_port,
                     'ssh_user' => $machine->ssh_user,
+                    'has_ssh_password' => filled($machine->getRawOriginal('ssh_password')),
+                    'has_ssh_key' => filled($machine->getRawOriginal('ssh_key')),
                     'notes' => $machine->notes,
                     'is_active' => $machine->is_active,
                     'last_seen_at' => $machine->last_seen_at,
@@ -68,6 +70,9 @@ class MachineController extends Controller
             'host' => 'nullable|string|max:255',
             'ssh_port' => 'nullable|integer|min:1|max:65535',
             'ssh_user' => 'nullable|string|max:64',
+            'ssh_password' => 'nullable|string|max:1024',
+            'ssh_key' => 'nullable|string|max:16384',
+            'clear_ssh_credential' => 'nullable|boolean',
             'notes' => 'nullable|string',
             'is_active' => 'nullable|boolean',
         ]);
@@ -83,6 +88,15 @@ class MachineController extends Controller
         }
         if (array_key_exists('is_active', $params)) {
             $attributes['is_active'] = $params['is_active'];
+        }
+        if (!empty($params['clear_ssh_credential'])) {
+            $attributes['ssh_password'] = null;
+            $attributes['ssh_key'] = null;
+        }
+        foreach (['ssh_password', 'ssh_key'] as $field) {
+            if (filled($params[$field] ?? null)) {
+                $attributes[$field] = $params[$field];
+            }
         }
 
         if (!empty($params['id'])) {
@@ -209,7 +223,7 @@ class MachineController extends Controller
     }
 
     /**
-     * 一次性 SSH 安装 V2bX（凭据只随加密队列任务传递，不入库）
+     * SSH 安装 V2bX：未填写凭据时使用机器上保存的凭据，填写的凭据可选择保存
      */
     public function sshInstall(Request $request)
     {
@@ -220,19 +234,38 @@ class MachineController extends Controller
             'user' => 'nullable|string|max:64',
             'password' => 'nullable|string|max:1024',
             'key' => 'nullable|string|max:16384',
+            'save_credential' => 'nullable|boolean',
             'bbr' => 'nullable|boolean',
             'core' => 'nullable|in:auto,sing,xray',
             'version' => 'nullable|string|max:32',
         ]);
-        if (empty($params['password']) && empty($params['key'])) {
-            throw new ApiException('请填写 SSH 密码或私钥');
-        }
         if (!preg_match('#^https?://#', V2bXSettings::panelUrl())) {
             throw new ApiException('请先在系统配置中设置站点网址（app_url），V2bX 需要用它连接面板');
         }
 
         $machine = ServerMachine::find($params['id']);
         $this->ensureNoActiveTask($machine);
+        $password = (string) ($params['password'] ?? '');
+        $key = (string) ($params['key'] ?? '');
+        if ($password === '' && $key === '') {
+            try {
+                $password = (string) $machine->ssh_password;
+                $key = (string) $machine->ssh_key;
+            } catch (\Illuminate\Contracts\Encryption\DecryptException) {
+                throw new ApiException('已保存的 SSH 凭据无法解密（APP_KEY 可能已变更），请重新填写');
+            }
+        } elseif ($params['save_credential'] ?? true) {
+            $machine->ssh_password = $password !== '' ? $password : null;
+            $machine->ssh_key = $key !== '' ? $key : null;
+        }
+        if ($password === '' && $key === '') {
+            throw new ApiException('请填写 SSH 密码或私钥');
+        }
+        $machine->fill([
+            'host' => trim($params['host']),
+            'ssh_port' => (int) ($params['port'] ?? 22),
+            'ssh_user' => trim($params['user'] ?? '') ?: 'root',
+        ])->save();
 
         try {
             $version = V2bXSettings::resolveVersion($params['version'] ?? null);
@@ -253,8 +286,8 @@ class MachineController extends Controller
             'host' => trim($params['host']),
             'port' => (int) ($params['port'] ?? 22),
             'user' => trim($params['user'] ?? '') ?: 'root',
-            'password' => $params['password'] ?? '',
-            'key' => $params['key'] ?? '',
+            'password' => $password,
+            'key' => $key,
         ], [
             'bbr' => (bool) ($params['bbr'] ?? true),
             'core' => $params['core'] ?? 'auto',
