@@ -108,6 +108,15 @@ class AdminRoute
                 $router->get('/installCommand', [MachineController::class, 'installCommand']);
                 $router->get('/nodes', [MachineController::class, 'nodes']);
                 $router->get('/history', [MachineController::class, 'history']);
+                $router->post('/sshInstall', [MachineController::class, 'sshInstall']);
+                $router->post('/command', [MachineController::class, 'command']);
+                $router->post('/batchCommand', [MachineController::class, 'batchCommand']);
+                $router->get('/tasks', [MachineController::class, 'tasks']);
+                $router->get('/task', [MachineController::class, 'task']);
+                $router->get('/settings', [MachineController::class, 'settings']);
+                $router->post('/settings', [MachineController::class, 'saveSettings']);
+                $router->post('/cloudflare', [MachineController::class, 'saveCloudflare']);
+                $router->post('/dnsResolve', [MachineController::class, 'dnsResolve']);
             });
 
             // Order

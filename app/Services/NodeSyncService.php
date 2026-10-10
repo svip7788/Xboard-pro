@@ -142,6 +142,7 @@ class NodeSyncService
             $nodeList = $nodes->map(fn($n) => [
                 'id' => $n->id,
                 'type' => $n->type,
+                'node_type' => $n->machineNodeType(),
                 'name' => $n->name,
             ])->values()->toArray();
         }

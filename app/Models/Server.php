@@ -390,6 +390,17 @@ class Server extends Model
         return "{$serverKey}:{$userKey}";
     }
 
+    /**
+     * 机器托管节点对外的类型（hysteria 按版本拆分为 hysteria / hysteria2）
+     */
+    public function machineNodeType(): string
+    {
+        if ($this->type === self::TYPE_HYSTERIA) {
+            return (int) data_get($this->protocol_settings, 'version', 2) === 2 ? 'hysteria2' : 'hysteria';
+        }
+        return $this->type;
+    }
+
     public static function normalizeType(?string $type): string | null
     {
         return $type ? strtolower(self::TYPE_ALIASES[$type] ?? $type) : null;

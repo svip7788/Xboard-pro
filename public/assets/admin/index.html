@@ -1,37 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/images/favicon.svg" />
-    <link rel="icon" type="image/png" href="/images/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Admin</title>
-    <meta
-      name="description"
-      content="Admin Dashboard UI built with Shadcn and Vite."
-    />
-    <script src="/settings.js"></script>
-    <script src="/settings.local.js"></script>
-    <script src="./locales/en-US.js"></script>
-    <script src="./locales/zh-CN.js"></script>
-    <script src="./locales/ru-RU.js"></script>
-    <script type="module" crossorigin src="./assets/index-c720e7150.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CYqGixs-.css">
+    <title>Xboard Admin</title>
+    <script type="module" crossorigin src="/assets/admin/assets/index-Bk5XKR_E.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/admin/assets/vendor-IIWUOMih.js">
+    <link rel="modulepreload" crossorigin href="/assets/admin/assets/charts-CLA6sG3o.js">
+    <link rel="stylesheet" crossorigin href="/assets/admin/assets/index-BHlF-MMd.css">
   </head>
   <body>
     <div id="root"></div>
-    <script>
-      document.addEventListener('click', function(e) {
-        var a = e.target.closest('a[href]');
-        if (a) {
-          var href = a.getAttribute('href');
-          if (href && (/\/plugins\/[^\/]+\/\w+/.test(href))) {
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            window.location.href = href;
-          }
-        }
-      }, true);
-    </script>
   </body>
 </html>

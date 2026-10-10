@@ -5,6 +5,7 @@ namespace App\WebSocket;
 use App\Models\Server;
 use App\Models\ServerMachine;
 use App\Services\DeviceStateService;
+use App\Services\Machine\MachineCommandService;
 use App\Services\NodeRegistry;
 use App\Services\ServerService;
 use Illuminate\Support\Facades\Cache;
@@ -124,7 +125,7 @@ class NodeWorker
     public function onConnect(TcpConnection $conn): void
     {
         $conn->authTimer = Timer::add(self::AUTH_TIMEOUT, function () use ($conn) {
-            if (empty($conn->nodeId) && empty($conn->machineNodeIds)) {
+            if (empty($conn->nodeId) && empty($conn->machineId)) {
                 $conn->close(json_encode([
                     'event' => 'error',
                     'data' => ['message' => 'auth timeout'],
@@ -236,6 +237,7 @@ class NodeWorker
 
         $machine->forceFill(['last_seen_at' => now()->timestamp])->saveQuietly();
         NodeRegistry::addMachine($machineId, $conn);
+        Cache::put(ServerMachine::wsAliveKey($machineId), true, 86400);
 
         // 把同一个连接注册到该机器下所有节点
         $nodeIds = [];
@@ -280,6 +282,16 @@ class NodeWorker
 
         $event = $msg['event'] ?? '';
 
+        if (!empty($conn->machineId)) {
+            if (str_starts_with($event, 'machine.command.')) {
+                MachineCommandService::handleEvent((int) $conn->machineId, $event, $msg['data'] ?? []);
+                return;
+            }
+            if ($event === 'pong') {
+                Cache::put(ServerMachine::wsAliveKey((int) $conn->machineId), true, 86400);
+            }
+        }
+
         // 机器连接：从消息中读取 node_id 来分派到具体节点
         if (!empty($conn->machineNodeIds)) {
             if ($event === 'pong') {
@@ -312,6 +324,13 @@ class NodeWorker
     {
         $service = app(DeviceStateService::class);
 
+        if (!empty($conn->machineId)) {
+            NodeRegistry::removeMachine((int) $conn->machineId, $conn);
+            if (NodeRegistry::getMachine((int) $conn->machineId) === null) {
+                Cache::forget(ServerMachine::wsAliveKey((int) $conn->machineId));
+            }
+        }
+
         // 机器模式：清理所有关联节点
         if (!empty($conn->machineNodeIds)) {
             $machineId = $conn->machineId ?? 'unknown';
@@ -323,10 +342,6 @@ class NodeWorker
                 foreach ($affectedUserIds as $userId) {
                     $service->notifyUpdate($userId);
                 }
-            }
-
-            if (!empty($conn->machineId)) {
-                NodeRegistry::removeMachine((int) $conn->machineId, $conn);
             }
 
             Log::debug("[WS] Machine#{$machineId} disconnected", [
@@ -392,6 +407,9 @@ class NodeWorker
                 if ($event === 'sync.nodes') {
                     $nodeIds = array_map('intval', array_column($data['nodes'] ?? [], 'id'));
                     NodeRegistry::refreshMachineNodes((int) $machineId, $nodeIds);
+                }
+                if ($event === 'machine.command') {
+                    $data['params'] = (object) ($data['params'] ?? []);
                 }
 
                 $sent = NodeRegistry::sendMachine((int) $machineId, $event, $data);

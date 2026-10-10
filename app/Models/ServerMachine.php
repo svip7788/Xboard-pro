@@ -16,6 +16,11 @@ use Illuminate\Support\Str;
  * @property bool $is_active 是否启用
  * @property int|null $last_seen_at 最后心跳时间
  * @property array|null $load_status 负载状态
+ * @property string|null $host 机器地址
+ * @property int $ssh_port SSH 端口（仅用于首次安装预填）
+ * @property string $ssh_user SSH 用户（仅用于首次安装预填）
+ * @property string|null $v2bx_status V2bX 服务状态
+ * @property string|null $v2bx_version V2bX 版本
  * @property \Illuminate\Support\Carbon $created_at
  * @property \Illuminate\Support\Carbon $updated_at
  *
@@ -31,11 +36,17 @@ class ServerMachine extends Model
         'is_active' => 'boolean',
         'last_seen_at' => 'integer',
         'load_status' => 'array',
+        'ssh_port' => 'integer',
         'created_at' => 'timestamp',
         'updated_at' => 'timestamp',
     ];
 
     protected $hidden = ['token'];
+
+    public static function wsAliveKey(int $id): string
+    {
+        return "machine_ws_alive:{$id}";
+    }
 
     public function servers(): HasMany
     {

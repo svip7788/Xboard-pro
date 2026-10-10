@@ -35,7 +35,22 @@ class ServerObserver
                 $server->machine_id,
                 $server->getOriginal('machine_id')
             );
+        } elseif ($server->machine_id && $server->wasChanged(['type', 'protocol_settings', 'name'])
+            && $this->machineNodeTypeChangedOrRenamed($server)) {
+            NodeSyncService::notifyMachineNodesChanged($server->machine_id);
         }
+    }
+
+    private function machineNodeTypeChangedOrRenamed(Server $server): bool
+    {
+        if ($server->wasChanged(['type', 'name'])) {
+            return true;
+        }
+        $original = (new Server())->forceFill([
+            'type' => $server->getOriginal('type'),
+            'protocol_settings' => $server->getOriginal('protocol_settings'),
+        ]);
+        return $original->machineNodeType() !== $server->machineNodeType();
     }
 
     public function deleted(Server $server): void

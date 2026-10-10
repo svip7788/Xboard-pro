@@ -210,6 +210,18 @@ return [
                 'timeout' => 60,
                 'backoff' => [3, 10, 30],
             ],
+            'machine-ops' => [
+                'connection' => 'redis',
+                'queue' => ['machine_ops'],
+                'balance' => 'simple',
+                'minProcesses' => 1,
+                'maxProcesses' => (int) env('HORIZON_MACHINE_OPS_MAX', 5),
+                'memory' => (int) env('HORIZON_WORKER_MEMORY_MB', 256),
+                'maxTime' => (int) env('HORIZON_WORKER_MAX_TIME', 3600),
+                'maxJobs' => (int) env('HORIZON_WORKER_MAX_JOBS', 1000),
+                'tries' => 1,
+                'timeout' => 580,
+            ],
         ],
         'local' => [
             'Xboard' => [
@@ -223,7 +235,8 @@ return [
                     'send_email_mass',
                     'send_telegram',
                     'user_alive_sync',
-                    'node_sync'
+                    'node_sync',
+                    'machine_ops'
                 ],
                 'balance' => 'auto',
                 'minProcesses' => 3,

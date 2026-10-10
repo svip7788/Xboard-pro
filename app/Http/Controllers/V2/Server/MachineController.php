@@ -25,6 +25,7 @@ class MachineController extends Controller
             ->map(fn($node) => [
                 'id' => $node->id,
                 'type' => $node->type,
+                'node_type' => $node->machineNodeType(),
                 'name' => $node->name,
             ])->values();
 
@@ -52,6 +53,8 @@ class MachineController extends Controller
             'disk.used' => 'nullable|integer|min:0',
             'net.in_speed' => 'nullable|numeric|min:0',
             'net.out_speed' => 'nullable|numeric|min:0',
+            'v2bx.status' => 'nullable|string|max:32',
+            'v2bx.version' => 'nullable|string|max:32',
         ]);
 
         $machine = $this->authenticateMachine($request);
@@ -84,10 +87,17 @@ class MachineController extends Controller
             ];
         }
 
-        $machine->forceFill([
+        $machineUpdate = [
             'load_status' => $loadStatus,
             'last_seen_at' => $recordedAt,
-        ])->save();
+        ];
+        if ($v2bxStatus = $request->input('v2bx.status')) {
+            $machineUpdate['v2bx_status'] = $v2bxStatus;
+            if ($v2bxVersion = $request->input('v2bx.version')) {
+                $machineUpdate['v2bx_version'] = $v2bxVersion;
+            }
+        }
+        $machine->forceFill($machineUpdate)->save();
 
         $historyData = [
             'machine_id' => $machine->id,

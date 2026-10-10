@@ -46,12 +46,14 @@ class TrafficFetchJob implements ShouldQueue, ShouldBeUnique
         $this->timestamp = $timestamp;
     }
 
+    // 指纹必须包含流量值：同节点同一批用户的下一轮上报只是数值不同，
+    // 只按用户 id 去重会在上一个 Job 未消费时把新流量直接丢掉。
     public function uniqueId(): string
     {
         return 'tf-' . ($this->server['id'] ?? 0)
             . '-' . $this->protocol
             . '-' . $this->timestamp
-            . '-' . crc32(serialize(array_keys($this->data)));
+            . '-' . md5(serialize($this->data));
     }
 
     public function uniqueFor(): int
